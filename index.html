@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f26a1b" />
+    <title>事事通校园配送系统</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./vendor/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">事</div>
+        <div>
+          <h1>事事通校园配送系统</h1>
+          <p>后台导入、异常修正、水洗标、取送履约</p>
+        </div>
+      </div>
+      <div class="session-actions">
+        <span id="sessionLabel">未连接</span>
+        <button id="signOutBtn" class="ghost hidden" type="button">退出</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="side">
+        <section class="panel setup-panel">
+          <h2>Supabase 设置</h2>
+          <input id="supabaseUrl" class="input" placeholder="Project URL" />
+          <input id="supabaseAnonKey" class="input" placeholder="Publishable key" />
+          <button id="saveConfigBtn" type="button">保存连接</button>
+          <p class="hint">配置保存在本机浏览器。数据库增量脚本见 supabase-admin-upgrade.sql。</p>
+        </section>
+
+        <section id="loginPanel" class="panel">
+          <h2>员工登录</h2>
+          <input id="loginEmail" class="input" placeholder="邮箱" />
+          <input id="loginPassword" class="input" placeholder="密码" type="password" />
+          <button id="loginBtn" type="button">登录</button>
+        </section>
+
+        <section class="panel stats-panel">
+          <h2>今日概览</h2>
+          <div class="stat-grid">
+            <div><strong id="statOrders">0</strong><span>订单</span></div>
+            <div><strong id="statItems">0</strong><span>物品</span></div>
+            <div><strong id="statIn">0</strong><span>入库</span></div>
+            <div><strong id="statOut">0</strong><span>出库</span></div>
+          </div>
+        </section>
+      </aside>
+
+      <section class="workspace">
+        <nav class="tabs" aria-label="模块切换">
+          <button class="tab active" data-view="admin" type="button">后台</button>
+          <button class="tab" data-view="courier" type="button">配送员</button>
+          <button class="tab" data-view="factory" type="button">工厂端</button>
+          <button class="tab" data-view="student" type="button">学生查询</button>
+          <button class="tab" data-view="schema" type="button">部署说明</button>
+        </nav>
+
+        <section id="adminView" class="view">
+          <div class="panel hero-panel">
+            <h2>后台工作台</h2>
+            <p>先导入订单，再处理异常、维护规则、导出水洗标。后续可以继续扩展财务、人员和任务分配。</p>
+            <div class="toolbar wrap">
+              <label class="file-button">
+                导入订单 Excel
+                <input id="fileInput" type="file" accept=".xlsx" multiple />
+              </label>
+              <button id="exportWashLabelsBtn" class="ghost" type="button">导出水洗标清单</button>
+              <button id="refreshAdminBtn" class="ghost" type="button">刷新后台</button>
+            </div>
+          </div>
+
+          <nav class="subtabs" aria-label="后台功能">
+            <button class="subtab active" data-admin-section="overview" type="button">概览</button>
+            <button class="subtab" data-admin-section="exceptions" type="button">异常修正</button>
+            <button class="subtab" data-admin-section="batches" type="button">批次管理</button>
+            <button class="subtab" data-admin-section="rules" type="button">规则维护</button>
+            <button class="subtab" data-admin-section="labels" type="button">水洗标</button>
+          </nav>
+
+          <section id="adminOverview" class="admin-section stack"></section>
+          <section id="adminExceptions" class="admin-section stack hidden"></section>
+          <section id="adminBatches" class="admin-section stack hidden"></section>
+          <section id="adminRules" class="admin-section stack hidden"></section>
+          <section id="adminLabels" class="admin-section stack hidden"></section>
+        </section>
+
+        <section id="courierView" class="view hidden">
+          <div class="toolbar">
+            <input id="courierSearch" class="input" placeholder="搜索姓名、电话、学校、楼栋、水洗标" />
+            <button id="refreshCourierBtn" type="button">刷新任务</button>
+          </div>
+          <div class="split">
+            <section class="panel">
+              <h2>取件任务</h2>
+              <div id="pickupTaskList" class="card-list"></div>
+            </section>
+            <section class="panel">
+              <h2>送回任务</h2>
+              <div id="returnTaskList" class="card-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="factoryView" class="view hidden">
+          <div class="split factory-grid">
+            <section class="panel scanner-panel">
+              <h2>工厂扫码</h2>
+              <video id="scanVideo" class="scan-video" muted playsinline></video>
+              <div class="toolbar">
+                <input id="barcodeInput" class="input" placeholder="扫码或输入水洗标" />
+                <button id="startScanBtn" type="button">打开摄像头</button>
+              </div>
+              <div class="toolbar two">
+                <button id="factoryInBtn" type="button">扫码入库</button>
+                <button id="factoryOutBtn" type="button">扫码出库</button>
+              </div>
+              <p id="scanResult" class="hint">摄像头扫码需要 HTTPS；本地可用扫码枪或手动输入。</p>
+            </section>
+            <section class="panel">
+              <h2>待出库物品</h2>
+              <div id="factoryItemList" class="card-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="studentView" class="view hidden">
+          <div class="panel hero-panel">
+            <h2>学生进度查询</h2>
+            <p>输入下单手机号，查看最近订单和每件物品进度。</p>
+            <div class="toolbar">
+              <input id="studentPhone" class="input" placeholder="请输入手机号" />
+              <button id="trackBtn" type="button">查询</button>
+            </div>
+          </div>
+          <div id="trackResults" class="card-list"></div>
+        </section>
+
+        <section id="schemaView" class="view hidden">
+          <div class="panel">
+            <h2>部署说明</h2>
+            <ol class="steps">
+              <li>已建过基础表后，先执行 <code>supabase-admin-upgrade.sql</code> 增量脚本。</li>
+              <li>员工账号在 Authentication 创建，再到 <code>profiles</code> 表设置角色。</li>
+              <li>当前前端可部署到 GitHub Pages，摄像头扫码需要 HTTPS。</li>
+              <li>独立入口：<code>courier.html</code> 配送员端、<code>factory.html</code> 工厂端、<code>track.html</code> 学生查询。</li>
+            </ol>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <dialog id="orderDialog" class="modal">
+      <div class="modal-head">
+        <h2 id="orderDialogTitle">订单详情</h2>
+        <button id="closeOrderDialogBtn" class="ghost" type="button">关闭</button>
+      </div>
+      <div id="orderDialogBody" class="stack"></div>
+    </dialog>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
