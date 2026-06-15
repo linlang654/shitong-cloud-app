@@ -23,6 +23,7 @@ let currentUser = null;
 let currentProfile = null;
 let scanStream = null;
 let scanTimer = null;
+let scanControls = null;
 let recognitionRules = [];
 const imagePreviewMap = new Map();
 let orderManagementRows = [];
@@ -273,13 +274,27 @@ function switchAdminSection(sectionName) {
   document.querySelectorAll(".subtab").forEach((tab) => tab.classList.toggle("active", tab.dataset.adminSection === sectionName));
   document.querySelectorAll(".admin-section").forEach((section) => section.classList.add("hidden"));
   $(`admin${sectionName[0].toUpperCase()}${sectionName.slice(1)}`)?.classList.remove("hidden");
+  if (APP_MODE === "admin" && sb && currentUser) loadAdminSection(sectionName);
 }
 
 function field(row, names) {
   for (const name of names) {
     if (row[name] !== undefined && row[name] !== null && String(row[name]).trim() !== "") return row[name];
   }
+  const entries = Object.entries(row || {});
+  for (const name of names) {
+    const normalizedName = text(name).replace(/\s+/g, "");
+    const matched = entries.find(([key, value]) => {
+      const normalizedKey = text(key).replace(/\s+/g, "");
+      return normalizedKey.includes(normalizedName) && value !== undefined && value !== null && String(value).trim() !== "";
+    });
+    if (matched) return matched[1];
+  }
   return "";
+}
+
+function formField(row) {
+  return text(field(row, ["表单信息", "表单内容", "表单", "用户表单", "买家留言", "备注", "订单备注"]));
 }
 
 function paid(row) {
@@ -319,10 +334,10 @@ function fillSharedFields(rows) {
   const sharedFields = ["所属商家", "姓名", "电话", "收货地址", "表单信息", "状态", "退款金额", "下单时间", "付款时间", "配送方式"];
   grouped.forEach((items) => {
     sharedFields.forEach((name) => {
-      const value = items.map((row) => row[name]).find((item) => text(item));
+      const value = items.map((row) => field(row, [name])).find((item) => text(item));
       if (value === undefined) return;
       items.forEach((row) => {
-        if (!text(row[name])) row[name] = value;
+        if (!text(field(row, [name]))) row[name] = value;
       });
     });
   });
@@ -350,6 +365,52 @@ function normalizeSchool(source) {
   return "学校未识别";
 }
 
+function defaultCampusForSchool(school) {
+  if (school === "贵中医") return "宿舍区";
+  if (school === "贵科院") return "学生公寓";
+  if (school === "人文") return "学生宿舍";
+  return "";
+}
+
+function normalizeBuilding(value) {
+  let raw = text(value)
+    .replace(/[，,。；;].*$/, "")
+    .replace(/宿舍|寝室|学生公寓/g, "")
+    .trim();
+  raw = raw.replace(/^([一二三四五六七八九十]+)(栋|号楼)?$/, (_, number) => `${chineseNumberToDigit(number)}栋`);
+  raw = raw.replace(/^([A-Z]?\d{1,3}[A-Z]?)(栋|号楼)?$/i, (_, code) => `${String(code).toUpperCase()}栋`);
+  raw = raw
+    .replace(/^J2栋$/, "J2号楼")
+    .replace(/^J3栋$/, "J3学生公寓")
+    .replace(/^H7\d+栋$/, "H7")
+    .replace(/^H8\d*栋$/, "H8");
+  return raw || "";
+}
+
+function parseDormLine(form) {
+  const lines = text(form).split(/[\n\r，,；;]+/).map(text).filter(Boolean);
+  const dormLine = lines.find((line) => /[:：]/.test(line) && /(师大|师范|财大|财经|民大|民族|贵中医|中医|理工|贵科院|科院|人文|城市学院|职业学院|东区|西区|南区|北区|龙文苑)/.test(line));
+  if (!dormLine) return null;
+  const [left, right] = dormLine.split(/[:：]/);
+  const school = normalizeSchool(left);
+  let campus = "校区未识别";
+  if (/龙文苑/.test(left)) campus = "龙文苑";
+  else if (/东校区|东区/.test(left)) campus = "东区";
+  else if (/西校区|西区/.test(left)) campus = "西区";
+  else if (/南校区|南区/.test(left)) campus = "南区";
+  else if (/北校区|北区/.test(left)) campus = "北区";
+  else if (/一期/.test(left)) campus = "学生公寓一期";
+  else if (/三期|善德居/.test(left)) campus = "学生公寓三期";
+  else if (/桂园|橘园|杏园|李园|竹园|桃园|H7|H8|J2|J3/.test(left)) campus = "宿舍区";
+  else campus = defaultCampusForSchool(school) || campus;
+  const building = normalizeBuilding(right);
+  const notes = [];
+  if (school === "学校未识别") notes.push("未识别学校");
+  if (campus === "校区未识别") notes.push("未识别校区");
+  if (!building) notes.push("未识别楼栋");
+  return { school, campus, building: building || "楼栋未识别", note: notes.join("；") };
+}
+
 function applyRecognitionRule(source) {
   const rule = recognitionRules.find((item) => item.enabled !== false && item.keyword && source.includes(item.keyword));
   if (!rule) return null;
@@ -362,11 +423,14 @@ function applyRecognitionRule(source) {
 }
 
 function extractDormInfo(row) {
-  const form = text(field(row, ["表单信息", "备注", "买家留言"]));
+  const form = formField(row);
   const address = text(field(row, ["收货地址", "地址"]));
   const source = `${form} ${address}`;
   const learned = applyRecognitionRule(source);
   if (learned) return learned;
+
+  const formDorm = parseDormLine(form);
+  if (formDorm) return formDorm;
 
   const school = normalizeSchool(source);
   let campus = "";
@@ -379,6 +443,7 @@ function extractDormInfo(row) {
   else if (/一期/.test(source)) campus = "学生公寓一期";
   else if (/三期|善德居/.test(source)) campus = "学生公寓三期";
   else if (/桂园|橘园|杏园|李园|竹园|桃园|H7|H8|J2|J3/.test(source)) campus = "宿舍区";
+  else if (defaultCampusForSchool(school)) campus = defaultCampusForSchool(school);
   else campus = "校区未识别";
 
   const cleaned = source.replace(/学校[:：]/g, " ").replace(/校区[:：]/g, " ");
@@ -387,6 +452,7 @@ function extractDormInfo(row) {
     /(桂园|橘园|杏园|李园)\s*([0-9一二三四五六七八九十]+)\s*(栋|号楼)?/,
     /(桃园)\s*([A-D])\s*区/,
     /(学生公寓一期|学生公寓三期)?\s*(H\d{2}-\d|H\d{1,2}|J\d|[A-Z]?\d{1,3}[A-Z]?)\s*(栋|号学生公寓|宿舍|楼|b区|B区)?/,
+    /(留学生公寓|学生公寓)?\s*([0-9一二三四五六七八九十]{1,3})\s*(栋|号楼|宿舍)/,
     /([一二三四五六七八九十]+)\s*(栋|号楼|宿舍)/,
     /(竹园|善德居|J2|J3|H7|H8)/,
   ];
@@ -395,7 +461,8 @@ function extractDormInfo(row) {
     const match = cleaned.match(pattern);
     if (!match) continue;
     if (match[1] && match[2] && /苑|园/.test(match[1])) building = `${match[1]}${chineseNumberToDigit(match[2])}${match[1] === "桃园" ? "区" : "栋"}`;
-    else if (match[1] && match[2] && /学生公寓/.test(match[1])) building = `${match[1]}${match[2]}`;
+    else if (match[1] && match[2] && /留学生公寓/.test(match[1])) building = `${chineseNumberToDigit(match[2])}栋（留学生公寓）`;
+    else if (match[1] && match[2] && /学生公寓/.test(match[1])) building = `${match[1]}${chineseNumberToDigit(match[2])}栋`;
     else if (match[1] && /^[一二三四五六七八九十]+$/.test(match[1])) building = `${chineseNumberToDigit(match[1])}栋`;
     else if (match[2] && /^[A-Z]?\d/.test(match[2])) building = `${match[1] || ""}${match[2]}`;
     else building = match[1];
@@ -418,7 +485,7 @@ function extractDormInfo(row) {
 }
 
 function extractImages(row) {
-  const form = text(field(row, ["表单信息", "备注", "买家留言"]));
+  const form = formField(row);
   const links = form.match(/https?:\/\/[^\s，,；;]+/g) || [];
   return [...new Set(links)].join("\n");
 }
@@ -532,9 +599,28 @@ function renderImportDiagnosis(stats, resultText = "") {
 }
 
 async function readWorkbook(file) {
+  await ensureXlsx();
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: "array", cellDates: true });
   return workbook.SheetNames.flatMap((sheetName) => XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: "" }));
+}
+
+function ensureXlsx() {
+  if (window.XLSX) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-xlsx-loader="true"]');
+    if (existing) {
+      existing.addEventListener("load", resolve, { once: true });
+      existing.addEventListener("error", () => reject(new Error("XLSX 组件加载失败，请确认 vendor/xlsx.full.min.js 已上传。")), { once: true });
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = "./vendor/xlsx.full.min.js";
+    script.dataset.xlsxLoader = "true";
+    script.onload = resolve;
+    script.onerror = () => reject(new Error("XLSX 组件加载失败，请确认 vendor/xlsx.full.min.js 已上传。"));
+    document.head.appendChild(script);
+  });
 }
 
 async function createImportBatch(files, stats) {
@@ -556,6 +642,76 @@ async function updateImportBatch(id, orders, items) {
   await sb.from("import_batches").update({ imported_orders: orders, imported_items: items }).eq("id", id);
 }
 
+function chunkArray(items, size = 200) {
+  const chunks = [];
+  for (let index = 0; index < items.length; index += size) chunks.push(items.slice(index, index + size));
+  return chunks;
+}
+
+async function fetchExistingSourceKeys(sourceKeys) {
+  const existing = new Set();
+  for (const group of chunkArray([...new Set(sourceKeys)], 120)) {
+    const { data, error } = await sb.from("order_items").select("source_key").in("source_key", group);
+    if (error) throw error;
+    (data || []).forEach((row) => existing.add(row.source_key));
+  }
+  return existing;
+}
+
+async function batchUpsert(tableName, rows, options = {}, size = 200) {
+  const result = [];
+  for (const group of chunkArray(rows, size)) {
+    const query = sb.from(tableName).upsert(group, options);
+    const { data, error } = await query.select("*");
+    if (error) throw error;
+    result.push(...(data || []));
+  }
+  return result;
+}
+
+async function batchInsert(tableName, rows, size = 300) {
+  for (const group of chunkArray(rows, size)) {
+    const { error } = await sb.from(tableName).insert(group);
+    if (error) throw error;
+  }
+}
+
+function buildOrderPayload(row, dorm, batchId) {
+  return {
+    order_no: text(field(row, ["订单号", "订单编号"])),
+    business_type: "wash_care",
+    source: "excel",
+    import_batch_id: batchId || null,
+    merchant: text(field(row, ["所属商家", "商家", "门店"])),
+    customer_name: text(field(row, ["姓名", "收货人"])),
+    phone: phoneValue(field(row, ["电话", "手机号", "联系电话"])),
+    address: text(field(row, ["收货地址", "地址"])),
+    school: dorm.school,
+    campus: dorm.campus,
+    building: dorm.building,
+    paid_amount: numberValue(field(row, ["实付款", "实际支付", "付款金额", "支付金额"])),
+    order_time: isoOrNull(field(row, ["下单时间", "创建时间"])),
+    pay_time: isoOrNull(field(row, ["付款时间", "支付时间"])),
+    order_status: "待取件",
+    exception_note: dorm.note,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function buildItemPayload(orderId, row, barcode, sourceKey, index) {
+  return {
+    order_id: orderId,
+    barcode,
+    source_key: sourceKey,
+    product_name: text(field(row, ["商品名称", "商品"])),
+    spec: text(field(row, ["规格", "规格名称"])),
+    item_index: index,
+    image_links: extractImages(row),
+    item_status: "待取件",
+    updated_at: new Date().toISOString(),
+  };
+}
+
 async function handleImport(event) {
   if (!requireClient()) return;
   if (!currentUser) return alert("请先用后台账号登录");
@@ -573,29 +729,61 @@ async function handleImport(event) {
       return;
     }
     const batch = await createImportBatch(files, diagnosis);
+    setMessage("adminOverview", `正在导入：${workItems.length} 件物品，正在批量写入订单...`);
     const counters = await loadBarcodeCounters(workItems.map((item) => item.prefix));
-    const orderCache = new Map();
-    let createdItems = 0;
-    let skippedItems = 0;
-    for (const workItem of workItems) {
+    const orderWorkItems = new Map();
+    workItems.forEach((workItem) => {
       const row = workItem.row;
       const orderNo = text(field(row, ["订单号", "订单编号"]));
-      let order = orderCache.get(orderNo);
-      if (!order) {
-        order = await upsertOrder(row, workItem.dorm, batch.id);
-        orderCache.set(orderNo, order);
-        await upsertPickupTask(order.id, workItem.pickupDate);
-      }
-      const sourceKey = `${importKey(row)}|${workItem.index}`;
-      const existing = await findOrderItemBySourceKey(sourceKey);
-      if (existing) {
+      if (!orderWorkItems.has(orderNo)) orderWorkItems.set(orderNo, workItem);
+    });
+    const orderPayloads = [...orderWorkItems.values()].map((workItem) => buildOrderPayload(workItem.row, workItem.dorm, batch.id));
+    const orders = await batchUpsert("orders", orderPayloads, { onConflict: "order_no" }, 120);
+    const orderCache = new Map(orders.map((order) => [order.order_no, order]));
+
+    setMessage("adminOverview", `正在导入：${workItems.length} 件物品，正在生成取件任务...`);
+    const pickupPayloads = [...orderWorkItems.entries()].map(([orderNo, workItem]) => ({
+      order_id: orderCache.get(orderNo).id,
+      pickup_date: workItem.pickupDate || null,
+      status: "待取件",
+      updated_at: new Date().toISOString(),
+    }));
+    await batchUpsert("pickup_tasks", pickupPayloads, { onConflict: "order_id" }, 200);
+
+    setMessage("adminOverview", `正在导入：${workItems.length} 件物品，正在检查重复水洗标...`);
+    const sourceKeys = workItems.map((workItem) => `${importKey(workItem.row)}|${workItem.index}`);
+    const existingSourceKeys = await fetchExistingSourceKeys(sourceKeys);
+    const itemPayloads = [];
+    const itemMeta = new Map();
+    let skippedItems = 0;
+    workItems.forEach((workItem) => {
+      const sourceKey = `${importKey(workItem.row)}|${workItem.index}`;
+      if (existingSourceKeys.has(sourceKey)) {
         skippedItems += 1;
-        continue;
+        return;
       }
-      const item = await upsertOrderItem(order.id, row, nextBarcode(counters, workItem.prefix), sourceKey, workItem.index);
-      createdItems += 1;
-      await insertLog({ orderId: order.id, itemId: item.id, barcode: item.barcode, status: "待取件", note: workItem.dorm.note || "Excel 导入生成水洗标" });
-    }
+      const orderNo = text(field(workItem.row, ["订单号", "订单编号"]));
+      const order = orderCache.get(orderNo);
+      const payload = buildItemPayload(order.id, workItem.row, nextBarcode(counters, workItem.prefix), sourceKey, workItem.index);
+      itemPayloads.push(payload);
+      itemMeta.set(sourceKey, { orderId: order.id, note: workItem.dorm.note || "Excel 导入生成水洗标" });
+    });
+
+    setMessage("adminOverview", `正在导入：${workItems.length} 件物品，正在批量生成水洗标...`);
+    const createdItemRows = itemPayloads.length ? await batchUpsert("order_items", itemPayloads, { onConflict: "source_key" }, 200) : [];
+    const logs = createdItemRows.map((item) => {
+      const meta = itemMeta.get(item.source_key) || {};
+      return {
+        order_id: item.order_id || meta.orderId,
+        item_id: item.id,
+        barcode: item.barcode,
+        status: "待取件",
+        note: meta.note || "Excel 导入生成水洗标",
+        operator_id: currentProfile?.id || null,
+      };
+    });
+    if (logs.length) await batchInsert("status_logs", logs, 300);
+    const createdItems = createdItemRows.length;
     await updateImportBatch(batch.id, orderCache.size, createdItems);
     await refreshAll();
     $("adminOverview").insertAdjacentHTML("afterbegin", renderImportDiagnosis(diagnosis, `导入完成：${orderCache.size} 个订单，新增 ${createdItems} 件物品，跳过重复 ${skippedItems} 件。`));
@@ -690,7 +878,18 @@ async function loadStats() {
 }
 
 async function loadAdmin() {
-  await Promise.all([loadAdminOverview(), loadOrderManagement(), loadExceptions(), loadBatches(), loadRules(), loadLabels()]);
+  await loadAdminOverview();
+  const activeSection = document.querySelector(".subtab.active")?.dataset.adminSection || "overview";
+  if (activeSection !== "overview") await loadAdminSection(activeSection);
+}
+
+async function loadAdminSection(sectionName) {
+  if (sectionName === "orders") return loadOrderManagement();
+  if (sectionName === "exceptions") return loadExceptions();
+  if (sectionName === "batches") return loadBatches();
+  if (sectionName === "rules") return loadRules();
+  if (sectionName === "labels") return loadLabels();
+  return loadAdminOverview();
 }
 
 async function loadAdminOverview() {
@@ -1057,6 +1256,7 @@ function renderLabelRows(rows) {
 async function exportWashLabels() {
   if (!requireClient()) return;
   if (!currentUser) return alert("请先登录后台账号");
+  await ensureXlsx();
   const batchDate = $("washBatchSelect")?.value || currentBusinessBatchDate();
   const { rows, error } = await loadWashLabelRows(5000, batchDate);
   if (error) return alert(`读取水洗标失败：${error.message}`);
@@ -1276,11 +1476,17 @@ async function loadFactoryItems() {
 }
 
 async function startScanner() {
-  if (!("BarcodeDetector" in window)) {
-    $("scanResult").textContent = "当前浏览器不支持原生扫码，请使用扫码枪或手动输入水洗标。";
+  if (!navigator.mediaDevices?.getUserMedia) {
+    $("scanResult").textContent = "当前环境不能打开摄像头，请使用扫码枪或手动输入水洗标。";
     return;
   }
   try {
+    stopScanner();
+    $("scanResult").textContent = "正在打开摄像头...";
+    if (!("BarcodeDetector" in window)) {
+      await startZxingScanner();
+      return;
+    }
     scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
     $("scanVideo").srcObject = scanStream;
     await $("scanVideo").play();
@@ -1293,9 +1499,56 @@ async function startScanner() {
         $("scanResult").textContent = `已识别：${codes[0].rawValue}`;
       }
     }, 700);
+    $("scanResult").textContent = "摄像头已打开，请对准水洗标条码。";
   } catch (error) {
-    $("scanResult").textContent = `摄像头打开失败：${error.message}`;
+    try {
+      await startZxingScanner();
+    } catch (fallbackError) {
+      $("scanResult").textContent = `摄像头扫码不可用：${fallbackError.message}。可使用扫码枪或手动输入水洗标。`;
+    }
   }
+}
+
+function stopScanner() {
+  clearInterval(scanTimer);
+  scanTimer = null;
+  if (scanControls?.stop) scanControls.stop();
+  scanControls = null;
+  if (scanStream) scanStream.getTracks().forEach((track) => track.stop());
+  scanStream = null;
+}
+
+function loadZxing() {
+  if (window.ZXingBrowser) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-zxing-loader="true"]');
+    if (existing) {
+      existing.addEventListener("load", resolve, { once: true });
+      existing.addEventListener("error", () => reject(new Error("备用扫码组件加载失败")), { once: true });
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/umd/index.min.js";
+    script.dataset.zxingLoader = "true";
+    script.onload = resolve;
+    script.onerror = () => reject(new Error("备用扫码组件加载失败，请检查网络后重试"));
+    document.head.appendChild(script);
+  });
+}
+
+async function startZxingScanner() {
+  $("scanResult").textContent = "原生扫码不可用，正在启用备用扫码...";
+  await loadZxing();
+  if (!window.ZXingBrowser?.BrowserMultiFormatReader) throw new Error("备用扫码组件不可用");
+  const reader = new ZXingBrowser.BrowserMultiFormatReader();
+  scanControls = await reader.decodeFromVideoDevice(undefined, $("scanVideo"), (result) => {
+    const value = result?.getText?.() || "";
+    if (value) {
+      $("barcodeInput").value = value;
+      $("scanResult").textContent = `已识别：${value}`;
+    }
+  });
+  $("scanResult").textContent = "备用扫码已打开，请对准水洗标条码。";
 }
 
 async function factoryScan(scanType) {
@@ -1316,13 +1569,45 @@ async function factoryScan(scanType) {
   await refreshAll();
 }
 
+async function copyText(value) {
+  const content = String(value || "");
+  if (!content) return;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(content);
+    } else {
+      const input = document.createElement("textarea");
+      input.value = content;
+      input.setAttribute("readonly", "");
+      input.style.position = "fixed";
+      input.style.opacity = "0";
+      document.body.appendChild(input);
+      input.select();
+      document.execCommand("copy");
+      input.remove();
+    }
+    alert("客服电话已复制");
+  } catch (error) {
+    alert(`复制失败，请手动复制：${content}`);
+  }
+}
+
+function hydrateStaticContent() {
+  document.querySelectorAll("[data-service-phone]").forEach((node) => {
+    node.textContent = AFTER_SALES_PHONE;
+  });
+  document.querySelectorAll("[data-service-phone-link]").forEach((node) => {
+    node.setAttribute("href", `tel:${AFTER_SALES_PHONE}`);
+  });
+}
+
 async function trackByPhone() {
   if (!requireClient()) return;
   const phone = phoneValue($("studentPhone").value);
   if (!phone) return alert("请输入手机号");
   const { data, error } = await sb.rpc("track_by_phone", { query_phone: phone });
   if (error) return setMessage("trackResults", `查询失败：${error.message}`, "warn");
-  $("trackResults").innerHTML = (data || []).map((row) => `<article class="task-card"><div class="card-head"><h3>${escapeHtml(row.customer_name)} · ${escapeHtml(row.order_no)}</h3><span>${escapeHtml(row.item_status || row.order_status)}</span></div><p>${escapeHtml(`${row.school || ""}｜${row.campus || ""}｜${row.building || ""}`)}</p><p>水洗标：${escapeHtml(row.barcode || "未生成")}｜${escapeHtml(row.spec || row.product_name || "")}</p><p>当前订单状态：${escapeHtml(row.order_status || "")}</p>${row.latest_note ? `<p class="hint">最新记录：${escapeHtml(row.latest_note)}</p>` : ""}<p>客服电话：${AFTER_SALES_PHONE}</p></article>`).join("") || '<p class="hint">没有查到订单，请确认手机号是否与下单手机号一致。</p>';
+  $("trackResults").innerHTML = (data || []).map((row) => `<article class="task-card"><div class="card-head"><h3>${escapeHtml(row.customer_name)} · ${escapeHtml(row.order_no)}</h3><span>${escapeHtml(row.item_status || row.order_status)}</span></div><p>${escapeHtml(`${row.school || ""}｜${row.campus || ""}｜${row.building || ""}`)}</p><p>水洗标：${escapeHtml(row.barcode || "未生成")}｜${escapeHtml(row.spec || row.product_name || "")}</p><p>当前订单状态：${escapeHtml(row.order_status || "")}</p>${row.latest_note ? `<p class="hint">最新记录：${escapeHtml(row.latest_note)}</p>` : ""}<p>客服电话：<a class="inline-link" href="tel:${AFTER_SALES_PHONE}">${AFTER_SALES_PHONE}</a></p></article>`).join("") || '<p class="hint">没有查到订单，请确认手机号是否与下单手机号一致。</p>';
 }
 
 function bindEvents() {
@@ -1336,9 +1621,14 @@ function bindEvents() {
   on("refreshFactoryBtn", "click", refreshAll);
   on("courierSearch", "input", loadCourierTasks);
   on("startScanBtn", "click", startScanner);
+  on("stopScanBtn", "click", () => {
+    stopScanner();
+    if ($("scanResult")) $("scanResult").textContent = "摄像头已关闭。";
+  });
   on("factoryInBtn", "click", () => factoryScan("factory_in"));
   on("factoryOutBtn", "click", () => factoryScan("factory_out"));
   on("trackBtn", "click", trackByPhone);
+  on("copyServicePhoneBtn", "click", () => copyText(AFTER_SALES_PHONE));
   on("studentPhone", "keydown", (event) => {
     if (event.key === "Enter") trackByPhone();
   });
@@ -1377,6 +1667,9 @@ if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("./sw.js").catch(() => {});
 }
 
+window.addEventListener("beforeunload", stopScanner);
+
+hydrateStaticContent();
 bindEvents();
 initSupabase();
 applyRouteFromUrl();
