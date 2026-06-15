@@ -3,10 +3,67 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>配送员端 - 事事通</title>
-    <meta http-equiv="refresh" content="0; url=./index.html?page=courier" />
+    <meta name="theme-color" content="#f26a1b" />
+    <title>配送员工作台 - 事事通校园配送系统</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   </head>
-  <body>
-    <a href="./index.html?page=courier">进入配送员端</a>
+  <body data-app-mode="courier" class="role-page courier-page">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">配</div>
+        <div>
+          <h1>配送员工作台</h1>
+          <p>取件任务、送回任务、电话短信、异常处理</p>
+        </div>
+      </div>
+      <div class="session-actions">
+        <span id="sessionLabel">未连接</span>
+        <button id="signOutBtn" class="ghost hidden" type="button">退出</button>
+      </div>
+    </header>
+
+    <main class="single-layout">
+      <section id="loginPanel" class="panel login-card" data-guest-only>
+        <h2>配送员登录</h2>
+        <p id="authMessage" class="hint">请先登录配送员账号。</p>
+        <input id="loginEmail" class="input" placeholder="邮箱" />
+        <input id="loginPassword" class="input" placeholder="密码" type="password" />
+        <button id="loginBtn" type="button">登录</button>
+      </section>
+
+      <section class="workspace hidden" data-auth-only>
+        <div class="panel hero-panel">
+          <h2>今日配送任务</h2>
+          <p>按学校、校区、楼栋查看任务；可直接拨打电话、发送短信，并标记取件或送达状态。</p>
+          <div class="toolbar">
+            <input id="courierSearch" class="input" placeholder="搜索姓名、电话、学校、楼栋、水洗标" />
+            <button id="refreshCourierBtn" type="button">刷新任务</button>
+          </div>
+        </div>
+
+        <div class="split">
+          <section class="panel">
+            <h2>取件任务</h2>
+            <div id="pickupTaskList" class="card-list"></div>
+          </section>
+          <section class="panel">
+            <h2>送回任务</h2>
+            <div id="returnTaskList" class="card-list"></div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="orderDialog" class="modal">
+      <div class="modal-head">
+        <h2 id="orderDialogTitle">订单详情</h2>
+        <button id="closeOrderDialogBtn" class="ghost" type="button">关闭</button>
+      </div>
+      <div id="orderDialogBody" class="stack"></div>
+    </dialog>
+
+    <script src="./app.js"></script>
   </body>
 </html>

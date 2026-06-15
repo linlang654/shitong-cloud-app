@@ -10,7 +10,7 @@
     <script src="./vendor/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   </head>
-  <body>
+  <body data-app-mode="admin">
     <header class="topbar">
       <div class="brand">
         <div class="brand-mark">事</div>
@@ -78,6 +78,7 @@
 
           <nav class="subtabs" aria-label="后台功能">
             <button class="subtab active" data-admin-section="overview" type="button">概览</button>
+            <button class="subtab" data-admin-section="orders" type="button">订单管理</button>
             <button class="subtab" data-admin-section="exceptions" type="button">异常修正</button>
             <button class="subtab" data-admin-section="batches" type="button">批次管理</button>
             <button class="subtab" data-admin-section="rules" type="button">规则维护</button>
@@ -85,6 +86,7 @@
           </nav>
 
           <section id="adminOverview" class="admin-section stack"></section>
+          <section id="adminOrders" class="admin-section stack hidden"></section>
           <section id="adminExceptions" class="admin-section stack hidden"></section>
           <section id="adminBatches" class="admin-section stack hidden"></section>
           <section id="adminRules" class="admin-section stack hidden"></section>

@@ -3,10 +3,63 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>工厂端 - 事事通</title>
-    <meta http-equiv="refresh" content="0; url=./index.html?page=factory" />
+    <meta name="theme-color" content="#f26a1b" />
+    <title>工厂扫码台 - 事事通校园配送系统</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   </head>
-  <body>
-    <a href="./index.html?page=factory">进入工厂端</a>
+  <body data-app-mode="factory" class="role-page factory-page">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">厂</div>
+        <div>
+          <h1>工厂扫码台</h1>
+          <p>扫码入库、扫码出库、自动生成送回任务</p>
+        </div>
+      </div>
+      <div class="session-actions">
+        <span id="sessionLabel">未连接</span>
+        <button id="signOutBtn" class="ghost hidden" type="button">退出</button>
+      </div>
+    </header>
+
+    <main class="single-layout">
+      <section id="loginPanel" class="panel login-card" data-guest-only>
+        <h2>工厂登录</h2>
+        <p id="authMessage" class="hint">请先登录工厂账号。</p>
+        <input id="loginEmail" class="input" placeholder="邮箱" />
+        <input id="loginPassword" class="input" placeholder="密码" type="password" />
+        <button id="loginBtn" type="button">登录</button>
+      </section>
+
+      <section class="workspace hidden" data-auth-only>
+        <div class="split factory-grid">
+          <section class="panel scanner-panel">
+            <h2>工厂扫码</h2>
+            <video id="scanVideo" class="scan-video" muted playsinline></video>
+            <div class="toolbar">
+              <input id="barcodeInput" class="input" placeholder="扫码或输入水洗标" />
+              <button id="startScanBtn" type="button">打开摄像头</button>
+            </div>
+            <div class="toolbar two">
+              <button id="factoryInBtn" type="button">扫码入库</button>
+              <button id="factoryOutBtn" type="button">扫码出库</button>
+            </div>
+            <p id="scanResult" class="hint">摄像头扫码需要 HTTPS；本地可用扫码枪或手动输入。</p>
+          </section>
+
+          <section class="panel">
+            <div class="card-head">
+              <h2>待出库物品</h2>
+              <button id="refreshFactoryBtn" class="ghost" type="button">刷新</button>
+            </div>
+            <div id="factoryItemList" class="card-list"></div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
   </body>
 </html>

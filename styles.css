@@ -125,6 +125,35 @@ button:hover,
   padding: 16px;
 }
 
+.single-layout {
+  width: min(1180px, 100%);
+  margin: 0 auto;
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.single-layout.narrow {
+  width: min(760px, 100%);
+}
+
+.role-page .workspace {
+  display: grid;
+  gap: 12px;
+}
+
+.login-card {
+  width: min(460px, 100%);
+  margin: 40px auto 0;
+  display: grid;
+  gap: 10px;
+  box-shadow: var(--shadow);
+}
+
+.student-hero {
+  margin-top: 28px;
+}
+
 .side {
   display: grid;
   gap: 12px;
@@ -160,6 +189,11 @@ button:hover,
 .input:focus {
   border-color: var(--orange);
   box-shadow: 0 0 0 3px rgba(242, 106, 27, 0.12);
+}
+
+.compact-input {
+  min-height: 34px;
+  padding: 6px 8px;
 }
 
 .setup-panel,
@@ -327,6 +361,68 @@ button:hover,
 .card-list {
   display: grid;
   gap: 10px;
+}
+
+.delivery-group {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  overflow: clip;
+}
+
+.delivery-group + .delivery-group {
+  margin-top: 10px;
+}
+
+.delivery-group summary {
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  font-weight: 900;
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+.delivery-group summary span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.school-group > summary {
+  background: #fff7df;
+  color: #3a2412;
+}
+
+.campus-group {
+  border-color: #eadfcd;
+}
+
+.campus-group > summary {
+  background: #fffaf0;
+}
+
+.building-group {
+  border-color: #eee9e2;
+}
+
+.building-group > summary {
+  background: #fff;
+}
+
+.group-nest {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  background: #fbfaf7;
+}
+
+.building-group .card-list {
+  padding: 10px;
 }
 
 .record-card {
@@ -498,6 +594,30 @@ button.danger,
   background: #fff;
 }
 
+.image-modal {
+  width: min(980px, calc(100vw - 20px));
+}
+
+.image-preview-body {
+  padding: 12px;
+}
+
+.image-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.image-preview-grid img {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  cursor: zoom-in;
+}
+
 .modal-head h2 {
   margin: 0;
   font-size: 18px;
@@ -608,6 +728,15 @@ code {
     padding: 10px;
   }
 
+  .single-layout {
+    padding: 10px;
+  }
+
+  .login-card,
+  .student-hero {
+    margin-top: 14px;
+  }
+
   .side,
   .split {
     grid-template-columns: 1fr;
@@ -646,5 +775,30 @@ code {
 
   .card-head {
     flex-direction: column;
+  }
+
+  .delivery-group summary {
+    min-height: 48px;
+    padding: 11px 10px;
+  }
+
+  .group-nest,
+  .building-group .card-list {
+    padding: 8px;
+  }
+
+  .actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .actions button,
+  .actions a {
+    min-height: 44px;
+    text-align: center;
+  }
+
+  .image-preview-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

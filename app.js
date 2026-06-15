@@ -4,6 +4,19 @@ const DEFAULT_SUPABASE_CONFIG = {
   url: "https://ukzjgjfefqlyeqecqyiz.supabase.co",
   anonKey: "sb_publishable_OAwXdqIPnQqYHUJj4Md-pw_HAFIMMcO",
 };
+const APP_MODE = document.body?.dataset.appMode || new URLSearchParams(window.location.search).get("page") || "admin";
+const ROLE_LABELS = {
+  admin: "后台",
+  courier: "配送员",
+  factory: "工厂",
+  student: "学生查询",
+};
+const ROLE_ACCESS = {
+  admin: ["admin"],
+  courier: ["admin", "courier"],
+  factory: ["admin", "factory"],
+};
+const ORDER_STATUSES = ["待取件", "已取件", "未找到", "已入厂", "已出库", "配送中", "已送达", "异常"];
 
 let sb = null;
 let currentUser = null;
@@ -11,8 +24,11 @@ let currentProfile = null;
 let scanStream = null;
 let scanTimer = null;
 let recognitionRules = [];
+const imagePreviewMap = new Map();
+let orderManagementRows = [];
 
 const $ = (id) => document.getElementById(id);
+const on = (id, eventName, handler) => $(id)?.addEventListener(eventName, handler);
 
 function text(value) {
   return String(value ?? "").replace(/_x000d_/gi, "\n").replace(/\s+/g, " ").trim();
@@ -129,8 +145,8 @@ function loadConfig() {
 
 function saveConfig() {
   const config = {
-    url: text($("supabaseUrl").value).replace(/\/rest\/v1\/?$/, ""),
-    anonKey: text($("supabaseAnonKey").value),
+    url: text($("supabaseUrl")?.value).replace(/\/rest\/v1\/?$/, ""),
+    anonKey: text($("supabaseAnonKey")?.value),
   };
   localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
   initSupabase();
@@ -139,15 +155,15 @@ function saveConfig() {
 
 function initSupabase() {
   const config = loadConfig();
-  $("supabaseUrl").value = config.url || "";
-  $("supabaseAnonKey").value = config.anonKey || "";
+  if ($("supabaseUrl")) $("supabaseUrl").value = config.url || "";
+  if ($("supabaseAnonKey")) $("supabaseAnonKey").value = config.anonKey || "";
   if (config.url && config.anonKey && window.supabase) {
     sb = window.supabase.createClient(config.url, config.anonKey);
-    $("sessionLabel").textContent = "已连接，未登录";
+    if ($("sessionLabel")) $("sessionLabel").textContent = APP_MODE === "student" ? "公开查询" : "已连接，未登录";
     refreshSession();
   } else {
     sb = null;
-    $("sessionLabel").textContent = "未连接";
+    if ($("sessionLabel")) $("sessionLabel").textContent = "未连接";
   }
 }
 
@@ -165,16 +181,20 @@ async function refreshSession() {
   currentUser = data.user || null;
   currentProfile = null;
   if (!currentUser) {
-    $("signOutBtn").classList.add("hidden");
-    $("loginPanel").classList.remove("hidden");
+    if ($("sessionLabel")) $("sessionLabel").textContent = APP_MODE === "student" ? "公开查询" : "已连接，未登录";
+    $("signOutBtn")?.classList.add("hidden");
+    $("loginPanel")?.classList.remove("hidden");
+    setAuthGate(false);
     return;
   }
   const result = await sb.from("profiles").select("*").eq("id", currentUser.id).maybeSingle();
   currentProfile = result.data || null;
-  $("sessionLabel").textContent = `${currentProfile?.name || currentUser.email} · ${currentProfile?.role || "未设置角色"}`;
-  $("signOutBtn").classList.remove("hidden");
-  $("loginPanel").classList.add("hidden");
-  await refreshAll();
+  if ($("sessionLabel")) $("sessionLabel").textContent = `${currentProfile?.name || currentUser.email} · ${currentProfile?.role || "未设置角色"}`;
+  $("signOutBtn")?.classList.remove("hidden");
+  $("loginPanel")?.classList.add("hidden");
+  const isAllowed = canUseCurrentPage();
+  setAuthGate(isAllowed);
+  if (isAllowed) await refreshAll();
 }
 
 async function login() {
@@ -192,20 +212,51 @@ async function signOut() {
   await sb.auth.signOut();
   currentUser = null;
   currentProfile = null;
-  $("sessionLabel").textContent = "已连接，未登录";
-  $("signOutBtn").classList.add("hidden");
-  $("loginPanel").classList.remove("hidden");
+  if ($("sessionLabel")) $("sessionLabel").textContent = "已连接，未登录";
+  $("signOutBtn")?.classList.add("hidden");
+  $("loginPanel")?.classList.remove("hidden");
+  setAuthGate(false);
+}
+
+function canUseCurrentPage() {
+  if (APP_MODE === "student") return true;
+  const allowedRoles = ROLE_ACCESS[APP_MODE] || ROLE_ACCESS.admin;
+  const role = currentProfile?.role || "";
+  return allowedRoles.includes(role);
+}
+
+function setAuthGate(isAllowed) {
+  const requiresLogin = APP_MODE !== "student";
+  document.querySelectorAll("[data-auth-only]").forEach((node) => node.classList.toggle("hidden", requiresLogin && !isAllowed));
+  document.querySelectorAll("[data-guest-only]").forEach((node) => node.classList.toggle("hidden", !requiresLogin || isAllowed));
+  if (requiresLogin && currentUser && !isAllowed) {
+    setMessage("authMessage", `当前账号角色为“${currentProfile?.role || "未设置"}”，不能进入${ROLE_LABELS[APP_MODE] || "此"}页面。`, "warn");
+  } else if (requiresLogin && !currentUser) {
+    setMessage("authMessage", `请先登录${ROLE_LABELS[APP_MODE] || "员工"}账号。`);
+  } else {
+    setMessage("authMessage", "");
+  }
 }
 
 function switchView(viewName) {
   document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.view === viewName));
   document.querySelectorAll(".view").forEach((view) => view.classList.add("hidden"));
   $(`${viewName}View`)?.classList.remove("hidden");
+  if (APP_MODE === "admin" && sb && currentUser) {
+    if (viewName === "courier") loadCourierTasks();
+    if (viewName === "factory") loadFactoryItems();
+    if (viewName === "admin") loadAdmin();
+  }
 }
 
 function applyRouteFromUrl() {
   const params = new URLSearchParams(window.location.search);
   const page = params.get("page") || params.get("view");
+  if (APP_MODE === "admin" && ["courier", "factory", "student", "track"].includes(page)) {
+    const target = page === "student" || page === "track" ? "track" : page;
+    window.location.replace(`./${target}.html`);
+    return;
+  }
   const routeMap = {
     admin: "admin",
     courier: "courier",
@@ -213,7 +264,7 @@ function applyRouteFromUrl() {
     student: "student",
     track: "student",
   };
-  if (!routeMap[page]) return;
+  if (!routeMap[page] || APP_MODE !== "admin") return;
   document.body.classList.add("route-page", `route-${routeMap[page]}`);
   switchView(routeMap[page]);
 }
@@ -614,9 +665,14 @@ async function insertLog({ orderId, itemId = null, barcode = "", status, note = 
 }
 
 async function refreshAll() {
-  if (!sb || !currentUser) return;
+  if (!sb || APP_MODE === "student" || !currentUser || !canUseCurrentPage()) return;
   await loadRecognitionRules();
-  await Promise.all([loadStats(), loadAdmin(), loadCourierTasks(), loadFactoryItems()]);
+  const tasks = [loadStats()];
+  if (APP_MODE === "admin") tasks.push(loadAdmin(), loadCourierTasks(), loadFactoryItems());
+  if (APP_MODE === "courier") tasks.push(loadCourierTasks());
+  if (APP_MODE === "factory") tasks.push(loadFactoryItems());
+  await Promise.all(tasks);
+  if (APP_MODE === "factory") $("barcodeInput")?.focus();
 }
 
 async function loadStats() {
@@ -627,14 +683,14 @@ async function loadStats() {
     sb.from("factory_scans").select("*", { count: "exact", head: true }).eq("scan_type", "factory_in").gte("created_at", `${today}T00:00:00`),
     sb.from("factory_scans").select("*", { count: "exact", head: true }).eq("scan_type", "factory_out").gte("created_at", `${today}T00:00:00`),
   ]);
-  $("statOrders").textContent = orders.count || 0;
-  $("statItems").textContent = items.count || 0;
-  $("statIn").textContent = ins.count || 0;
-  $("statOut").textContent = outs.count || 0;
+  if ($("statOrders")) $("statOrders").textContent = orders.count || 0;
+  if ($("statItems")) $("statItems").textContent = items.count || 0;
+  if ($("statIn")) $("statIn").textContent = ins.count || 0;
+  if ($("statOut")) $("statOut").textContent = outs.count || 0;
 }
 
 async function loadAdmin() {
-  await Promise.all([loadAdminOverview(), loadExceptions(), loadBatches(), loadRules(), loadLabels()]);
+  await Promise.all([loadAdminOverview(), loadOrderManagement(), loadExceptions(), loadBatches(), loadRules(), loadLabels()]);
 }
 
 async function loadAdminOverview() {
@@ -660,6 +716,134 @@ async function loadAdminOverview() {
         </table>
       </div>
     </section>`;
+}
+
+function formatDateTime(value) {
+  const date = parseDate(value);
+  return date ? `${dateOnly(date)} ${pad(date.getHours())}:${pad(date.getMinutes())}` : "";
+}
+
+function orderBusinessTime(order) {
+  return parseDate(order.pay_time) || parseDate(order.order_time);
+}
+
+function inDateRange(order, startText, endText) {
+  const businessTime = orderBusinessTime(order);
+  if (!businessTime) return !startText && !endText;
+  if (startText) {
+    const start = parseDateOnly(startText);
+    if (start && businessTime < start) return false;
+  }
+  if (endText) {
+    const end = parseDateOnly(endText);
+    if (end) {
+      end.setHours(23, 59, 59, 999);
+      if (businessTime > end) return false;
+    }
+  }
+  return true;
+}
+
+async function loadOrderManagement() {
+  const { data, error } = await sb
+    .from("orders")
+    .select("*, order_items(id,barcode,item_status,product_name,spec)")
+    .order("created_at", { ascending: false })
+    .limit(500);
+  if (error) return setMessage("adminOrders", error.message, "warn");
+  orderManagementRows = data || [];
+  renderOrderManagement();
+}
+
+function renderOrderManagement() {
+  const keyword = text($("orderSearch")?.value).toLowerCase();
+  const selectedStatus = text($("orderStatusFilter")?.value);
+  const startDate = text($("orderStartDate")?.value);
+  const endDate = text($("orderEndDate")?.value);
+  $("adminOrders").innerHTML = `
+    <section class="panel table-panel">
+      <h2>订单管理</h2>
+      <div class="toolbar wrap filter-toolbar">
+        <input id="orderSearch" class="input" placeholder="搜索订单号、姓名、电话、学校、楼栋、水洗标" value="${escapeHtml(keyword)}" />
+        <select id="orderStatusFilter" class="input">
+          <option value="">全部状态</option>
+          ${ORDER_STATUSES.map((status) => `<option value="${escapeHtml(status)}" ${status === selectedStatus ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}
+        </select>
+        <input id="orderStartDate" class="input" type="date" value="${escapeHtml(startDate)}" />
+        <input id="orderEndDate" class="input" type="date" value="${escapeHtml(endDate)}" />
+        <button id="clearOrderFiltersBtn" class="ghost" type="button">清空筛选</button>
+      </div>
+      <p id="orderFilterSummary" class="hint">时间筛选优先按付款时间，付款时间为空时按下单时间。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>订单号</th><th>姓名</th><th>电话</th><th>宿舍</th><th>状态</th><th>付款时间</th><th>下单时间</th><th>物品数</th><th>操作</th></tr></thead>
+          <tbody id="orderRows"></tbody>
+        </table>
+      </div>
+    </section>`;
+  bindOrderManagementFilters();
+  applyOrderFilters();
+}
+
+function filteredOrderRows() {
+  const keyword = text($("orderSearch")?.value).toLowerCase();
+  const selectedStatus = text($("orderStatusFilter")?.value);
+  const startDate = text($("orderStartDate")?.value);
+  const endDate = text($("orderEndDate")?.value);
+  return orderManagementRows.filter((order) => {
+    const searchable = `${order.order_no} ${order.customer_name} ${order.phone} ${order.school} ${order.campus} ${order.building} ${order.address} ${(order.order_items || []).map((item) => `${item.barcode} ${item.product_name} ${item.spec}`).join(" ")}`.toLowerCase();
+    if (keyword && !searchable.includes(keyword)) return false;
+    if (selectedStatus && order.order_status !== selectedStatus) return false;
+    return inDateRange(order, startDate, endDate);
+  });
+}
+
+function applyOrderFilters() {
+  const rows = filteredOrderRows();
+  if ($("orderRows")) $("orderRows").innerHTML = renderOrderRows(rows);
+  if ($("orderFilterSummary")) $("orderFilterSummary").textContent = `共 ${rows.length} 单；时间筛选优先按付款时间，付款时间为空时按下单时间。`;
+}
+
+function renderOrderRows(rows) {
+  return rows.map((order) => `
+    <tr>
+      <td>${escapeHtml(order.order_no)}</td>
+      <td>${escapeHtml(order.customer_name)}</td>
+      <td>${escapeHtml(order.phone)}</td>
+      <td>${escapeHtml(`${order.school || ""}${order.campus || ""}${order.building || ""}`)}</td>
+      <td>
+        <select class="input compact-input" data-order-status="${order.id}">
+          ${ORDER_STATUSES.map((status) => `<option value="${escapeHtml(status)}" ${status === order.order_status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}
+        </select>
+      </td>
+      <td>${escapeHtml(formatDateTime(order.pay_time))}</td>
+      <td>${escapeHtml(formatDateTime(order.order_time))}</td>
+      <td>${order.order_items?.length || 0}</td>
+      <td><button class="ghost small" type="button" data-detail="${order.id}">详情</button></td>
+    </tr>`).join("") || '<tr><td colspan="9">暂无符合条件的订单</td></tr>';
+}
+
+function bindOrderManagementFilters() {
+  on("orderSearch", "input", applyOrderFilters);
+  on("orderStatusFilter", "change", applyOrderFilters);
+  on("orderStartDate", "change", applyOrderFilters);
+  on("orderEndDate", "change", applyOrderFilters);
+  on("clearOrderFiltersBtn", "click", () => {
+    if ($("orderSearch")) $("orderSearch").value = "";
+    if ($("orderStatusFilter")) $("orderStatusFilter").value = "";
+    if ($("orderStartDate")) $("orderStartDate").value = "";
+    if ($("orderEndDate")) $("orderEndDate").value = "";
+    applyOrderFilters();
+  });
+}
+
+async function updateOrderStatus(orderId, status) {
+  const { error } = await sb.from("orders").update({ order_status: status, updated_at: new Date().toISOString() }).eq("id", orderId);
+  if (error) return alert(error.message);
+  await insertLog({ orderId, status, note: `后台手动改状态为：${status}` });
+  const target = orderManagementRows.find((order) => order.id === orderId);
+  if (target) target.order_status = status;
+  applyOrderFilters();
 }
 
 async function loadExceptions() {
@@ -925,7 +1109,7 @@ async function showOrderDetail(orderId) {
 }
 
 function matchSearch(content) {
-  const keyword = text($("courierSearch").value).toLowerCase();
+  const keyword = text($("courierSearch")?.value).toLowerCase();
   return !keyword || content.toLowerCase().includes(keyword);
 }
 
@@ -933,35 +1117,133 @@ function contactButtons(phone, message) {
   return `<div class="actions"><a class="button-link" href="tel:${escapeHtml(phone)}">打电话</a><a class="button-link" href="sms:${escapeHtml(phone)}?body=${encodeURIComponent(message)}">发短信</a></div>`;
 }
 
+function areaLabel(value, fallback) {
+  return text(value) || fallback;
+}
+
+function groupCountLabel(count) {
+  return `${count} 单`;
+}
+
+function groupByArea(records, renderCard) {
+  const sortedRecords = [...records].sort((left, right) => {
+    const a = left.order || {};
+    const b = right.order || {};
+    return `${a.school || ""}|${a.campus || ""}|${a.building || ""}|${a.customer_name || ""}`.localeCompare(`${b.school || ""}|${b.campus || ""}|${b.building || ""}|${b.customer_name || ""}`, "zh-CN", { numeric: true });
+  });
+  const schools = new Map();
+  sortedRecords.forEach((record) => {
+    const order = record.order || {};
+    const school = areaLabel(order.school, "学校未识别");
+    const campus = areaLabel(order.campus, "校区未识别");
+    const building = areaLabel(order.building, "楼栋未识别");
+    if (!schools.has(school)) schools.set(school, { count: 0, campuses: new Map() });
+    const schoolGroup = schools.get(school);
+    schoolGroup.count += 1;
+    if (!schoolGroup.campuses.has(campus)) schoolGroup.campuses.set(campus, { count: 0, buildings: new Map() });
+    const campusGroup = schoolGroup.campuses.get(campus);
+    campusGroup.count += 1;
+    if (!campusGroup.buildings.has(building)) campusGroup.buildings.set(building, []);
+    campusGroup.buildings.get(building).push(record);
+  });
+
+  return [...schools.entries()].map(([school, schoolGroup]) => `
+    <details class="delivery-group school-group" open>
+      <summary>${escapeHtml(school)} <span>${groupCountLabel(schoolGroup.count)}</span></summary>
+      <div class="group-nest">
+        ${[...schoolGroup.campuses.entries()].map(([campus, campusGroup]) => `
+          <details class="delivery-group campus-group" open>
+            <summary>${escapeHtml(campus)} <span>${groupCountLabel(campusGroup.count)}</span></summary>
+            <div class="group-nest">
+              ${[...campusGroup.buildings.entries()].map(([building, buildingRecords]) => `
+                <details class="delivery-group building-group" open>
+                  <summary>${escapeHtml(building)} <span>${groupCountLabel(buildingRecords.length)}</span></summary>
+                  <div class="card-list">${buildingRecords.map(renderCard).join("")}</div>
+                </details>`).join("")}
+            </div>
+          </details>`).join("")}
+      </div>
+    </details>`).join("");
+}
+
+function collectOrderImages(order) {
+  const items = Array.isArray(order.order_items) ? order.order_items : [];
+  return [...new Set(items.flatMap((item) => text(item.image_links).split(/[\n,，\s]+/).filter((url) => /^https?:\/\//i.test(url))))];
+}
+
+function previewButton(key, images) {
+  if (!images.length) return "";
+  imagePreviewMap.set(key, images);
+  return `<button class="ghost" type="button" data-preview-images="${escapeHtml(key)}">看图片</button>`;
+}
+
+function ensureImageDialog() {
+  let dialog = $("imagePreviewDialog");
+  if (dialog) return dialog;
+  dialog = document.createElement("dialog");
+  dialog.id = "imagePreviewDialog";
+  dialog.className = "modal image-modal";
+  dialog.innerHTML = `
+    <div class="modal-head">
+      <h2>图片预览</h2>
+      <button id="closeImagePreviewBtn" class="ghost" type="button">关闭</button>
+    </div>
+    <div id="imagePreviewBody" class="image-preview-body"></div>`;
+  document.body.appendChild(dialog);
+  $("closeImagePreviewBtn").addEventListener("click", () => dialog.close());
+  return dialog;
+}
+
+function showImagePreview(key) {
+  const images = imagePreviewMap.get(key) || [];
+  if (!images.length) return alert("这个订单暂无图片");
+  const dialog = ensureImageDialog();
+  $("imagePreviewBody").innerHTML = `
+    <p class="hint">单击查看缩略图，双击图片可在新窗口放大。</p>
+    <div class="image-preview-grid">
+      ${images.map((url, index) => `<img src="${escapeHtml(url)}" alt="订单图片 ${index + 1}" data-full-image="${escapeHtml(url)}" loading="lazy" />`).join("")}
+    </div>`;
+  dialog.showModal();
+}
+
 async function loadCourierTasks() {
-  const pickup = await sb.from("pickup_tasks").select("*, orders(*)").order("pickup_date", { ascending: true });
+  const pickup = await sb.from("pickup_tasks").select("*, orders(*, order_items(barcode,image_links,product_name,spec,item_status))").order("pickup_date", { ascending: true });
   const returns = await sb.from("return_tasks").select("*, order_items(*, orders(*))").order("outbound_date", { ascending: false });
   if (!pickup.error) renderPickupTasks(pickup.data || []);
   if (!returns.error) renderReturnTasks(returns.data || []);
 }
 
 function renderPickupTasks(tasks) {
-  $("pickupTaskList").innerHTML = tasks.filter((task) => {
+  const records = tasks.filter((task) => {
     const order = task.orders || {};
     return matchSearch(`${order.customer_name} ${order.phone} ${order.school} ${order.campus} ${order.building} ${order.address}`);
-  }).map((task) => {
-    const order = task.orders || {};
-    const sms = `【事事通】同学您好，事事洗护今晚将到${order.school || ""}${order.campus || ""}${order.building || ""}取件，请把衣物/鞋子装袋并放好姓名电话纸条。`;
-    return `<article class="task-card ${task.status === "已取件" ? "done" : ""}"><div class="card-head"><h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3><span>${escapeHtml(task.status)}</span></div><p>${escapeHtml(`${task.pickup_date || "日期未定"}｜${order.school || ""}｜${order.campus || ""}｜${order.building || ""}`)}</p><p>${escapeHtml(order.address || "")}</p><p>订单号：${escapeHtml(order.order_no || "")}</p>${order.exception_note ? `<p class="warn">异常：${escapeHtml(order.exception_note)}</p>` : ""}${contactButtons(order.phone || "", sms)}<div class="actions"><button type="button" data-pickup="${task.id}" data-order="${order.id}" data-status="已取件">已取到</button><button type="button" data-pickup="${task.id}" data-order="${order.id}" data-status="未找到">未找到</button><button type="button" data-pickup="${task.id}" data-order="${order.id}" data-status="异常">异常</button><button class="ghost" type="button" data-detail="${order.id}">详情</button></div></article>`;
-  }).join("") || '<p class="hint">暂无取件任务</p>';
+  }).map((task) => ({ task, order: task.orders || {} }));
+  $("pickupTaskList").innerHTML = records.length ? groupByArea(records, renderPickupCard) : '<p class="hint">暂无取件任务</p>';
+}
+
+function renderPickupCard(record) {
+  const { task, order } = record;
+  const sms = `【事事通】同学您好，事事洗护今晚将到${order.school || ""}${order.campus || ""}${order.building || ""}取件，请把衣物/鞋子装袋并放好姓名电话纸条。`;
+  const images = collectOrderImages(order);
+  const imageBtn = previewButton(`pickup-${task.id}`, images);
+  return `<article class="task-card ${task.status === "已取件" ? "done" : ""}"><div class="card-head"><h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3><span>${escapeHtml(task.status)}</span></div><p>${escapeHtml(`${task.pickup_date || "日期未定"}｜${order.school || ""}｜${order.campus || ""}｜${order.building || ""}`)}</p><p>${escapeHtml(order.address || "")}</p><p>订单号：${escapeHtml(order.order_no || "")}</p>${order.exception_note ? `<p class="warn">异常：${escapeHtml(order.exception_note)}</p>` : ""}${contactButtons(order.phone || "", sms)}<div class="actions"><button type="button" data-pickup="${task.id}" data-order="${order.id}" data-status="已取件">已取到</button><button type="button" data-pickup="${task.id}" data-order="${order.id}" data-status="未找到">未找到</button><button type="button" data-pickup="${task.id}" data-order="${order.id}" data-status="异常">异常</button>${imageBtn}<button class="ghost" type="button" data-detail="${order.id}">详情</button></div></article>`;
 }
 
 function renderReturnTasks(tasks) {
-  $("returnTaskList").innerHTML = tasks.filter((task) => {
+  const records = tasks.filter((task) => {
     const item = task.order_items || {};
     const order = item.orders || {};
     return matchSearch(`${item.barcode} ${order.customer_name} ${order.phone} ${order.school} ${order.campus} ${order.building}`);
-  }).map((task) => {
-    const item = task.order_items || {};
-    const order = item.orders || {};
-    const sms = `【事事通】同学您好，您的事事洗护订单已出库，配送员将送回${order.school || ""}${order.campus || ""}${order.building || ""}，请保持电话畅通。`;
-    return `<article class="task-card ${task.status === "已送达" ? "done" : ""}"><div class="card-head"><h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3><span>${escapeHtml(task.status)}</span></div><p>${escapeHtml(`${task.outbound_date || ""}｜${order.school || ""}｜${order.campus || ""}｜${order.building || ""}`)}</p><p>水洗标：${escapeHtml(item.barcode || "")}｜${escapeHtml(item.spec || item.product_name || "")}</p>${contactButtons(order.phone || "", sms)}<div class="actions"><button type="button" data-return="${task.id}" data-item="${item.id}" data-order="${order.id}" data-status="配送中">配送中</button><button type="button" data-return="${task.id}" data-item="${item.id}" data-order="${order.id}" data-status="已送达">已送达</button><button type="button" data-return="${task.id}" data-item="${item.id}" data-order="${order.id}" data-status="异常">异常</button><button class="ghost" type="button" data-detail="${order.id}">详情</button></div></article>`;
-  }).join("") || '<p class="hint">暂无送回任务</p>';
+  }).map((task) => ({ task, item: task.order_items || {}, order: task.order_items?.orders || {} }));
+  $("returnTaskList").innerHTML = records.length ? groupByArea(records, renderReturnCard) : '<p class="hint">暂无送回任务</p>';
+}
+
+function renderReturnCard(record) {
+  const { task, item, order } = record;
+  const sms = `【事事通】同学您好，您的事事洗护订单已出库，配送员将送回${order.school || ""}${order.campus || ""}${order.building || ""}，请保持电话畅通。`;
+  const images = text(item.image_links).split(/[\n,，\s]+/).filter((url) => /^https?:\/\//i.test(url));
+  const imageBtn = previewButton(`return-${task.id}`, images);
+  return `<article class="task-card ${task.status === "已送达" ? "done" : ""}"><div class="card-head"><h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3><span>${escapeHtml(task.status)}</span></div><p>${escapeHtml(`${task.outbound_date || ""}｜${order.school || ""}｜${order.campus || ""}｜${order.building || ""}`)}</p><p>水洗标：${escapeHtml(item.barcode || "")}｜${escapeHtml(item.spec || item.product_name || "")}</p>${contactButtons(order.phone || "", sms)}<div class="actions"><button type="button" data-return="${task.id}" data-item="${item.id}" data-order="${order.id}" data-status="配送中">配送中</button><button type="button" data-return="${task.id}" data-item="${item.id}" data-order="${order.id}" data-status="已送达">已送达</button><button type="button" data-return="${task.id}" data-item="${item.id}" data-order="${order.id}" data-status="异常">异常</button>${imageBtn}<button class="ghost" type="button" data-detail="${order.id}">详情</button></div></article>`;
 }
 
 async function updatePickup(taskId, orderId, status) {
@@ -1044,19 +1326,23 @@ async function trackByPhone() {
 }
 
 function bindEvents() {
-  $("saveConfigBtn").addEventListener("click", saveConfig);
-  $("loginBtn").addEventListener("click", login);
-  $("signOutBtn").addEventListener("click", signOut);
-  $("fileInput").addEventListener("change", handleImport);
-  $("exportWashLabelsBtn").addEventListener("click", exportWashLabels);
-  $("refreshAdminBtn").addEventListener("click", refreshAll);
-  $("refreshCourierBtn").addEventListener("click", refreshAll);
-  $("courierSearch").addEventListener("input", loadCourierTasks);
-  $("startScanBtn").addEventListener("click", startScanner);
-  $("factoryInBtn").addEventListener("click", () => factoryScan("factory_in"));
-  $("factoryOutBtn").addEventListener("click", () => factoryScan("factory_out"));
-  $("trackBtn").addEventListener("click", trackByPhone);
-  $("closeOrderDialogBtn").addEventListener("click", () => $("orderDialog").close());
+  on("saveConfigBtn", "click", saveConfig);
+  on("loginBtn", "click", login);
+  on("signOutBtn", "click", signOut);
+  on("fileInput", "change", handleImport);
+  on("exportWashLabelsBtn", "click", exportWashLabels);
+  on("refreshAdminBtn", "click", refreshAll);
+  on("refreshCourierBtn", "click", refreshAll);
+  on("refreshFactoryBtn", "click", refreshAll);
+  on("courierSearch", "input", loadCourierTasks);
+  on("startScanBtn", "click", startScanner);
+  on("factoryInBtn", "click", () => factoryScan("factory_in"));
+  on("factoryOutBtn", "click", () => factoryScan("factory_out"));
+  on("trackBtn", "click", trackByPhone);
+  on("studentPhone", "keydown", (event) => {
+    if (event.key === "Enter") trackByPhone();
+  });
+  on("closeOrderDialogBtn", "click", () => $("orderDialog")?.close());
   document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => switchView(tab.dataset.view)));
   document.querySelectorAll(".subtab").forEach((tab) => tab.addEventListener("click", () => switchAdminSection(tab.dataset.adminSection)));
   document.addEventListener("click", (event) => {
@@ -1064,6 +1350,8 @@ function bindEvents() {
     if (pickupBtn) updatePickup(pickupBtn.dataset.pickup, pickupBtn.dataset.order, pickupBtn.dataset.status);
     const returnBtn = event.target.closest("[data-return]");
     if (returnBtn) updateReturn(returnBtn.dataset.return, returnBtn.dataset.item, returnBtn.dataset.order, returnBtn.dataset.status);
+    const previewBtn = event.target.closest("[data-preview-images]");
+    if (previewBtn) showImagePreview(previewBtn.dataset.previewImages);
     const detailBtn = event.target.closest("[data-detail]");
     if (detailBtn) showOrderDetail(detailBtn.dataset.detail);
     const saveBtn = event.target.closest("[data-save-dorm]");
@@ -1074,6 +1362,14 @@ function bindEvents() {
     if (deleteBatchBtn) deleteBatch(deleteBatchBtn.dataset.deleteBatch);
     const deleteRuleBtn = event.target.closest("[data-delete-rule]");
     if (deleteRuleBtn) deleteRule(deleteRuleBtn.dataset.deleteRule);
+  });
+  document.addEventListener("dblclick", (event) => {
+    const image = event.target.closest("[data-full-image]");
+    if (image) window.open(image.dataset.fullImage, "_blank", "noopener,noreferrer");
+  });
+  document.addEventListener("change", (event) => {
+    const statusSelect = event.target.closest("[data-order-status]");
+    if (statusSelect) updateOrderStatus(statusSelect.dataset.orderStatus, statusSelect.value);
   });
 }
 

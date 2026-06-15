@@ -3,10 +3,39 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>学生查询 - 事事通</title>
-    <meta http-equiv="refresh" content="0; url=./index.html?page=student" />
+    <meta name="theme-color" content="#f26a1b" />
+    <title>订单进度查询 - 事事通校园配送系统</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   </head>
-  <body>
-    <a href="./index.html?page=student">进入学生查询</a>
+  <body data-app-mode="student" class="role-page student-page">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">查</div>
+        <div>
+          <h1>订单进度查询</h1>
+          <p>输入下单手机号，查看洗护进度</p>
+        </div>
+      </div>
+      <div class="session-actions">
+        <span id="sessionLabel">已连接</span>
+      </div>
+    </header>
+
+    <main class="single-layout narrow">
+      <section class="panel hero-panel student-hero">
+        <h2>查询我的订单</h2>
+        <p>请输入下单手机号，系统会显示最近订单、物品水洗标和当前状态。</p>
+        <div class="toolbar">
+          <input id="studentPhone" class="input" placeholder="请输入手机号" inputmode="tel" />
+          <button id="trackBtn" type="button">查询</button>
+        </div>
+        <p class="hint">客服电话：15599157072</p>
+      </section>
+      <div id="trackResults" class="card-list"></div>
+    </main>
+
+    <script src="./app.js"></script>
   </body>
 </html>
