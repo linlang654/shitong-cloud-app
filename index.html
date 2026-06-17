@@ -94,8 +94,13 @@
         </section>
 
         <section id="courierView" class="view hidden">
-          <div class="toolbar">
+          <div class="toolbar wrap courier-filterbar">
             <input id="courierSearch" class="input" placeholder="搜索姓名、电话、学校、楼栋、水洗标" />
+            <label class="date-filter">
+              <span>取件日期</span>
+              <input id="courierPickupDate" class="input compact-input" type="date" />
+            </label>
+            <button id="courierTodayBtn" class="ghost" type="button">今天</button>
             <button id="refreshCourierBtn" type="button">刷新任务</button>
           </div>
           <div class="split">

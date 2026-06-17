@@ -409,6 +409,23 @@ button:hover,
   grid-template-columns: 1fr 1fr;
 }
 
+.courier-filterbar {
+  align-items: stretch;
+}
+
+.date-filter {
+  display: grid;
+  gap: 4px;
+  min-width: 170px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.date-filter .input {
+  min-height: 42px;
+}
+
 .split {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -822,6 +839,10 @@ code {
   .toolbar {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .date-filter {
+    min-width: 0;
   }
 
   .toolbar.two {

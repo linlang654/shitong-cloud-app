@@ -1406,8 +1406,25 @@ function showImagePreview(key) {
   dialog.showModal();
 }
 
+function selectedCourierPickupDate() {
+  const input = $("courierPickupDate");
+  if (input && !input.value) input.value = todayDate();
+  return input?.value || todayDate();
+}
+
+function resetCourierPickupDate() {
+  const input = $("courierPickupDate");
+  if (input) input.value = todayDate();
+  loadCourierTasks();
+}
+
 async function loadCourierTasks() {
-  const pickup = await sb.from("pickup_tasks").select("*, orders(*, order_items(barcode,image_links,product_name,spec,item_status))").order("pickup_date", { ascending: true });
+  const pickupDate = selectedCourierPickupDate();
+  const pickup = await sb
+    .from("pickup_tasks")
+    .select("*, orders(*, order_items(barcode,image_links,product_name,spec,item_status))")
+    .eq("pickup_date", pickupDate)
+    .order("pickup_date", { ascending: true });
   const returns = await sb.from("return_tasks").select("*, order_items(*, orders(*))").order("outbound_date", { ascending: false });
   if (!pickup.error) renderPickupTasks(pickup.data || []);
   if (!returns.error) renderReturnTasks(returns.data || []);
@@ -1418,7 +1435,8 @@ function renderPickupTasks(tasks) {
     const order = task.orders || {};
     return matchSearch(`${order.customer_name} ${order.phone} ${order.school} ${order.campus} ${order.building} ${order.address}`);
   }).map((task) => ({ task, order: task.orders || {} }));
-  $("pickupTaskList").innerHTML = records.length ? groupByArea(records, renderPickupCard) : '<p class="hint">暂无取件任务</p>';
+  const pickupDate = selectedCourierPickupDate();
+  $("pickupTaskList").innerHTML = records.length ? groupByArea(records, renderPickupCard) : `<p class="hint">${escapeHtml(pickupDate)} 暂无取件任务</p>`;
 }
 
 function renderPickupCard(record) {
@@ -1620,6 +1638,8 @@ function bindEvents() {
   on("refreshCourierBtn", "click", refreshAll);
   on("refreshFactoryBtn", "click", refreshAll);
   on("courierSearch", "input", loadCourierTasks);
+  on("courierPickupDate", "change", loadCourierTasks);
+  on("courierTodayBtn", "click", resetCourierPickupDate);
   on("startScanBtn", "click", startScanner);
   on("stopScanBtn", "click", () => {
     stopScanner();

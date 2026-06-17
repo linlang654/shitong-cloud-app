@@ -37,8 +37,13 @@
         <div class="panel hero-panel">
           <h2>今日配送任务</h2>
           <p>按学校、校区、楼栋查看任务；可直接拨打电话、发送短信，并标记取件或送达状态。</p>
-          <div class="toolbar">
+          <div class="toolbar wrap courier-filterbar">
             <input id="courierSearch" class="input" placeholder="搜索姓名、电话、学校、楼栋、水洗标" />
+            <label class="date-filter">
+              <span>取件日期</span>
+              <input id="courierPickupDate" class="input compact-input" type="date" />
+            </label>
+            <button id="courierTodayBtn" class="ghost" type="button">今天</button>
             <button id="refreshCourierBtn" type="button">刷新任务</button>
           </div>
         </div>
