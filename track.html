@@ -31,7 +31,7 @@
           <input id="studentPhone" class="input" placeholder="请输入手机号" inputmode="tel" />
           <button id="trackBtn" type="button">查询</button>
         </div>
-        <div class="student-contact-card">
+        <div class="student-contact-card compact-contact">
           <div>
             <span class="contact-label">客服电话</span>
             <a class="service-phone" data-service-phone-link href="tel:15599157072">
@@ -40,13 +40,11 @@
           </div>
           <button id="copyServicePhoneBtn" class="ghost small-btn" type="button">复制电话</button>
         </div>
-        <div class="student-qr-card">
-          <div>
-            <strong>企业微信客服</strong>
-            <p class="hint">遇到订单异常、送回时间调整，可以扫码添加客服。</p>
-          </div>
-          <img src="./assets/wecom-service.png" alt="企业微信客服二维码" />
-        </div>
+        <details class="student-qr-card">
+          <summary>企业微信客服二维码</summary>
+          <p class="hint">遇到订单异常、送回时间调整，可以扫码添加客服。</p>
+          <img data-lazy-src="./assets/wecom-service.png" alt="企业微信客服二维码" />
+        </details>
       </section>
       <div id="trackResults" class="card-list"></div>
     </main>

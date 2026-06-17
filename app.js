@@ -17,6 +17,13 @@ const ROLE_ACCESS = {
   factory: ["admin", "factory"],
 };
 const ORDER_STATUSES = ["待取件", "已取件", "未找到", "已入厂", "已出库", "配送中", "已送达", "异常"];
+const STUDENT_TIMELINE_STEPS = [
+  { key: "ordered", label: "下单", statuses: [] },
+  { key: "picked", label: "已取件待清洗", statuses: ["已取件"] },
+  { key: "factory", label: "已入厂清洗中", statuses: ["已入厂", "清洗中"] },
+  { key: "outbound", label: "已出库待配送", statuses: ["已出库", "配送中"] },
+  { key: "delivered", label: "已送达", statuses: ["已送达"] },
+];
 
 let sb = null;
 let currentUser = null;
@@ -1617,15 +1624,100 @@ function hydrateStaticContent() {
   document.querySelectorAll("[data-service-phone-link]").forEach((node) => {
     node.setAttribute("href", `tel:${AFTER_SALES_PHONE}`);
   });
+  document.querySelectorAll("details.student-qr-card").forEach((details) => {
+    details.addEventListener("toggle", () => {
+      if (!details.open) return;
+      const image = details.querySelector("img[data-lazy-src]");
+      if (image && !image.getAttribute("src")) image.setAttribute("src", image.dataset.lazySrc);
+    });
+  });
+}
+
+async function loadStudentTimeline(phone) {
+  const { data, error } = await sb.rpc("track_timeline_by_phone", { query_phone: phone });
+  if (error) return [];
+  return data || [];
+}
+
+function groupStudentOrders(rows, logs) {
+  const grouped = new Map();
+  rows.forEach((row) => {
+    const key = row.order_no || `${row.customer_name}-${row.order_time}`;
+    if (!grouped.has(key)) grouped.set(key, { ...row, items: [], logs: [] });
+    grouped.get(key).items.push(row);
+  });
+  logs.forEach((log) => {
+    const order = grouped.get(log.order_no);
+    if (order) order.logs.push(log);
+  });
+  return [...grouped.values()];
+}
+
+function currentTimelineIndex(order) {
+  const status = order.order_status || "";
+  if (status === "已送达") return 4;
+  if (status === "已出库" || status === "配送中") return 3;
+  if (status === "已入厂" || status === "清洗中") return 2;
+  if (status === "已取件") return 1;
+  return 0;
+}
+
+function findStepTime(order, step) {
+  if (step.key === "ordered") return order.order_time;
+  const hit = (order.logs || [])
+    .filter((log) => step.statuses.includes(log.status))
+    .sort((a, b) => parseDate(a.created_at) - parseDate(b.created_at))[0];
+  return hit?.created_at || "";
+}
+
+function renderStudentTimeline(order) {
+  const currentIndex = currentTimelineIndex(order);
+  return `<ol class="student-timeline">
+    ${STUDENT_TIMELINE_STEPS.map((step, index) => {
+      const time = findStepTime(order, step);
+      const done = Boolean(time) || index <= currentIndex;
+      const current = index === currentIndex;
+      return `<li class="${done ? "done" : ""} ${current ? "current" : ""}">
+        <span class="timeline-dot"></span>
+        <div><strong>${escapeHtml(step.label)}</strong><time>${escapeHtml(formatDateTime(time) || (done ? "进行中" : "待更新"))}</time></div>
+      </li>`;
+    }).join("")}
+  </ol>`;
+}
+
+function renderStudentOrder(order) {
+  const uniqueItems = order.items.filter((item, index, array) =>
+    array.findIndex((other) => `${other.barcode}-${other.spec}-${other.product_name}` === `${item.barcode}-${item.spec}-${item.product_name}`) === index,
+  );
+  return `<article class="task-card student-order-card">
+    <div class="card-head">
+      <h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.order_no)}</h3>
+      <span>${escapeHtml(order.order_status || "状态更新中")}</span>
+    </div>
+    <p>${escapeHtml(`${order.school || ""}｜${order.campus || ""}｜${order.building || ""}`)}</p>
+    <div class="student-items">
+      ${uniqueItems.map((item) => `<p>水洗标：${escapeHtml(item.barcode || "未生成")}｜${escapeHtml(item.spec || item.product_name || "")}｜${escapeHtml(item.item_status || "")}</p>`).join("")}
+    </div>
+    ${renderStudentTimeline(order)}
+    ${order.latest_note ? `<p class="hint">最新记录：${escapeHtml(order.latest_note)}</p>` : ""}
+    <p>客服电话：<a class="inline-link" href="tel:${AFTER_SALES_PHONE}">${AFTER_SALES_PHONE}</a></p>
+  </article>`;
 }
 
 async function trackByPhone() {
   if (!requireClient()) return;
   const phone = phoneValue($("studentPhone").value);
   if (!phone) return alert("请输入手机号");
+  setMessage("trackResults", "正在查询订单进度...", "hint");
   const { data, error } = await sb.rpc("track_by_phone", { query_phone: phone });
   if (error) return setMessage("trackResults", `查询失败：${error.message}`, "warn");
-  $("trackResults").innerHTML = (data || []).map((row) => `<article class="task-card"><div class="card-head"><h3>${escapeHtml(row.customer_name)} · ${escapeHtml(row.order_no)}</h3><span>${escapeHtml(row.item_status || row.order_status)}</span></div><p>${escapeHtml(`${row.school || ""}｜${row.campus || ""}｜${row.building || ""}`)}</p><p>水洗标：${escapeHtml(row.barcode || "未生成")}｜${escapeHtml(row.spec || row.product_name || "")}</p><p>当前订单状态：${escapeHtml(row.order_status || "")}</p>${row.latest_note ? `<p class="hint">最新记录：${escapeHtml(row.latest_note)}</p>` : ""}<p>客服电话：<a class="inline-link" href="tel:${AFTER_SALES_PHONE}">${AFTER_SALES_PHONE}</a></p></article>`).join("") || '<p class="hint">没有查到订单，请确认手机号是否与下单手机号一致。</p>';
+  const rows = data || [];
+  if (!rows.length) {
+    $("trackResults").innerHTML = '<p class="hint">没有查到订单，请确认手机号是否与下单手机号一致。</p>';
+    return;
+  }
+  const logs = await loadStudentTimeline(phone);
+  $("trackResults").innerHTML = groupStudentOrders(rows, logs).map(renderStudentOrder).join("");
 }
 
 function bindEvents() {

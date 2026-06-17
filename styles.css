@@ -170,9 +170,9 @@ button:hover,
 .student-qr-card {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   margin-top: 12px;
-  padding: 12px;
+  padding: 10px;
   border: 1px solid rgba(242, 106, 27, 0.18);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.74);
@@ -182,9 +182,13 @@ button:hover,
   justify-content: space-between;
 }
 
+.compact-contact {
+  margin-top: 10px;
+}
+
 .contact-label {
   display: block;
-  margin-bottom: 3px;
+  margin-bottom: 2px;
   color: var(--muted);
   font-size: 12px;
 }
@@ -197,19 +201,92 @@ button:hover,
 }
 
 .student-qr-card {
-  align-items: flex-start;
+  display: block;
+  cursor: pointer;
 }
 
 .student-qr-card p {
-  margin: 4px 0 0;
+  margin: 6px 0 10px;
+}
+
+.student-qr-card summary {
+  font-weight: 800;
+  color: var(--orange-deep);
 }
 
 .student-qr-card img {
-  width: 132px;
-  max-width: 38%;
+  display: block;
+  width: min(220px, 100%);
+  margin: 0 auto;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fff;
+}
+
+.student-order-card {
+  display: grid;
+  gap: 8px;
+}
+
+.student-items {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border-radius: 8px;
+  background: #faf8f2;
+}
+
+.student-items p {
+  margin: 0;
+}
+
+.student-timeline {
+  display: grid;
+  gap: 8px;
+  margin: 2px 0 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  list-style: none;
+}
+
+.student-timeline li {
+  display: grid;
+  grid-template-columns: 14px 1fr;
+  gap: 8px;
+  align-items: start;
+  color: var(--muted);
+}
+
+.timeline-dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
+  border: 2px solid #d8d2c7;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.student-timeline li.done .timeline-dot {
+  border-color: var(--orange);
+  background: var(--orange);
+}
+
+.student-timeline li.current strong {
+  color: var(--orange-deep);
+}
+
+.student-timeline strong {
+  display: block;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.student-timeline time {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .side {
@@ -813,22 +890,20 @@ code {
   }
 
   .student-contact-card {
-    align-items: stretch;
-    flex-direction: column;
+    align-items: center;
+    flex-direction: row;
   }
 
   .student-contact-card .small-btn {
-    width: 100%;
+    width: auto;
   }
 
   .student-qr-card {
-    flex-direction: column;
+    padding: 9px 10px;
   }
 
   .student-qr-card img {
-    width: min(230px, 100%);
-    max-width: 100%;
-    align-self: center;
+    width: min(190px, 100%);
   }
 
   .side,
