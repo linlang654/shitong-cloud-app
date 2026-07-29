@@ -4,6 +4,7 @@ const DEFAULT_SUPABASE_CONFIG = {
   url: "https://ukzjgjfefqlyeqecqyiz.supabase.co",
   anonKey: "sb_publishable_OAwXdqIPnQqYHUJj4Md-pw_HAFIMMcO",
 };
+const OVERDUE_HOURS = 48;
 const APP_MODE = document.body?.dataset.appMode || new URLSearchParams(window.location.search).get("page") || "admin";
 const ROLE_LABELS = {
   admin: "后台",
@@ -31,9 +32,14 @@ let currentProfile = null;
 let scanStream = null;
 let scanTimer = null;
 let scanControls = null;
+let scanSession = 0;
+let torchEnabled = false;
 let recognitionRules = [];
 const imagePreviewMap = new Map();
 let orderManagementRows = [];
+let orderDashboardFilter = "";
+let courierDashboardFilter = "";
+let factoryDashboardFilter = "";
 
 const $ = (id) => document.getElementById(id);
 const on = (id, eventName, handler) => $(id)?.addEventListener(eventName, handler);
@@ -139,6 +145,13 @@ function setMessage(targetId, message, tone = "hint") {
   target.innerHTML = `<p class="${tone}">${escapeHtml(message)}</p>`;
 }
 
+function setConnectionStatus(message, state = "checking") {
+  const target = $("connectionStatus");
+  if (!target) return;
+  target.textContent = message;
+  target.dataset.state = state;
+}
+
 function loadConfig() {
   try {
     const saved = JSON.parse(localStorage.getItem(CONFIG_KEY) || "{}");
@@ -151,33 +164,54 @@ function loadConfig() {
   }
 }
 
-function saveConfig() {
+function populateConfigInputs(config = loadConfig()) {
+  if ($("supabaseUrl")) $("supabaseUrl").value = config.url || "";
+  if ($("supabaseAnonKey")) $("supabaseAnonKey").value = config.anonKey || "";
+}
+
+async function saveConfig() {
   const config = {
     url: text($("supabaseUrl")?.value).replace(/\/rest\/v1\/?$/, ""),
     anonKey: text($("supabaseAnonKey")?.value),
   };
+  if (!config.url || !config.anonKey) {
+    setMessage("configMessage", "请完整填写 Project URL 和 Publishable Key。", "warn");
+    return;
+  }
+  setMessage("configMessage", "正在检查新连接…");
+  try {
+    const probe = window.supabase.createClient(config.url, config.anonKey, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    });
+    const { error } = await probe.from("profiles").select("id").limit(1);
+    if (error) throw error;
+  } catch (error) {
+    setMessage("configMessage", `连接检查失败：${error.message || error}`, "warn");
+    return;
+  }
   localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
-  initSupabase();
-  alert("Supabase 连接配置已保存");
+  await initSupabase();
+  setMessage("configMessage", "连接配置已保存，数据库连接正常。", "success");
 }
 
-function initSupabase() {
+async function initSupabase() {
   const config = loadConfig();
-  if ($("supabaseUrl")) $("supabaseUrl").value = config.url || "";
-  if ($("supabaseAnonKey")) $("supabaseAnonKey").value = config.anonKey || "";
+  populateConfigInputs(config);
   if (config.url && config.anonKey && window.supabase) {
     sb = window.supabase.createClient(config.url, config.anonKey);
-    if ($("sessionLabel")) $("sessionLabel").textContent = APP_MODE === "student" ? "公开查询" : "已连接，未登录";
-    refreshSession();
+    setConnectionStatus("正在检查数据库连接…", "checking");
+    await refreshSession();
   } else {
     sb = null;
     if ($("sessionLabel")) $("sessionLabel").textContent = "未连接";
+    setConnectionStatus("数据库尚未连接，请联系管理员", "error");
+    setAuthGate(false);
   }
 }
 
 function requireClient() {
   if (!sb) {
-    alert("请先填写并保存 Supabase Project URL 和 Publishable key");
+    setMessage("authMessage", "数据库尚未连接，请联系管理员。", "warn");
     return false;
   }
   return true;
@@ -185,8 +219,19 @@ function requireClient() {
 
 async function refreshSession() {
   if (!sb) return;
-  const { data } = await sb.auth.getUser();
-  currentUser = data.user || null;
+  const { data, error } = await sb.auth.getUser();
+  const missingSession = error && /session.*missing|auth session missing/i.test(error.message || "");
+  if (error && !missingSession) {
+    currentUser = null;
+    currentProfile = null;
+    if ($("sessionLabel")) $("sessionLabel").textContent = "连接失败";
+    setConnectionStatus("数据库连接失败，请联系管理员", "error");
+    setMessage("authMessage", "暂时无法连接数据库，请稍后重试或联系管理员。", "warn");
+    setAuthGate(false);
+    return;
+  }
+  setConnectionStatus("数据库连接正常", "connected");
+  currentUser = data?.user || null;
   currentProfile = null;
   if (!currentUser) {
     if ($("sessionLabel")) $("sessionLabel").textContent = APP_MODE === "student" ? "公开查询" : "已连接，未登录";
@@ -209,9 +254,11 @@ async function login() {
   if (!requireClient()) return;
   const email = text($("loginEmail").value);
   const password = $("loginPassword").value;
-  if (!email || !password) return alert("请输入邮箱和密码");
+  if (!email || !password) return setMessage("authMessage", "请输入邮箱和密码。", "warn");
+  setMessage("authMessage", "正在登录…");
   const { error } = await sb.auth.signInWithPassword({ email, password });
-  if (error) return alert(`登录失败：${error.message}`);
+  if (error) return setMessage("authMessage", `登录失败：${error.message}`, "warn");
+  if ($("loginPassword")) $("loginPassword").value = "";
   await refreshSession();
 }
 
@@ -237,6 +284,7 @@ function setAuthGate(isAllowed) {
   const requiresLogin = APP_MODE !== "student";
   document.querySelectorAll("[data-auth-only]").forEach((node) => node.classList.toggle("hidden", requiresLogin && !isAllowed));
   document.querySelectorAll("[data-guest-only]").forEach((node) => node.classList.toggle("hidden", !requiresLogin || isAllowed));
+  document.body?.classList.toggle("has-access", requiresLogin && isAllowed);
   if (requiresLogin && currentUser && !isAllowed) {
     setMessage("authMessage", `当前账号角色为“${currentProfile?.role || "未设置"}”，不能进入${ROLE_LABELS[APP_MODE] || "此"}页面。`, "warn");
   } else if (requiresLogin && !currentUser) {
@@ -282,6 +330,66 @@ function switchAdminSection(sectionName) {
   document.querySelectorAll(".admin-section").forEach((section) => section.classList.add("hidden"));
   $(`admin${sectionName[0].toUpperCase()}${sectionName.slice(1)}`)?.classList.remove("hidden");
   if (APP_MODE === "admin" && sb && currentUser) loadAdminSection(sectionName);
+}
+
+function openDashboardTarget(target) {
+  orderDashboardFilter = "";
+  courierDashboardFilter = "";
+  factoryDashboardFilter = "";
+
+  if (target === "pickup-today") {
+    courierDashboardFilter = "pickup-today";
+    if ($("courierPickupDate")) $("courierPickupDate").value = todayDate();
+    switchView("courier");
+    return;
+  }
+  if (target === "pending-return") {
+    courierDashboardFilter = "pending-return";
+    switchView("courier");
+    return;
+  }
+  if (target === "pending-in" || target === "pending-out") {
+    factoryDashboardFilter = target;
+    switchView("factory");
+    return;
+  }
+  switchView("admin");
+  if (target === "exceptions") {
+    switchAdminSection("exceptions");
+    return;
+  }
+  if (target === "overdue") {
+    orderDashboardFilter = "overdue";
+    switchAdminSection("orders");
+  }
+}
+
+function renderActiveFilter(targetId, label, scope) {
+  const target = $(targetId);
+  if (!target) return;
+  if (!label) {
+    target.classList.add("hidden");
+    target.innerHTML = "";
+    return;
+  }
+  target.innerHTML = `<span>${escapeHtml(label)}</span><button class="ghost small-btn" type="button" data-clear-dashboard-filter="${scope}">清除筛选</button>`;
+  target.classList.remove("hidden");
+}
+
+function clearDashboardFilter(scope) {
+  if (scope === "courier") {
+    courierDashboardFilter = "";
+    loadCourierTasks();
+  }
+  if (scope === "factory") {
+    factoryDashboardFilter = "";
+    loadFactoryItems();
+  }
+  if (scope === "orders") {
+    orderDashboardFilter = "";
+    renderActiveFilter("orderActiveFilter", "", "orders");
+    applyOrderFilters();
+  }
 }
 
 function field(row, names) {
@@ -724,7 +832,7 @@ async function handleImport(event) {
   if (!currentUser) return alert("请先用后台账号登录");
   const files = [...event.target.files];
   if (!files.length) return;
-  setMessage("adminOverview", "正在读取 Excel 并写入 Supabase...");
+  setMessage("adminImportStatus", "正在读取 Excel 并写入 Supabase...");
   try {
     await loadRecognitionRules();
     const allRows = [];
@@ -732,11 +840,11 @@ async function handleImport(event) {
     const diagnosis = diagnoseRows(allRows);
     const workItems = rowsToWorkItems(allRows);
     if (!workItems.length) {
-      $("adminOverview").innerHTML = renderImportDiagnosis(diagnosis, "没有可导入的洗护已支付订单。");
+      $("adminImportStatus").innerHTML = renderImportDiagnosis(diagnosis, "没有可导入的洗护已支付订单。");
       return;
     }
     const batch = await createImportBatch(files, diagnosis);
-    setMessage("adminOverview", `正在导入：${workItems.length} 件物品，正在批量写入订单...`);
+    setMessage("adminImportStatus", `正在导入：${workItems.length} 件物品，正在批量写入订单...`);
     const counters = await loadBarcodeCounters(workItems.map((item) => item.prefix));
     const orderWorkItems = new Map();
     workItems.forEach((workItem) => {
@@ -748,7 +856,7 @@ async function handleImport(event) {
     const orders = await batchUpsert("orders", orderPayloads, { onConflict: "order_no" }, 120);
     const orderCache = new Map(orders.map((order) => [order.order_no, order]));
 
-    setMessage("adminOverview", `正在导入：${workItems.length} 件物品，正在生成取件任务...`);
+    setMessage("adminImportStatus", `正在导入：${workItems.length} 件物品，正在生成取件任务...`);
     const pickupPayloads = [...orderWorkItems.entries()].map(([orderNo, workItem]) => ({
       order_id: orderCache.get(orderNo).id,
       pickup_date: workItem.pickupDate || null,
@@ -757,7 +865,7 @@ async function handleImport(event) {
     }));
     await batchUpsert("pickup_tasks", pickupPayloads, { onConflict: "order_id" }, 200);
 
-    setMessage("adminOverview", `正在导入：${workItems.length} 件物品，正在检查重复水洗标...`);
+    setMessage("adminImportStatus", `正在导入：${workItems.length} 件物品，正在检查重复水洗标...`);
     const sourceKeys = workItems.map((workItem) => `${importKey(workItem.row)}|${workItem.index}`);
     const existingSourceKeys = await fetchExistingSourceKeys(sourceKeys);
     const itemPayloads = [];
@@ -776,7 +884,7 @@ async function handleImport(event) {
       itemMeta.set(sourceKey, { orderId: order.id, note: workItem.dorm.note || "Excel 导入生成水洗标" });
     });
 
-    setMessage("adminOverview", `正在导入：${workItems.length} 件物品，正在批量生成水洗标...`);
+    setMessage("adminImportStatus", `正在导入：${workItems.length} 件物品，正在批量生成水洗标...`);
     const createdItemRows = itemPayloads.length ? await batchUpsert("order_items", itemPayloads, { onConflict: "source_key" }, 200) : [];
     const logs = createdItemRows.map((item) => {
       const meta = itemMeta.get(item.source_key) || {};
@@ -793,10 +901,10 @@ async function handleImport(event) {
     const createdItems = createdItemRows.length;
     await updateImportBatch(batch.id, orderCache.size, createdItems);
     await refreshAll();
-    $("adminOverview").insertAdjacentHTML("afterbegin", renderImportDiagnosis(diagnosis, `导入完成：${orderCache.size} 个订单，新增 ${createdItems} 件物品，跳过重复 ${skippedItems} 件。`));
+    $("adminImportStatus").innerHTML = renderImportDiagnosis(diagnosis, `导入完成：${orderCache.size} 个订单，新增 ${createdItems} 件物品，跳过重复 ${skippedItems} 件。`);
   } catch (error) {
     console.error(error);
-    setMessage("adminOverview", `导入失败：${error.message || error}`, "warn");
+    setMessage("adminImportStatus", `导入失败：${error.message || error}`, "warn");
   } finally {
     event.target.value = "";
   }
@@ -862,8 +970,8 @@ async function insertLog({ orderId, itemId = null, barcode = "", status, note = 
 async function refreshAll() {
   if (!sb || APP_MODE === "student" || !currentUser || !canUseCurrentPage()) return;
   await loadRecognitionRules();
-  const tasks = [loadStats()];
-  if (APP_MODE === "admin") tasks.push(loadAdmin(), loadCourierTasks(), loadFactoryItems());
+  const tasks = [];
+  if (APP_MODE === "admin") tasks.push(loadStats(), loadAdmin(), loadCourierTasks(), loadFactoryItems());
   if (APP_MODE === "courier") tasks.push(loadCourierTasks());
   if (APP_MODE === "factory") tasks.push(loadFactoryItems());
   await Promise.all(tasks);
@@ -872,16 +980,26 @@ async function refreshAll() {
 
 async function loadStats() {
   const today = todayDate();
-  const [orders, items, ins, outs] = await Promise.all([
-    sb.from("orders").select("*", { count: "exact", head: true }),
-    sb.from("order_items").select("*", { count: "exact", head: true }),
-    sb.from("factory_scans").select("*", { count: "exact", head: true }).eq("scan_type", "factory_in").gte("created_at", `${today}T00:00:00`),
-    sb.from("factory_scans").select("*", { count: "exact", head: true }).eq("scan_type", "factory_out").gte("created_at", `${today}T00:00:00`),
+  const overdueBefore = new Date(Date.now() - OVERDUE_HOURS * 60 * 60 * 1000).toISOString();
+  const [pickupToday, pendingIn, pendingOut, pendingReturn, exceptions, overdue] = await Promise.all([
+    sb.from("pickup_tasks").select("id", { count: "exact", head: true }).eq("pickup_date", today).eq("status", "待取件"),
+    sb.from("order_items").select("id", { count: "exact", head: true }).eq("item_status", "已取件"),
+    sb.from("order_items").select("id", { count: "exact", head: true }).in("item_status", ["已入厂", "清洗中"]),
+    sb.from("return_tasks").select("id", { count: "exact", head: true }).eq("status", "待送回"),
+    sb.from("orders").select("id", { count: "exact", head: true }).or("exception_note.neq.,school.eq.学校未识别,campus.eq.校区未识别,building.eq.楼栋未识别,order_status.eq.异常,order_status.eq.未找到"),
+    sb.from("orders").select("id", { count: "exact", head: true }).neq("order_status", "已送达").lt("updated_at", overdueBefore),
   ]);
-  if ($("statOrders")) $("statOrders").textContent = orders.count || 0;
-  if ($("statItems")) $("statItems").textContent = items.count || 0;
-  if ($("statIn")) $("statIn").textContent = ins.count || 0;
-  if ($("statOut")) $("statOut").textContent = outs.count || 0;
+  const dashboardValues = [
+    ["dashPickupToday", pickupToday],
+    ["dashPendingIn", pendingIn],
+    ["dashPendingOut", pendingOut],
+    ["dashPendingReturn", pendingReturn],
+    ["dashExceptions", exceptions],
+    ["dashOverdue", overdue],
+  ];
+  dashboardValues.forEach(([targetId, result]) => {
+    if ($(targetId)) $(targetId).textContent = result.error ? "—" : String(result.count || 0);
+  });
 }
 
 async function loadAdmin() {
@@ -896,13 +1014,14 @@ async function loadAdminSection(sectionName) {
   if (sectionName === "batches") return loadBatches();
   if (sectionName === "rules") return loadRules();
   if (sectionName === "labels") return loadLabels();
+  if (sectionName === "settings") return populateConfigInputs();
   return loadAdminOverview();
 }
 
 async function loadAdminOverview() {
   const { data, error } = await sb.from("orders").select("*, order_items(barcode,item_status,product_name,spec)").order("created_at", { ascending: false }).limit(20);
-  if (error) return setMessage("adminOverview", error.message, "warn");
-  $("adminOverview").innerHTML = `
+  if (error) return setMessage("adminRecentOrders", error.message, "warn");
+  $("adminRecentOrders").innerHTML = `
     <section class="panel table-panel">
       <h2>最近导入订单</h2>
       <div class="table-wrap">
@@ -950,6 +1069,12 @@ function inDateRange(order, startText, endText) {
   return true;
 }
 
+function isOverdueOrder(order) {
+  const updatedAt = Date.parse(order.updated_at || "");
+  if (!Number.isFinite(updatedAt) || order.order_status === "已送达") return false;
+  return updatedAt < Date.now() - OVERDUE_HOURS * 60 * 60 * 1000;
+}
+
 async function loadOrderManagement() {
   const { data, error } = await sb
     .from("orders")
@@ -969,6 +1094,9 @@ function renderOrderManagement() {
   $("adminOrders").innerHTML = `
     <section class="panel table-panel">
       <h2>订单管理</h2>
+      <div id="orderActiveFilter" class="active-filter ${orderDashboardFilter ? "" : "hidden"}">
+        ${orderDashboardFilter === "overdue" ? `<span>驾驶舱筛选：超过 ${OVERDUE_HOURS} 小时未更新且未送达</span><button class="ghost small-btn" type="button" data-clear-dashboard-filter="orders">清除筛选</button>` : ""}
+      </div>
       <div class="toolbar wrap filter-toolbar">
         <input id="orderSearch" class="input" placeholder="搜索订单号、姓名、电话、学校、楼栋、水洗标" value="${escapeHtml(keyword)}" />
         <select id="orderStatusFilter" class="input">
@@ -1000,6 +1128,7 @@ function filteredOrderRows() {
     const searchable = `${order.order_no} ${order.customer_name} ${order.phone} ${order.school} ${order.campus} ${order.building} ${order.address} ${(order.order_items || []).map((item) => `${item.barcode} ${item.product_name} ${item.spec}`).join(" ")}`.toLowerCase();
     if (keyword && !searchable.includes(keyword)) return false;
     if (selectedStatus && order.order_status !== selectedStatus) return false;
+    if (orderDashboardFilter === "overdue" && !isOverdueOrder(order)) return false;
     return inDateRange(order, startDate, endDate);
   });
 }
@@ -1007,7 +1136,8 @@ function filteredOrderRows() {
 function applyOrderFilters() {
   const rows = filteredOrderRows();
   if ($("orderRows")) $("orderRows").innerHTML = renderOrderRows(rows);
-  if ($("orderFilterSummary")) $("orderFilterSummary").textContent = `共 ${rows.length} 单；时间筛选优先按付款时间，付款时间为空时按下单时间。`;
+  const prefix = orderDashboardFilter === "overdue" ? `超时订单共 ${rows.length} 单；` : `共 ${rows.length} 单；`;
+  if ($("orderFilterSummary")) $("orderFilterSummary").textContent = `${prefix}时间筛选优先按付款时间，付款时间为空时按下单时间。`;
 }
 
 function renderOrderRows(rows) {
@@ -1035,10 +1165,12 @@ function bindOrderManagementFilters() {
   on("orderStartDate", "change", applyOrderFilters);
   on("orderEndDate", "change", applyOrderFilters);
   on("clearOrderFiltersBtn", "click", () => {
+    orderDashboardFilter = "";
     if ($("orderSearch")) $("orderSearch").value = "";
     if ($("orderStatusFilter")) $("orderStatusFilter").value = "";
     if ($("orderStartDate")) $("orderStartDate").value = "";
     if ($("orderEndDate")) $("orderEndDate").value = "";
+    renderActiveFilter("orderActiveFilter", "", "orders");
     applyOrderFilters();
   });
 }
@@ -1420,6 +1552,7 @@ function selectedCourierPickupDate() {
 }
 
 function resetCourierPickupDate() {
+  courierDashboardFilter = "";
   const input = $("courierPickupDate");
   if (input) input.value = todayDate();
   loadCourierTasks();
@@ -1433,8 +1566,21 @@ async function loadCourierTasks() {
     .eq("pickup_date", pickupDate)
     .order("pickup_date", { ascending: true });
   const returns = await sb.from("return_tasks").select("*, order_items(*, orders(*))").order("outbound_date", { ascending: false });
-  if (!pickup.error) renderPickupTasks(pickup.data || []);
-  if (!returns.error) renderReturnTasks(returns.data || []);
+  let pickupRows = pickup.data || [];
+  let returnRows = returns.data || [];
+  let activeLabel = "";
+  if (courierDashboardFilter === "pickup-today") {
+    pickupRows = pickupRows.filter((task) => task.status === "待取件");
+    returnRows = [];
+    activeLabel = "驾驶舱筛选：今日待取件";
+  } else if (courierDashboardFilter === "pending-return") {
+    pickupRows = [];
+    returnRows = returnRows.filter((task) => task.status === "待送回");
+    activeLabel = "驾驶舱筛选：待送回";
+  }
+  renderActiveFilter("courierActiveFilter", activeLabel, "courier");
+  if (!pickup.error) renderPickupTasks(pickupRows);
+  if (!returns.error) renderReturnTasks(returnRows);
 }
 
 function renderPickupTasks(tasks) {
@@ -1492,55 +1638,80 @@ async function updateReturn(taskId, itemId, orderId, status) {
 }
 
 async function loadFactoryItems() {
-  const { data, error } = await sb.from("order_items").select("*, orders(*)").in("item_status", ["已取件", "已入厂", "清洗中"]).order("updated_at", { ascending: false }).limit(60);
+  let query = sb.from("order_items").select("*, orders(*)").order("updated_at", { ascending: false });
+  if (factoryDashboardFilter === "pending-in") {
+    query = query.eq("item_status", "已取件");
+  } else if (factoryDashboardFilter === "pending-out") {
+    query = query.in("item_status", ["已入厂", "清洗中"]);
+  } else {
+    query = query.in("item_status", ["已取件", "已入厂", "清洗中"]);
+  }
+  const { data, error } = await query.limit(factoryDashboardFilter ? 500 : 60);
   if (error) return setMessage("factoryItemList", error.message, "warn");
-  $("factoryItemList").innerHTML = (data || []).map((item) => {
+  let rows = data || [];
+  let activeLabel = "";
+  let queueTitle = "待处理物品";
+  if (factoryDashboardFilter === "pending-in") {
+    rows = rows.filter((item) => item.item_status === "已取件");
+    activeLabel = "驾驶舱筛选：待入库";
+    queueTitle = "待入库物品";
+  } else if (factoryDashboardFilter === "pending-out") {
+    rows = rows.filter((item) => ["已入厂", "清洗中"].includes(item.item_status));
+    activeLabel = "驾驶舱筛选：待出库";
+    queueTitle = "待出库物品";
+  }
+  renderActiveFilter("factoryActiveFilter", activeLabel, "factory");
+  if ($("factoryQueueTitle")) $("factoryQueueTitle").textContent = queueTitle;
+  $("factoryItemList").innerHTML = rows.map((item) => {
     const order = item.orders || {};
     return `<article class="task-card compact"><div class="card-head"><h3>${escapeHtml(item.barcode)}</h3><span>${escapeHtml(item.item_status)}</span></div><p>${escapeHtml(order.customer_name || "")} · ${escapeHtml(order.phone || "")}</p><p>${escapeHtml(`${order.school || ""}${order.campus || ""}${order.building || ""}`)}</p><p>${escapeHtml(item.spec || item.product_name || "")}</p></article>`;
   }).join("") || '<p class="hint">暂无待处理物品</p>';
 }
 
 async function startScanner() {
-  if (!navigator.mediaDevices?.getUserMedia) {
-    $("scanResult").textContent = "当前环境不能打开摄像头，请使用扫码枪或手动输入水洗标。";
+  if (!window.isSecureContext) {
+    $("scanResult").textContent = "摄像头只能在 HTTPS 页面中使用，请通过已发布的网站地址打开。";
     return;
   }
+  if (!navigator.mediaDevices?.getUserMedia) {
+    $("scanResult").textContent = "当前浏览器不能持续调用摄像头，请改用 Safari/Chrome，或点击“拍照识别”。";
+    return;
+  }
+  stopScanner();
+  const session = scanSession;
+  $("scanResult").textContent = "正在请求后置摄像头权限...";
   try {
-    stopScanner();
-    $("scanResult").textContent = "正在打开摄像头...";
-    if (!("BarcodeDetector" in window)) {
-      await startZxingScanner();
-      return;
-    }
-    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-    $("scanVideo").srcObject = scanStream;
-    await $("scanVideo").play();
-    const detector = new BarcodeDetector({ formats: ["qr_code", "code_128", "code_39", "ean_13"] });
-    clearInterval(scanTimer);
-    scanTimer = setInterval(async () => {
-      const codes = await detector.detect($("scanVideo"));
-      if (codes[0]?.rawValue) {
-        $("barcodeInput").value = codes[0].rawValue;
-        $("scanResult").textContent = `已识别：${codes[0].rawValue}`;
-      }
-    }, 700);
-    $("scanResult").textContent = "摄像头已打开，请对准水洗标条码。";
-  } catch (error) {
+    await startZxingScanner(session);
+  } catch (zxingError) {
+    if (session !== scanSession) return;
     try {
-      await startZxingScanner();
-    } catch (fallbackError) {
-      $("scanResult").textContent = `摄像头扫码不可用：${fallbackError.message}。可使用扫码枪或手动输入水洗标。`;
+      await startNativeScanner(session);
+    } catch (nativeError) {
+      if (session !== scanSession) return;
+      $("scanResult").textContent = cameraErrorMessage(nativeError || zxingError);
     }
   }
 }
 
 function stopScanner() {
+  scanSession += 1;
   clearInterval(scanTimer);
   scanTimer = null;
   if (scanControls?.stop) scanControls.stop();
   scanControls = null;
   if (scanStream) scanStream.getTracks().forEach((track) => track.stop());
   scanStream = null;
+  const video = $("scanVideo");
+  if (video) {
+    video.pause();
+    video.srcObject = null;
+  }
+  torchEnabled = false;
+  const torchButton = $("toggleTorchBtn");
+  if (torchButton) {
+    torchButton.textContent = "打开补光灯";
+    torchButton.classList.add("hidden");
+  }
 }
 
 function loadZxing() {
@@ -1548,32 +1719,154 @@ function loadZxing() {
   return new Promise((resolve, reject) => {
     const existing = document.querySelector('script[data-zxing-loader="true"]');
     if (existing) {
+      if (existing.dataset.state === "loaded") return resolve();
       existing.addEventListener("load", resolve, { once: true });
       existing.addEventListener("error", () => reject(new Error("备用扫码组件加载失败")), { once: true });
       return;
     }
     const script = document.createElement("script");
-    script.src = "https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/umd/index.min.js";
+    script.src = "https://cdn.jsdelivr.net/npm/@zxing/browser@0.2.0/umd/zxing-browser.min.js";
     script.dataset.zxingLoader = "true";
-    script.onload = resolve;
-    script.onerror = () => reject(new Error("备用扫码组件加载失败，请检查网络后重试"));
+    script.onload = () => {
+      script.dataset.state = "loaded";
+      resolve();
+    };
+    script.onerror = () => {
+      script.remove();
+      reject(new Error("扫码组件加载失败，请检查网络后重试"));
+    };
     document.head.appendChild(script);
   });
 }
 
-async function startZxingScanner() {
-  $("scanResult").textContent = "原生扫码不可用，正在启用备用扫码...";
+function rearCameraConstraints() {
+  return {
+    audio: false,
+    video: {
+      facingMode: { ideal: "environment" },
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+      frameRate: { ideal: 24, max: 30 },
+    },
+  };
+}
+
+function acceptScannedBarcode(rawValue, source = "摄像头") {
+  const value = text(rawValue);
+  if (!value) return;
+  if ($("barcodeInput")) $("barcodeInput").value = value;
+  if ($("scanResult")) $("scanResult").textContent = `${source}已识别：${value}。请确认后点击扫码入库或扫码出库。`;
+  if (navigator.vibrate) navigator.vibrate(80);
+  stopScanner();
+  $("barcodeInput")?.focus();
+}
+
+function cameraErrorMessage(error) {
+  const name = error?.name || "";
+  const inAppBrowser = /MicroMessenger|QQ\//i.test(navigator.userAgent);
+  if (name === "NotAllowedError" || name === "SecurityError") {
+    return "摄像头权限被拒绝。请在浏览器的网站设置中允许相机后重试，或使用“拍照识别”。";
+  }
+  if (name === "NotReadableError" || name === "AbortError") {
+    return "摄像头正被其他应用占用。请关闭微信扫一扫、相机等应用后重试。";
+  }
+  if (name === "NotFoundError" || name === "OverconstrainedError") {
+    return "没有找到可用的后置摄像头，请使用“拍照识别”或手动输入水洗标。";
+  }
+  if (inAppBrowser) {
+    return "微信/QQ 内置浏览器的摄像头兼容性受限，请点右上角用 Safari 或 Chrome 打开，或使用“拍照识别”。";
+  }
+  return `摄像头扫码不可用：${error?.message || "未知错误"}。可使用“拍照识别”或手动输入水洗标。`;
+}
+
+function updateTorchButton() {
+  const button = $("toggleTorchBtn");
+  const track = $("scanVideo")?.srcObject?.getVideoTracks?.()[0];
+  const supportsTorch = Boolean(track?.getCapabilities?.().torch && scanControls?.switchTorch);
+  button?.classList.toggle("hidden", !supportsTorch);
+}
+
+async function toggleTorch() {
+  if (!scanControls?.switchTorch) return;
+  try {
+    await scanControls.switchTorch();
+    torchEnabled = !torchEnabled;
+    if ($("toggleTorchBtn")) $("toggleTorchBtn").textContent = torchEnabled ? "关闭补光灯" : "打开补光灯";
+  } catch {
+    $("toggleTorchBtn")?.classList.add("hidden");
+    if ($("scanResult")) $("scanResult").textContent = "当前手机不支持网页控制补光灯，请保持环境明亮。";
+  }
+}
+
+async function startZxingScanner(session) {
+  $("scanResult").textContent = "正在加载手机扫码组件...";
   await loadZxing();
   if (!window.ZXingBrowser?.BrowserMultiFormatReader) throw new Error("备用扫码组件不可用");
   const reader = new ZXingBrowser.BrowserMultiFormatReader();
-  scanControls = await reader.decodeFromVideoDevice(undefined, $("scanVideo"), (result) => {
+  const controls = await reader.decodeFromConstraints(rearCameraConstraints(), $("scanVideo"), (result) => {
     const value = result?.getText?.() || "";
-    if (value) {
-      $("barcodeInput").value = value;
-      $("scanResult").textContent = `已识别：${value}`;
-    }
+    if (value) acceptScannedBarcode(value);
   });
-  $("scanResult").textContent = "备用扫码已打开，请对准水洗标条码。";
+  if (session !== scanSession) {
+    controls.stop();
+    return;
+  }
+  scanControls = controls;
+  updateTorchButton();
+  $("scanResult").textContent = "后置摄像头已打开，请将水洗标条码放在画面中央。";
+}
+
+async function startNativeScanner(session) {
+  if (!("BarcodeDetector" in window)) throw new Error("当前浏览器不支持条码识别");
+  const wantedFormats = ["qr_code", "code_128", "code_39", "ean_13"];
+  const supportedFormats = await BarcodeDetector.getSupportedFormats();
+  const formats = wantedFormats.filter((format) => supportedFormats.includes(format));
+  if (!formats.length) throw new Error("当前浏览器不支持水洗标条码格式");
+  const stream = await navigator.mediaDevices.getUserMedia(rearCameraConstraints());
+  if (session !== scanSession) {
+    stream.getTracks().forEach((track) => track.stop());
+    return;
+  }
+  scanStream = stream;
+  $("scanVideo").srcObject = stream;
+  await $("scanVideo").play();
+  const detector = new BarcodeDetector({ formats });
+  let detecting = false;
+  scanTimer = setInterval(async () => {
+    if (detecting || session !== scanSession) return;
+    detecting = true;
+    try {
+      const codes = await detector.detect($("scanVideo"));
+      if (codes[0]?.rawValue) acceptScannedBarcode(codes[0].rawValue);
+    } catch (error) {
+      clearInterval(scanTimer);
+      scanTimer = null;
+      if ($("scanResult")) $("scanResult").textContent = cameraErrorMessage(error);
+    } finally {
+      detecting = false;
+    }
+  }, 500);
+  $("scanResult").textContent = "后置摄像头已打开，请将水洗标条码放在画面中央。";
+}
+
+async function handleBarcodePhoto(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  let objectUrl = "";
+  $("scanResult").textContent = "正在识别照片中的水洗标...";
+  try {
+    await loadZxing();
+    if (!window.ZXingBrowser?.BrowserMultiFormatReader) throw new Error("扫码组件不可用");
+    objectUrl = URL.createObjectURL(file);
+    const reader = new ZXingBrowser.BrowserMultiFormatReader();
+    const result = await reader.decodeFromImageUrl(objectUrl);
+    acceptScannedBarcode(result?.getText?.() || "", "照片");
+  } catch {
+    $("scanResult").textContent = "照片中没有识别到条码。请靠近水洗标、保持清晰和光线充足后重拍。";
+  } finally {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    event.target.value = "";
+  }
 }
 
 async function factoryScan(scanType) {
@@ -1730,9 +2023,15 @@ function bindEvents() {
   on("refreshCourierBtn", "click", refreshAll);
   on("refreshFactoryBtn", "click", refreshAll);
   on("courierSearch", "input", loadCourierTasks);
-  on("courierPickupDate", "change", loadCourierTasks);
+  on("courierPickupDate", "change", () => {
+    courierDashboardFilter = "";
+    loadCourierTasks();
+  });
   on("courierTodayBtn", "click", resetCourierPickupDate);
   on("startScanBtn", "click", startScanner);
+  on("barcodePhotoInput", "click", stopScanner);
+  on("barcodePhotoInput", "change", handleBarcodePhoto);
+  on("toggleTorchBtn", "click", toggleTorch);
   on("stopScanBtn", "click", () => {
     stopScanner();
     if ($("scanResult")) $("scanResult").textContent = "摄像头已关闭。";
@@ -1744,10 +2043,17 @@ function bindEvents() {
   on("studentPhone", "keydown", (event) => {
     if (event.key === "Enter") trackByPhone();
   });
+  on("loginPassword", "keydown", (event) => {
+    if (event.key === "Enter") login();
+  });
   on("closeOrderDialogBtn", "click", () => $("orderDialog")?.close());
   document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => switchView(tab.dataset.view)));
   document.querySelectorAll(".subtab").forEach((tab) => tab.addEventListener("click", () => switchAdminSection(tab.dataset.adminSection)));
   document.addEventListener("click", (event) => {
+    const dashboardTarget = event.target.closest("[data-dashboard-target]");
+    if (dashboardTarget) openDashboardTarget(dashboardTarget.dataset.dashboardTarget);
+    const clearDashboardBtn = event.target.closest("[data-clear-dashboard-filter]");
+    if (clearDashboardBtn) clearDashboardFilter(clearDashboardBtn.dataset.clearDashboardFilter);
     const pickupBtn = event.target.closest("[data-pickup]");
     if (pickupBtn) updatePickup(pickupBtn.dataset.pickup, pickupBtn.dataset.order, pickupBtn.dataset.status);
     const returnBtn = event.target.closest("[data-return]");
