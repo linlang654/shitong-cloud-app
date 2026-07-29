@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#f26a1b" />
     <title>事事通校园配送系统</title>
     <link rel="manifest" href="./manifest.webmanifest" />
-    <link rel="stylesheet" href="./styles.css?v=19" />
+    <link rel="stylesheet" href="./styles.css?v=20" />
     <script src="./vendor/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   </head>
@@ -174,23 +174,46 @@
           <div id="factoryActiveFilter" class="active-filter hidden" role="status"></div>
           <div class="split factory-grid">
             <section class="panel scanner-panel">
-              <h2>工厂扫码</h2>
+              <div class="card-head scanner-heading">
+                <div>
+                  <h2>连续扫码作业</h2>
+                  <p class="hint">先选择入库或出库，本轮每扫一件都会自动处理。</p>
+                </div>
+                <strong id="factoryScanCount" class="scan-count">本轮 0 件</strong>
+              </div>
+              <div class="scan-mode-picker" aria-label="选择扫码作业模式">
+                <button id="factoryInBtn" class="scan-mode-button scan-in" type="button" aria-pressed="false">
+                  <strong>连续入库</strong>
+                  <span>扫到即入库</span>
+                </button>
+                <button id="factoryOutBtn" class="scan-mode-button scan-out" type="button" aria-pressed="false">
+                  <strong>连续出库</strong>
+                  <span>扫到即出库并生成送回任务</span>
+                </button>
+              </div>
+              <div id="factoryModeStatus" class="scan-mode-status" role="status">请先选择本轮作业模式</div>
               <video id="scanVideo" class="scan-video" muted autoplay playsinline></video>
               <div class="toolbar wrap">
-                <input id="barcodeInput" class="input" placeholder="扫码或输入水洗标" />
-                <button id="startScanBtn" type="button">打开摄像头</button>
+                <input id="barcodeInput" class="input" placeholder="扫码枪或手动输入水洗标" />
+                <button id="manualScanBtn" type="button">处理输入</button>
                 <label class="file-button ghost-file">
                   拍照识别
                   <input id="barcodePhotoInput" type="file" accept="image/*" capture="environment" />
                 </label>
+                <button id="startScanBtn" class="ghost" type="button">重新打开摄像头</button>
                 <button id="toggleTorchBtn" class="ghost hidden" type="button">打开补光灯</button>
-                <button id="stopScanBtn" class="ghost" type="button">关闭摄像头</button>
+                <button id="stopScanBtn" class="ghost" type="button">结束本轮</button>
               </div>
-              <div class="toolbar two">
-                <button id="factoryInBtn" type="button">扫码入库</button>
-                <button id="factoryOutBtn" type="button">扫码出库</button>
-              </div>
-              <p id="scanResult" class="hint">请使用 Safari 或 Chrome 打开并允许摄像头；无法持续扫码时可用“拍照识别”。</p>
+              <p id="scanResult" class="scan-feedback idle" role="status" aria-live="assertive">选择作业模式后将自动打开后置摄像头。</p>
+              <section class="scan-history-panel" aria-labelledby="factoryScanHistoryTitle">
+                <div class="card-head">
+                  <h3 id="factoryScanHistoryTitle">最近处理</h3>
+                  <button id="undoFactoryScanBtn" class="ghost small-btn" type="button" disabled>撤销上一单</button>
+                </div>
+                <ol id="factoryScanHistory" class="scan-history">
+                  <li class="empty">本轮还没有处理记录</li>
+                </ol>
+              </section>
             </section>
             <section class="panel">
               <h2 id="factoryQueueTitle">待处理物品</h2>
@@ -233,6 +256,6 @@
       <div id="orderDialogBody" class="stack"></div>
     </dialog>
 
-    <script src="./app.js?v=19"></script>
+    <script src="./app.js?v=20"></script>
   </body>
 </html>

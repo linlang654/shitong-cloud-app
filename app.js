@@ -34,6 +34,15 @@ let scanTimer = null;
 let scanControls = null;
 let scanSession = 0;
 let torchEnabled = false;
+let scannerIsActive = false;
+let factoryScanMode = "";
+let factoryScanBusy = false;
+let factoryScanSuccessCount = 0;
+let factoryLastAction = null;
+let factoryLastSeenBarcode = "";
+let factoryLastSeenAt = 0;
+const factoryProcessedBarcodes = new Set();
+const factoryScanHistory = [];
 let recognitionRules = [];
 const imagePreviewMap = new Map();
 let orderManagementRows = [];
@@ -1190,16 +1199,23 @@ async function loadExceptions() {
   $("adminExceptions").innerHTML = `
     <section class="panel">
       <h2>异常处理中心</h2>
-      <p class="hint">可直接修正学校、校区、楼栋和备注。保存时会同步取件任务和水洗标清单显示。</p>
+      <p class="hint">“保存修正”只改当前订单；“保存并记住规则”会同时修正当前订单，并让以后含有相同关键词的地址自动归类。</p>
+      <p class="hint">卡片仍可能显示“已取件”等正常进度，因为这里检查的是地址和异常备注，不是只检查订单进度。</p>
       <div class="card-list">${(data || []).map(renderExceptionCard).join("") || '<p class="hint">暂无异常订单</p>'}</div>
     </section>`;
 }
 
 function renderExceptionCard(order) {
+  const reasons = [];
+  if (!order.school || order.school === "学校未识别") reasons.push("学校未识别");
+  if (!order.campus || order.campus === "校区未识别") reasons.push("校区未识别");
+  if (!order.building || order.building === "楼栋未识别") reasons.push("楼栋未识别");
+  if (["异常", "未找到"].includes(order.order_status)) reasons.push(order.order_status);
+  if (order.exception_note && !reasons.some((reason) => order.exception_note.includes(reason.replace("未识别", "")))) reasons.push("有异常备注");
   return `
     <article class="task-card alert">
-      <div class="card-head"><h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3><span>${escapeHtml(order.order_status || "")}</span></div>
-      <p>订单号：${escapeHtml(order.order_no)}</p>
+      <div class="card-head"><h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3><span>${escapeHtml(reasons.join("、") || "需检查")}</span></div>
+      <p>订单号：${escapeHtml(order.order_no)}｜当前状态：${escapeHtml(order.order_status || "未知")}</p>
       <p>${escapeHtml(order.address || "")}</p>
       <div class="edit-grid">
         <input class="input" data-edit-school="${order.id}" value="${escapeHtml(order.school || "")}" placeholder="学校" />
@@ -1210,7 +1226,7 @@ function renderExceptionCard(order) {
       <div class="actions">
         <button type="button" data-save-dorm="${order.id}">保存修正</button>
         <button class="ghost" type="button" data-detail="${order.id}">详情</button>
-        <button class="ghost" type="button" data-learn-rule="${order.id}" data-address="${escapeHtml(order.address || "")}">保存成识别规则</button>
+        <button class="ghost" type="button" data-learn-rule="${order.id}" data-address="${escapeHtml(order.address || "")}">保存并记住规则</button>
       </div>
     </article>`;
 }
@@ -1227,14 +1243,42 @@ async function saveDorm(orderId) {
 }
 
 async function learnRule(orderId, address) {
-  const keyword = prompt("请输入可用于识别的关键词，例如：宿舍楼六栋 / 杏园J2 / 民大南区2栋", address.slice(-12));
-  if (!keyword) return;
   const school = text(document.querySelector(`[data-edit-school="${orderId}"]`)?.value);
   const campus = text(document.querySelector(`[data-edit-campus="${orderId}"]`)?.value);
   const building = text(document.querySelector(`[data-edit-building="${orderId}"]`)?.value);
-  const { error } = await sb.from("recognition_rules").insert({ keyword, school, campus, building, created_by: currentProfile?.id || null });
-  if (error) return alert(error.message);
-  alert("已保存识别规则，下次导入包含该关键词的地址会自动归类。");
+  const note = text(document.querySelector(`[data-edit-note="${orderId}"]`)?.value);
+  if (!school || !campus || !building || /未识别/.test(`${school}${campus}${building}`)) {
+    return alert("请先把学校、校区和楼栋填写完整，再保存规则。");
+  }
+  const suggestedKeyword = text(address).replace(/\s+/g, "").slice(-16);
+  const keyword = prompt(
+    "请输入地址里稳定出现、能够代表这一地点的关键词。\n例如地址含“贵州师范大学花溪校区17栋宿舍”，可填“花溪校区17栋”。\n以后导入的地址只要包含该关键词，就会自动填入当前学校、校区和楼栋。",
+    suggestedKeyword,
+  );
+  if (!text(keyword)) return;
+  const normalizedKeyword = text(keyword);
+  const duplicate = recognitionRules.find((rule) => rule.enabled !== false && rule.keyword === normalizedKeyword);
+  if (duplicate && !confirm(`已经存在关键词“${normalizedKeyword}”的规则，仍要新增吗？`)) return;
+
+  const { error: orderError } = await sb.from("orders").update({
+    school,
+    campus,
+    building,
+    exception_note: note,
+    updated_at: new Date().toISOString(),
+  }).eq("id", orderId);
+  if (orderError) return alert(orderError.message);
+
+  const { error: ruleError } = await sb.from("recognition_rules").insert({
+    keyword: normalizedKeyword,
+    school,
+    campus,
+    building,
+    created_by: currentProfile?.id || null,
+  });
+  if (ruleError) return alert(`当前订单已修正，但规则保存失败：${ruleError.message}`);
+  await insertLog({ orderId, status: "后台修正并保存识别规则", note: `${normalizedKeyword} → ${school}/${campus}/${building}` });
+  alert(`已修正当前订单，并记住规则：\n地址包含“${normalizedKeyword}” → ${school} / ${campus} / ${building}\n该规则从下次导入 Excel 时生效。`);
   await refreshAll();
 }
 
@@ -1270,15 +1314,36 @@ async function loadRules() {
   const rows = recognitionRules;
   $("adminRules").innerHTML = `
     <section class="panel">
-      <h2>识别规则维护</h2>
-      <p class="hint">用于把用户不规范地址映射为固定学校、校区和楼栋。</p>
-      <div class="edit-grid rule-form">
-        <input id="ruleKeyword" class="input" placeholder="关键词，例如 宿舍楼六栋" />
-        <input id="ruleSchool" class="input" placeholder="学校，例如 师大" />
-        <input id="ruleCampus" class="input" placeholder="校区，例如 西区" />
-        <input id="ruleBuilding" class="input" placeholder="楼栋，例如 6栋" />
+      <h2>地址识别规则（仅影响以后导入）</h2>
+      <div class="rule-explainer">
+        <strong>它的作用很简单：</strong>
+        <ol>
+          <li>导入 Excel 时，系统在“表单信息 + 收货地址”里查找关键词。</li>
+          <li>只要地址包含关键词，就自动填入这条规则对应的学校、校区和楼栋。</li>
+          <li>规则不会修改已经导入的订单；已有订单请到“异常修正”处理。</li>
+        </ol>
+        <p><strong>例：</strong>关键词“花溪校区17栋” → 师大 / 东区 / 17栋。</p>
+      </div>
+      <div class="rule-form">
+        <label class="field-group">
+          <span>地址关键词</span>
+          <input id="ruleKeyword" class="input" placeholder="例如 花溪校区17栋" />
+        </label>
+        <label class="field-group">
+          <span>识别为学校</span>
+          <input id="ruleSchool" class="input" placeholder="例如 师大" />
+        </label>
+        <label class="field-group">
+          <span>识别为校区</span>
+          <input id="ruleCampus" class="input" placeholder="例如 东区" />
+        </label>
+        <label class="field-group">
+          <span>识别为楼栋</span>
+          <input id="ruleBuilding" class="input" placeholder="例如 17栋" />
+        </label>
         <button id="addRuleBtn" type="button">新增规则</button>
       </div>
+      <p class="hint rule-caution">关键词要尽量具体。不要只填“17栋”这类多个学校都可能出现的词，建议填“花溪校区17栋”。</p>
       <div class="table-wrap">
         <table>
           <thead><tr><th>关键词</th><th>学校</th><th>校区</th><th>楼栋</th><th>状态</th><th>操作</th></tr></thead>
@@ -1668,18 +1733,134 @@ async function loadFactoryItems() {
   }).join("") || '<p class="hint">暂无待处理物品</p>';
 }
 
+function factoryModeLabel(mode = factoryScanMode) {
+  return mode === "factory_in" ? "连续入库" : mode === "factory_out" ? "连续出库" : "";
+}
+
+function updateFactoryScanModeUi() {
+  const inButton = $("factoryInBtn");
+  const outButton = $("factoryOutBtn");
+  const modeStatus = $("factoryModeStatus");
+  if (inButton) inButton.setAttribute("aria-pressed", String(factoryScanMode === "factory_in"));
+  if (outButton) outButton.setAttribute("aria-pressed", String(factoryScanMode === "factory_out"));
+  if (inButton) inButton.disabled = factoryScanBusy;
+  if (outButton) outButton.disabled = factoryScanBusy;
+  if ($("manualScanBtn")) $("manualScanBtn").disabled = factoryScanBusy;
+  if ($("startScanBtn")) $("startScanBtn").disabled = factoryScanBusy;
+  if ($("stopScanBtn")) $("stopScanBtn").disabled = factoryScanBusy;
+  if (modeStatus) {
+    modeStatus.className = `scan-mode-status ${factoryScanMode === "factory_in" ? "in" : factoryScanMode === "factory_out" ? "out" : ""}`.trim();
+    modeStatus.textContent = factoryScanMode
+      ? `当前模式：${factoryModeLabel()}。扫到水洗标后将自动${factoryScanMode === "factory_in" ? "入库" : "出库"}。`
+      : "请先选择本轮作业模式";
+  }
+  if ($("factoryScanCount")) $("factoryScanCount").textContent = `本轮 ${factoryScanSuccessCount} 件`;
+  if ($("undoFactoryScanBtn")) $("undoFactoryScanBtn").disabled = !factoryLastAction || factoryScanBusy;
+}
+
+function setFactoryScanFeedback(message, state = "idle") {
+  const target = $("scanResult");
+  if (!target) return;
+  target.className = `scan-feedback ${state}`;
+  target.textContent = message;
+}
+
+function renderFactoryScanHistory() {
+  const target = $("factoryScanHistory");
+  if (!target) return;
+  if (!factoryScanHistory.length) {
+    target.innerHTML = '<li class="empty">本轮还没有处理记录</li>';
+    return;
+  }
+  target.innerHTML = factoryScanHistory.slice(0, 8).map((entry) => `
+    <li class="${entry.state}">
+      <span>${escapeHtml(entry.message)}</span>
+      <time>${escapeHtml(entry.time)}</time>
+    </li>`).join("");
+}
+
+function addFactoryScanHistory(message, state = "success") {
+  factoryScanHistory.unshift({
+    message,
+    state,
+    time: new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }),
+  });
+  renderFactoryScanHistory();
+}
+
+function playFactoryScanTone(success = true) {
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return;
+    const audioContext = new AudioContextClass();
+    const oscillator = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    oscillator.frequency.value = success ? 880 : 220;
+    gain.gain.setValueAtTime(0.08, audioContext.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioContext.currentTime + (success ? 0.12 : 0.28));
+    oscillator.connect(gain);
+    gain.connect(audioContext.destination);
+    oscillator.start();
+    oscillator.stop(audioContext.currentTime + (success ? 0.12 : 0.28));
+    oscillator.addEventListener("ended", () => audioContext.close(), { once: true });
+  } catch {
+    // 声音反馈不可用时仍保留震动和文字反馈。
+  }
+}
+
+function notifyFactoryScan(success) {
+  playFactoryScanTone(success);
+  if (navigator.vibrate) navigator.vibrate(success ? 90 : [120, 70, 120]);
+}
+
+async function refreshFactoryAfterScan() {
+  await loadFactoryItems();
+  if (APP_MODE === "admin") await loadStats();
+}
+
+async function activateFactoryScanMode(mode) {
+  if (!currentUser) return alert("请先登录工厂账号");
+  if (!["factory_in", "factory_out"].includes(mode)) return;
+  const changed = factoryScanMode !== mode;
+  factoryScanMode = mode;
+  if (changed) {
+    factoryScanSuccessCount = 0;
+    factoryLastAction = null;
+    factoryLastSeenBarcode = "";
+    factoryLastSeenAt = 0;
+    factoryProcessedBarcodes.clear();
+    factoryScanHistory.length = 0;
+    renderFactoryScanHistory();
+  }
+  updateFactoryScanModeUi();
+  setFactoryScanFeedback(`${factoryModeLabel()}已就绪，正在打开后置摄像头...`, "processing");
+  if (!scannerIsActive) await startScanner();
+}
+
+function endFactoryScanSession() {
+  stopScanner();
+  factoryScanMode = "";
+  factoryScanBusy = false;
+  updateFactoryScanModeUi();
+  setFactoryScanFeedback(`本轮已结束，共处理 ${factoryScanSuccessCount} 件。`, "idle");
+}
+
 async function startScanner() {
+  if (!factoryScanMode) {
+    setFactoryScanFeedback("请先选择“连续入库”或“连续出库”。", "error");
+    return;
+  }
   if (!window.isSecureContext) {
-    $("scanResult").textContent = "摄像头只能在 HTTPS 页面中使用，请通过已发布的网站地址打开。";
+    setFactoryScanFeedback("摄像头只能在 HTTPS 页面中使用，请通过已发布的网站地址打开。", "error");
     return;
   }
   if (!navigator.mediaDevices?.getUserMedia) {
-    $("scanResult").textContent = "当前浏览器不能持续调用摄像头，请改用 Safari/Chrome，或点击“拍照识别”。";
+    setFactoryScanFeedback("当前浏览器不能持续调用摄像头，请改用 Safari/Chrome，或点击“拍照识别”。", "error");
     return;
   }
   stopScanner();
   const session = scanSession;
-  $("scanResult").textContent = "正在请求后置摄像头权限...";
+  setFactoryScanFeedback("正在请求后置摄像头权限...", "processing");
   try {
     await startZxingScanner(session);
   } catch (zxingError) {
@@ -1688,13 +1869,14 @@ async function startScanner() {
       await startNativeScanner(session);
     } catch (nativeError) {
       if (session !== scanSession) return;
-      $("scanResult").textContent = cameraErrorMessage(nativeError || zxingError);
+      setFactoryScanFeedback(cameraErrorMessage(nativeError || zxingError), "error");
     }
   }
 }
 
 function stopScanner() {
   scanSession += 1;
+  scannerIsActive = false;
   clearInterval(scanTimer);
   scanTimer = null;
   if (scanControls?.stop) scanControls.stop();
@@ -1751,14 +1933,28 @@ function rearCameraConstraints() {
   };
 }
 
-function acceptScannedBarcode(rawValue, source = "摄像头") {
+async function acceptScannedBarcode(rawValue, source = "摄像头") {
   const value = text(rawValue);
   if (!value) return;
+  if (factoryScanBusy) return;
+  const now = Date.now();
+  if (value === factoryLastSeenBarcode && now - factoryLastSeenAt < 2500) return;
+  factoryLastSeenBarcode = value;
+  factoryLastSeenAt = now;
   if ($("barcodeInput")) $("barcodeInput").value = value;
-  if ($("scanResult")) $("scanResult").textContent = `${source}已识别：${value}。请确认后点击扫码入库或扫码出库。`;
-  if (navigator.vibrate) navigator.vibrate(80);
-  stopScanner();
-  $("barcodeInput")?.focus();
+  if (!factoryScanMode) {
+    setFactoryScanFeedback(`${source}已识别 ${value}，请先选择入库或出库模式。`, "error");
+    notifyFactoryScan(false);
+    return;
+  }
+  if (factoryProcessedBarcodes.has(value)) {
+    if (source !== "摄像头") {
+      setFactoryScanFeedback(`${value} 本轮已经处理过，请换下一件。`, "error");
+      notifyFactoryScan(false);
+    }
+    return;
+  }
+  await factoryScan(factoryScanMode, value, { source });
 }
 
 function cameraErrorMessage(error) {
@@ -1794,26 +1990,27 @@ async function toggleTorch() {
     if ($("toggleTorchBtn")) $("toggleTorchBtn").textContent = torchEnabled ? "关闭补光灯" : "打开补光灯";
   } catch {
     $("toggleTorchBtn")?.classList.add("hidden");
-    if ($("scanResult")) $("scanResult").textContent = "当前手机不支持网页控制补光灯，请保持环境明亮。";
+    setFactoryScanFeedback("当前手机不支持网页控制补光灯，请保持环境明亮。", "error");
   }
 }
 
 async function startZxingScanner(session) {
-  $("scanResult").textContent = "正在加载手机扫码组件...";
+  setFactoryScanFeedback("正在加载手机扫码组件...", "processing");
   await loadZxing();
   if (!window.ZXingBrowser?.BrowserMultiFormatReader) throw new Error("备用扫码组件不可用");
   const reader = new ZXingBrowser.BrowserMultiFormatReader();
   const controls = await reader.decodeFromConstraints(rearCameraConstraints(), $("scanVideo"), (result) => {
     const value = result?.getText?.() || "";
-    if (value) acceptScannedBarcode(value);
+    if (value) void acceptScannedBarcode(value);
   });
   if (session !== scanSession) {
     controls.stop();
     return;
   }
   scanControls = controls;
+  scannerIsActive = true;
   updateTorchButton();
-  $("scanResult").textContent = "后置摄像头已打开，请将水洗标条码放在画面中央。";
+  setFactoryScanFeedback(`${factoryModeLabel()}进行中，请将水洗标放在画面中央。`, "processing");
 }
 
 async function startNativeScanner(session) {
@@ -1837,54 +2034,230 @@ async function startNativeScanner(session) {
     detecting = true;
     try {
       const codes = await detector.detect($("scanVideo"));
-      if (codes[0]?.rawValue) acceptScannedBarcode(codes[0].rawValue);
+      if (codes[0]?.rawValue) void acceptScannedBarcode(codes[0].rawValue);
     } catch (error) {
       clearInterval(scanTimer);
       scanTimer = null;
-      if ($("scanResult")) $("scanResult").textContent = cameraErrorMessage(error);
+      scannerIsActive = false;
+      setFactoryScanFeedback(cameraErrorMessage(error), "error");
     } finally {
       detecting = false;
     }
   }, 500);
-  $("scanResult").textContent = "后置摄像头已打开，请将水洗标条码放在画面中央。";
+  scannerIsActive = true;
+  setFactoryScanFeedback(`${factoryModeLabel()}进行中，请将水洗标放在画面中央。`, "processing");
 }
 
 async function handleBarcodePhoto(event) {
   const file = event.target.files?.[0];
   if (!file) return;
   let objectUrl = "";
-  $("scanResult").textContent = "正在识别照片中的水洗标...";
+  if (!factoryScanMode) {
+    setFactoryScanFeedback("请先选择入库或出库模式，再拍照识别。", "error");
+    event.target.value = "";
+    return;
+  }
+  setFactoryScanFeedback("正在识别照片中的水洗标...", "processing");
   try {
     await loadZxing();
     if (!window.ZXingBrowser?.BrowserMultiFormatReader) throw new Error("扫码组件不可用");
     objectUrl = URL.createObjectURL(file);
     const reader = new ZXingBrowser.BrowserMultiFormatReader();
     const result = await reader.decodeFromImageUrl(objectUrl);
-    acceptScannedBarcode(result?.getText?.() || "", "照片");
+    await acceptScannedBarcode(result?.getText?.() || "", "照片");
   } catch {
-    $("scanResult").textContent = "照片中没有识别到条码。请靠近水洗标、保持清晰和光线充足后重拍。";
+    setFactoryScanFeedback("照片中没有识别到条码。请靠近水洗标、保持清晰和光线充足后重拍。", "error");
   } finally {
     if (objectUrl) URL.revokeObjectURL(objectUrl);
     event.target.value = "";
   }
 }
 
-async function factoryScan(scanType) {
-  if (!currentUser) return alert("请先登录工厂账号");
-  const barcode = text($("barcodeInput").value);
-  if (!barcode) return alert("请先扫码或输入水洗标");
-  const { data: item, error } = await sb.from("order_items").select("*, orders(*)").eq("barcode", barcode).maybeSingle();
-  if (error || !item) return alert("没有找到这个水洗标");
-  const status = scanType === "factory_in" ? "已入厂" : "已出库";
-  const { error: scanError } = await sb.from("factory_scans").insert({ item_id: item.id, barcode, scan_type: scanType, operator_id: currentProfile?.id || null });
-  if (scanError) return alert(scanError.message);
-  await sb.from("order_items").update({ item_status: status, updated_at: new Date().toISOString() }).eq("id", item.id);
-  await sb.from("orders").update({ order_status: status, updated_at: new Date().toISOString() }).eq("id", item.order_id);
-  if (scanType === "factory_out") await sb.from("return_tasks").upsert({ item_id: item.id, outbound_date: todayDate(), status: "待送回", operator_id: currentProfile?.id || null, updated_at: new Date().toISOString() }, { onConflict: "item_id" });
-  await insertLog({ orderId: item.order_id, itemId: item.id, barcode, status, note: scanType === "factory_in" ? "工厂扫码入库" : "工厂扫码出库，生成送回任务" });
-  $("scanResult").textContent = `${barcode} 已${scanType === "factory_in" ? "入库" : "出库"}`;
-  $("barcodeInput").select();
-  await refreshAll();
+function returnTaskPayload(task) {
+  if (!task) return null;
+  return {
+    id: task.id,
+    item_id: task.item_id,
+    outbound_date: task.outbound_date,
+    status: task.status,
+    exception_note: task.exception_note || "",
+    operator_id: task.operator_id || null,
+    updated_at: task.updated_at,
+  };
+}
+
+async function restoreFactoryState(action) {
+  if (!action?.itemId) return;
+  await sb.from("order_items").update({ item_status: action.previousItemStatus, updated_at: new Date().toISOString() }).eq("id", action.itemId);
+  await sb.from("orders").update({ order_status: action.previousOrderStatus, updated_at: new Date().toISOString() }).eq("id", action.orderId);
+  if (action.scanType !== "factory_out") return;
+  if (action.previousReturnTask) {
+    await sb.from("return_tasks").upsert(returnTaskPayload(action.previousReturnTask), { onConflict: "item_id" });
+  } else {
+    await sb.from("return_tasks").delete().eq("item_id", action.itemId);
+  }
+}
+
+function factoryScanFailure(barcode, message) {
+  const prefix = barcode ? `${barcode}：` : "";
+  setFactoryScanFeedback(`${prefix}${message}`, "error");
+  addFactoryScanHistory(`${prefix}${message}`, "error");
+  notifyFactoryScan(false);
+  return false;
+}
+
+async function factoryScan(scanType, suppliedBarcode = "", options = {}) {
+  if (!currentUser) {
+    alert("请先登录工厂账号");
+    return false;
+  }
+  const barcode = text(suppliedBarcode || $("barcodeInput")?.value);
+  if (!barcode) return factoryScanFailure("", "请先扫码或输入水洗标");
+  if (!["factory_in", "factory_out"].includes(scanType)) return factoryScanFailure(barcode, "请先选择入库或出库模式");
+  if (factoryScanBusy) return false;
+
+  factoryScanBusy = true;
+  updateFactoryScanModeUi();
+  setFactoryScanFeedback(`${options.source || "扫码"}已识别 ${barcode}，正在${scanType === "factory_in" ? "入库" : "出库"}...`, "processing");
+
+  let rollbackAction = null;
+  try {
+    const { data: item, error } = await sb.from("order_items").select("*, orders(*)").eq("barcode", barcode).maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!item) throw new Error("没有找到这个水洗标");
+
+    const allowedStatuses = scanType === "factory_in" ? ["已取件"] : ["已入厂", "清洗中"];
+    if (!allowedStatuses.includes(item.item_status)) {
+      if (scanType === "factory_in" && item.item_status === "已入厂") throw new Error("已经入库，无需重复操作");
+      if (scanType === "factory_out" && item.item_status === "已出库") throw new Error("已经出库，无需重复操作");
+      const required = scanType === "factory_in" ? "已取件" : "已入厂或清洗中";
+      throw new Error(`当前状态为“${item.item_status || "未知"}”，只有“${required}”的物品才能${scanType === "factory_in" ? "入库" : "出库"}`);
+    }
+
+    const order = Array.isArray(item.orders) ? item.orders[0] : item.orders;
+    let previousReturnTask = null;
+    if (scanType === "factory_out") {
+      const { data: task, error: taskError } = await sb.from("return_tasks").select("*").eq("item_id", item.id).maybeSingle();
+      if (taskError) throw new Error(taskError.message);
+      previousReturnTask = task;
+    }
+
+    const status = scanType === "factory_in" ? "已入厂" : "已出库";
+    rollbackAction = {
+      itemId: item.id,
+      orderId: item.order_id,
+      barcode,
+      scanType,
+      resultStatus: status,
+      previousItemStatus: item.item_status,
+      previousOrderStatus: order?.order_status || item.item_status,
+      previousReturnTask,
+    };
+
+    const updatedAt = new Date().toISOString();
+    const { error: itemError } = await sb.from("order_items").update({ item_status: status, updated_at: updatedAt }).eq("id", item.id);
+    if (itemError) throw new Error(itemError.message);
+
+    const { error: orderError } = await sb.from("orders").update({ order_status: status, updated_at: updatedAt }).eq("id", item.order_id);
+    if (orderError) {
+      await restoreFactoryState(rollbackAction);
+      rollbackAction = null;
+      throw new Error(orderError.message);
+    }
+
+    if (scanType === "factory_out") {
+      const { error: returnError } = await sb.from("return_tasks").upsert({
+        item_id: item.id,
+        outbound_date: todayDate(),
+        status: "待送回",
+        exception_note: "",
+        operator_id: currentProfile?.id || null,
+        updated_at: updatedAt,
+      }, { onConflict: "item_id" });
+      if (returnError) {
+        await restoreFactoryState(rollbackAction);
+        rollbackAction = null;
+        throw new Error(returnError.message);
+      }
+    }
+
+    const { error: scanError } = await sb.from("factory_scans").insert({
+      item_id: item.id,
+      barcode,
+      scan_type: scanType,
+      operator_id: currentProfile?.id || null,
+    });
+    if (scanError) {
+      await restoreFactoryState(rollbackAction);
+      rollbackAction = null;
+      throw new Error(scanError.message);
+    }
+
+    await insertLog({
+      orderId: item.order_id,
+      itemId: item.id,
+      barcode,
+      status,
+      note: scanType === "factory_in" ? "工厂连续扫码入库" : "工厂连续扫码出库，生成送回任务",
+    });
+
+    factoryLastAction = rollbackAction;
+    factoryProcessedBarcodes.add(barcode);
+    factoryScanSuccessCount += 1;
+    if ($("barcodeInput")) $("barcodeInput").value = "";
+    setFactoryScanFeedback(`成功：${barcode} 已${scanType === "factory_in" ? "入库" : "出库"}。请继续扫描下一件。`, "success");
+    addFactoryScanHistory(`${barcode} 已${scanType === "factory_in" ? "入库" : "出库"}`, "success");
+    notifyFactoryScan(true);
+    await refreshFactoryAfterScan();
+    return true;
+  } catch (error) {
+    return factoryScanFailure(barcode, error?.message || "处理失败，请重试");
+  } finally {
+    factoryScanBusy = false;
+    updateFactoryScanModeUi();
+  }
+}
+
+async function processManualFactoryScan() {
+  const barcode = text($("barcodeInput")?.value);
+  if (!factoryScanMode) return factoryScanFailure(barcode, "请先选择入库或出库模式");
+  if (factoryProcessedBarcodes.has(barcode)) return factoryScanFailure(barcode, "本轮已经处理过，请换下一件");
+  await factoryScan(factoryScanMode, barcode, { source: "手动输入" });
+}
+
+async function undoLastFactoryScan() {
+  if (!factoryLastAction || factoryScanBusy) return;
+  const action = factoryLastAction;
+  factoryScanBusy = true;
+  updateFactoryScanModeUi();
+  setFactoryScanFeedback(`正在撤销 ${action.barcode}...`, "processing");
+  try {
+    const { data: currentItem, error } = await sb.from("order_items").select("item_status").eq("id", action.itemId).maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!currentItem || currentItem.item_status !== action.resultStatus) {
+      throw new Error("该物品状态已被其他人更新，不能直接撤销");
+    }
+    await restoreFactoryState(action);
+    await insertLog({
+      orderId: action.orderId,
+      itemId: action.itemId,
+      barcode: action.barcode,
+      status: action.previousItemStatus,
+      note: `撤销工厂${action.scanType === "factory_in" ? "入库" : "出库"}操作`,
+    });
+    factoryProcessedBarcodes.delete(action.barcode);
+    factoryScanSuccessCount = Math.max(0, factoryScanSuccessCount - 1);
+    factoryLastAction = null;
+    addFactoryScanHistory(`${action.barcode} 已撤销，恢复为“${action.previousItemStatus}”`, "undo");
+    setFactoryScanFeedback(`${action.barcode} 已撤销，可重新扫描。`, "success");
+    notifyFactoryScan(true);
+    await refreshFactoryAfterScan();
+  } catch (error) {
+    factoryScanFailure(action.barcode, error?.message || "撤销失败");
+  } finally {
+    factoryScanBusy = false;
+    updateFactoryScanModeUi();
+  }
 }
 
 async function copyText(value) {
@@ -2032,12 +2405,14 @@ function bindEvents() {
   on("barcodePhotoInput", "click", stopScanner);
   on("barcodePhotoInput", "change", handleBarcodePhoto);
   on("toggleTorchBtn", "click", toggleTorch);
-  on("stopScanBtn", "click", () => {
-    stopScanner();
-    if ($("scanResult")) $("scanResult").textContent = "摄像头已关闭。";
+  on("stopScanBtn", "click", endFactoryScanSession);
+  on("factoryInBtn", "click", () => activateFactoryScanMode("factory_in"));
+  on("factoryOutBtn", "click", () => activateFactoryScanMode("factory_out"));
+  on("manualScanBtn", "click", processManualFactoryScan);
+  on("undoFactoryScanBtn", "click", undoLastFactoryScan);
+  on("barcodeInput", "keydown", (event) => {
+    if (event.key === "Enter") processManualFactoryScan();
   });
-  on("factoryInBtn", "click", () => factoryScan("factory_in"));
-  on("factoryOutBtn", "click", () => factoryScan("factory_out"));
   on("trackBtn", "click", trackByPhone);
   on("copyServicePhoneBtn", "click", () => copyText(AFTER_SALES_PHONE));
   on("studentPhone", "keydown", (event) => {
