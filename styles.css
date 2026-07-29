@@ -895,8 +895,34 @@ button.danger,
 }
 
 .rule-form {
+  display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
-  align-items: center;
+  gap: 8px;
+  align-items: end;
+  margin-top: 12px;
+  margin-bottom: 12px;
+}
+
+.rule-explainer {
+  border: 1px solid rgba(242, 106, 27, 0.22);
+  border-radius: 8px;
+  padding: 11px 12px;
+  color: #5d4a32;
+  background: var(--yellow-soft);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.rule-explainer ol {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+
+.rule-explainer p {
+  margin: 5px 0 0;
+}
+
+.rule-caution {
   margin-bottom: 12px;
 }
 
@@ -980,6 +1006,195 @@ button.danger,
   background: #111;
   border-radius: 8px;
   margin-bottom: 10px;
+}
+
+.scanner-heading {
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+
+.scanner-heading h2,
+.scan-history-panel h3 {
+  margin: 0;
+}
+
+.scan-count {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 7px 10px;
+  color: var(--orange-deep);
+  background: var(--yellow-soft);
+  font-size: 13px;
+}
+
+.scan-mode-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.scan-mode-button {
+  min-height: 72px;
+  display: grid;
+  gap: 3px;
+  align-content: center;
+  text-align: left;
+  box-shadow: none;
+}
+
+.scan-mode-button strong,
+.scan-mode-button span {
+  display: block;
+}
+
+.scan-mode-button strong {
+  font-size: 17px;
+}
+
+.scan-mode-button span {
+  font-size: 12px;
+  font-weight: 700;
+  opacity: 0.88;
+}
+
+.scan-mode-button.scan-in {
+  border-color: #167049;
+  background: var(--green);
+}
+
+.scan-mode-button.scan-out {
+  border-color: #245b92;
+  background: #2f6da8;
+}
+
+.scan-mode-button[aria-pressed="true"] {
+  outline: 4px solid rgba(255, 210, 63, 0.72);
+  outline-offset: 2px;
+}
+
+.scan-mode-button[aria-pressed="false"] {
+  filter: saturate(0.7);
+  opacity: 0.76;
+}
+
+.scan-mode-status {
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 10px;
+  color: var(--muted);
+  background: #f3f1ec;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.scan-mode-status.in {
+  color: var(--green);
+  border-color: rgba(31, 138, 91, 0.3);
+  background: var(--green-soft);
+}
+
+.scan-mode-status.out {
+  color: #245b92;
+  border-color: rgba(47, 109, 168, 0.28);
+  background: #edf5ff;
+}
+
+.scan-feedback {
+  min-height: 46px;
+  margin: 10px 0 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 11px 12px;
+  color: var(--muted);
+  background: #f7f5f1;
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.scan-feedback.processing {
+  color: var(--orange-deep);
+  border-color: rgba(242, 106, 27, 0.26);
+  background: var(--yellow-soft);
+}
+
+.scan-feedback.success {
+  color: var(--green) !important;
+  border-color: rgba(31, 138, 91, 0.3);
+  background: var(--green-soft);
+}
+
+.scan-feedback.error {
+  color: var(--red);
+  border-color: rgba(194, 65, 50, 0.28);
+  background: var(--red-soft);
+}
+
+.scan-history-panel {
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.scan-history-panel .card-head {
+  align-items: center;
+}
+
+.scan-history-panel h3 {
+  font-size: 14px;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.scan-history {
+  display: grid;
+  gap: 6px;
+  max-height: 190px;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.scan-history li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  border-radius: 7px;
+  padding: 8px 9px;
+  background: #f7f5f1;
+  font-size: 13px;
+}
+
+.scan-history li.success {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.scan-history li.error {
+  color: var(--red);
+  background: var(--red-soft);
+}
+
+.scan-history li.undo {
+  color: var(--muted);
+}
+
+.scan-history li.empty {
+  display: block;
+  color: var(--muted);
+  text-align: center;
+}
+
+.scan-history time {
+  color: inherit;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .table-wrap {
@@ -1115,6 +1330,19 @@ code {
 
   .toolbar.two {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .scan-mode-picker {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .scan-mode-button {
+    min-height: 76px;
+    padding: 10px;
+  }
+
+  .scan-video {
+    aspect-ratio: 1 / 1;
   }
 
   .stat-grid {
