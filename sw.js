@@ -1,9 +1,9 @@
-const CACHE_NAME = "shitong-cloud-v14";
+const CACHE_NAME = "shitong-cloud-v19";
 const ASSETS = [
   "./",
   "./index.html",
-  "./styles.css",
-  "./app.js",
+  "./styles.css?v=19",
+  "./app.js?v=19",
   "./manifest.webmanifest",
   "./courier.html",
   "./factory.html",
@@ -13,7 +13,18 @@ const ASSETS = [
 ];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS)));
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) =>
+      Promise.all(
+        ASSETS.map((asset) =>
+          fetch(asset, { cache: "reload" }).then((response) => {
+            if (!response.ok) throw new Error(`缓存资源失败：${asset}`);
+            return cache.put(asset, response);
+          }),
+        ),
+      ),
+    ),
+  );
   self.skipWaiting();
 });
 

@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#f26a1b" />
     <title>事事通校园配送系统</title>
     <link rel="manifest" href="./manifest.webmanifest" />
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=19" />
     <script src="./vendor/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   </head>
@@ -26,34 +26,22 @@
     </header>
 
     <main class="layout">
-      <aside class="side">
-        <section class="panel setup-panel">
-          <h2>Supabase 设置</h2>
-          <input id="supabaseUrl" class="input" placeholder="Project URL" />
-          <input id="supabaseAnonKey" class="input" placeholder="Publishable key" />
-          <button id="saveConfigBtn" type="button">保存连接</button>
-          <p class="hint">配置保存在本机浏览器。数据库增量脚本见 supabase-admin-upgrade.sql。</p>
-        </section>
-
+      <aside class="side" data-guest-only>
         <section id="loginPanel" class="panel">
           <h2>员工登录</h2>
-          <input id="loginEmail" class="input" placeholder="邮箱" />
-          <input id="loginPassword" class="input" placeholder="密码" type="password" />
+          <p id="connectionStatus" class="connection-status" data-state="checking" role="status" aria-live="polite">
+            正在检查数据库连接…
+          </p>
+          <label class="form-label" for="loginEmail">邮箱</label>
+          <input id="loginEmail" class="input" placeholder="请输入邮箱" autocomplete="username" />
+          <label class="form-label" for="loginPassword">密码</label>
+          <input id="loginPassword" class="input" placeholder="请输入密码" type="password" autocomplete="current-password" />
           <button id="loginBtn" type="button">登录</button>
-        </section>
-
-        <section class="panel stats-panel">
-          <h2>今日概览</h2>
-          <div class="stat-grid">
-            <div><strong id="statOrders">0</strong><span>订单</span></div>
-            <div><strong id="statItems">0</strong><span>物品</span></div>
-            <div><strong id="statIn">0</strong><span>入库</span></div>
-            <div><strong id="statOut">0</strong><span>出库</span></div>
-          </div>
+          <div id="authMessage" aria-live="polite"></div>
         </section>
       </aside>
 
-      <section class="workspace">
+      <section class="workspace hidden" data-auth-only>
         <nav class="tabs" aria-label="模块切换">
           <button class="tab active" data-view="admin" type="button">后台</button>
           <button class="tab" data-view="courier" type="button">配送员</button>
@@ -83,17 +71,84 @@
             <button class="subtab" data-admin-section="batches" type="button">批次管理</button>
             <button class="subtab" data-admin-section="rules" type="button">规则维护</button>
             <button class="subtab" data-admin-section="labels" type="button">水洗标</button>
+            <button class="subtab" data-admin-section="settings" type="button">系统设置</button>
           </nav>
 
-          <section id="adminOverview" class="admin-section stack"></section>
+          <section id="adminOverview" class="admin-section stack">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">今日工作</p>
+                <h2>待办驾驶舱</h2>
+              </div>
+              <p>点击数字，直接进入对应的筛选结果。</p>
+            </div>
+            <div class="dashboard-grid" aria-label="待办驾驶舱">
+              <button class="dashboard-card" type="button" data-dashboard-target="pickup-today">
+                <span>今日待取件</span>
+                <strong id="dashPickupToday">0</strong>
+                <small>查看今天尚未完成的取件任务</small>
+              </button>
+              <button class="dashboard-card" type="button" data-dashboard-target="pending-in">
+                <span>待入库</span>
+                <strong id="dashPendingIn">0</strong>
+                <small>已取件、等待工厂扫码入库</small>
+              </button>
+              <button class="dashboard-card" type="button" data-dashboard-target="pending-out">
+                <span>待出库</span>
+                <strong id="dashPendingOut">0</strong>
+                <small>已入厂或清洗中、等待出库</small>
+              </button>
+              <button class="dashboard-card" type="button" data-dashboard-target="pending-return">
+                <span>待送回</span>
+                <strong id="dashPendingReturn">0</strong>
+                <small>已出库、等待配送员送回</small>
+              </button>
+              <button class="dashboard-card alert-card" type="button" data-dashboard-target="exceptions">
+                <span>异常订单</span>
+                <strong id="dashExceptions">0</strong>
+                <small>地址未识别、未找到或状态异常</small>
+              </button>
+              <button class="dashboard-card alert-card" type="button" data-dashboard-target="overdue">
+                <span>超时订单</span>
+                <strong id="dashOverdue">0</strong>
+                <small>超过 48 小时未更新且未送达</small>
+              </button>
+            </div>
+            <div id="adminImportStatus" aria-live="polite"></div>
+            <div id="adminRecentOrders"></div>
+          </section>
           <section id="adminOrders" class="admin-section stack hidden"></section>
           <section id="adminExceptions" class="admin-section stack hidden"></section>
           <section id="adminBatches" class="admin-section stack hidden"></section>
           <section id="adminRules" class="admin-section stack hidden"></section>
           <section id="adminLabels" class="admin-section stack hidden"></section>
+          <section id="adminSettings" class="admin-section stack hidden">
+            <section class="panel settings-panel">
+              <div>
+                <p class="eyebrow">仅管理员可见</p>
+                <h2>系统设置</h2>
+                <p class="hint">修改后会保存在这台设备的浏览器中，并重新检查数据库连接。</p>
+              </div>
+              <div class="settings-grid">
+                <label class="field-group" for="supabaseUrl">
+                  <span>Project URL</span>
+                  <input id="supabaseUrl" class="input" type="url" placeholder="https://example.supabase.co" autocomplete="off" />
+                </label>
+                <label class="field-group" for="supabaseAnonKey">
+                  <span>Publishable Key</span>
+                  <input id="supabaseAnonKey" class="input" type="password" placeholder="sb_publishable_..." autocomplete="off" />
+                </label>
+              </div>
+              <div class="toolbar wrap">
+                <button id="saveConfigBtn" type="button">保存并检查连接</button>
+              </div>
+              <div id="configMessage" aria-live="polite"></div>
+            </section>
+          </section>
         </section>
 
         <section id="courierView" class="view hidden">
+          <div id="courierActiveFilter" class="active-filter hidden" role="status"></div>
           <div class="toolbar wrap courier-filterbar">
             <input id="courierSearch" class="input" placeholder="搜索姓名、电话、学校、楼栋、水洗标" />
             <label class="date-filter">
@@ -116,23 +171,29 @@
         </section>
 
         <section id="factoryView" class="view hidden">
+          <div id="factoryActiveFilter" class="active-filter hidden" role="status"></div>
           <div class="split factory-grid">
             <section class="panel scanner-panel">
               <h2>工厂扫码</h2>
-              <video id="scanVideo" class="scan-video" muted playsinline></video>
-              <div class="toolbar">
+              <video id="scanVideo" class="scan-video" muted autoplay playsinline></video>
+              <div class="toolbar wrap">
                 <input id="barcodeInput" class="input" placeholder="扫码或输入水洗标" />
                 <button id="startScanBtn" type="button">打开摄像头</button>
+                <label class="file-button ghost-file">
+                  拍照识别
+                  <input id="barcodePhotoInput" type="file" accept="image/*" capture="environment" />
+                </label>
+                <button id="toggleTorchBtn" class="ghost hidden" type="button">打开补光灯</button>
                 <button id="stopScanBtn" class="ghost" type="button">关闭摄像头</button>
               </div>
               <div class="toolbar two">
                 <button id="factoryInBtn" type="button">扫码入库</button>
                 <button id="factoryOutBtn" type="button">扫码出库</button>
               </div>
-              <p id="scanResult" class="hint">摄像头扫码需要 HTTPS；本地可用扫码枪或手动输入。</p>
+              <p id="scanResult" class="hint">请使用 Safari 或 Chrome 打开并允许摄像头；无法持续扫码时可用“拍照识别”。</p>
             </section>
             <section class="panel">
-              <h2>待出库物品</h2>
+              <h2 id="factoryQueueTitle">待处理物品</h2>
               <div id="factoryItemList" class="card-list"></div>
             </section>
           </div>
@@ -172,6 +233,6 @@
       <div id="orderDialogBody" class="stack"></div>
     </dialog>
 
-    <script src="./app.js"></script>
+    <script src="./app.js?v=19"></script>
   </body>
 </html>
