@@ -847,8 +847,61 @@ button.danger,
   border-left-color: var(--red);
 }
 
+.task-card.review {
+  border-left-color: #d99a00;
+  background: #fffdf6;
+}
+
 .task-card.compact {
   padding: 10px;
+}
+
+.exception-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.exception-heading h2 {
+  margin: 0;
+}
+
+.exception-stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 14px 0;
+}
+
+.success-note {
+  margin: 10px 0;
+  border: 1px solid rgba(31, 138, 91, 0.24);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: var(--green);
+  background: var(--green-soft);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.exception-reasons {
+  color: #8a4a00 !important;
+  font-weight: 800;
+}
+
+.confidence-badge.confirm {
+  color: #815700;
+  background: var(--yellow-soft);
+}
+
+.confidence-badge.review {
+  color: var(--red);
+  background: var(--red-soft);
+}
+
+.actions .learn-action {
+  border-color: rgba(31, 138, 91, 0.34);
+  color: var(--green);
+  background: var(--green-soft);
 }
 
 .card-head {
@@ -1131,6 +1184,165 @@ button.danger,
   background: var(--red-soft);
 }
 
+.factory-label-panel {
+  margin-top: 12px;
+  border: 1px solid #cdddeb;
+  border-radius: 10px;
+  padding: 12px;
+  background: #f7fbff;
+}
+
+.factory-label-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.factory-label-heading h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.factory-auto-print {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  border: 1px solid #b8cee0;
+  border-radius: 8px;
+  padding: 7px 9px;
+  color: #245b92;
+  background: #fff;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.factory-auto-print input {
+  width: 18px;
+  height: 18px;
+  accent-color: #2f6da8;
+}
+
+.factory-label-empty {
+  margin: 12px 0 0;
+  border: 1px dashed #b8cee0;
+  border-radius: 8px;
+  padding: 18px 12px;
+  color: var(--muted);
+  background: #fff;
+  text-align: center;
+  font-size: 13px;
+}
+
+.factory-label-preview {
+  margin-top: 12px;
+  overflow: auto;
+  border-radius: 8px;
+  padding: 10px;
+  background:
+    linear-gradient(45deg, #ececec 25%, transparent 25%) 0 0 / 12px 12px,
+    linear-gradient(45deg, transparent 75%, #ececec 75%) 0 0 / 12px 12px,
+    linear-gradient(45deg, transparent 75%, #ececec 75%) 6px -6px / 12px 12px,
+    linear-gradient(45deg, #ececec 25%, #fff 25%) 6px -6px / 12px 12px;
+}
+
+.factory-sticker {
+  width: 60mm;
+  height: 60mm;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
+  color: #000;
+  box-shadow: 0 5px 18px rgba(24, 41, 57, 0.18);
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+}
+
+.factory-sticker table {
+  width: 52mm;
+  min-width: 0;
+  max-width: 52mm;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 9.5pt;
+  font-weight: 700;
+}
+
+.factory-sticker th,
+.factory-sticker td {
+  border: 0.35mm solid #000;
+  padding: 1.05mm 1mm;
+  line-height: 1.15;
+  text-align: center;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.factory-sticker th {
+  padding: 1.45mm 1mm;
+  font-size: 14pt;
+  font-weight: 900;
+}
+
+.factory-sticker .label-column {
+  width: 14mm;
+}
+
+.factory-sticker .value-column {
+  width: 38mm;
+}
+
+.factory-sticker td:first-child {
+  width: 14mm;
+}
+
+.factory-sticker td:last-child {
+  width: 38mm;
+}
+
+.factory-sticker .barcode-value {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 8.3pt;
+  letter-spacing: 0.05mm;
+  white-space: nowrap;
+}
+
+.factory-label-status {
+  min-height: 18px;
+  margin: 9px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.factory-label-status.ready,
+.factory-label-status.printed {
+  color: var(--green);
+}
+
+.factory-label-status.error {
+  color: var(--red);
+}
+
+.factory-label-actions {
+  margin-top: 8px;
+}
+
+.factory-print-frame {
+  position: fixed;
+  left: -10000px;
+  bottom: 0;
+  width: 1px;
+  height: 1px;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .scan-history-panel {
   margin-top: 10px;
   border-top: 1px solid var(--line);
@@ -1345,6 +1557,14 @@ code {
     aspect-ratio: 1 / 1;
   }
 
+  .factory-label-heading {
+    flex-direction: column;
+  }
+
+  .factory-auto-print {
+    width: 100%;
+  }
+
   .stat-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
@@ -1365,6 +1585,18 @@ code {
   .edit-grid,
   .rule-form {
     grid-template-columns: 1fr;
+  }
+
+  .exception-heading {
+    flex-direction: column;
+  }
+
+  .exception-heading button {
+    width: 100%;
+  }
+
+  .exception-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .card-head {

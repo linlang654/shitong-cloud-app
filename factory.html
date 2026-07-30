@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#f26a1b" />
     <title>工厂扫码台 - 事事通校园配送系统</title>
     <link rel="manifest" href="./manifest.webmanifest" />
-    <link rel="stylesheet" href="./styles.css?v=20" />
+    <link rel="stylesheet" href="./styles.css?v=25" />
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   </head>
   <body data-app-mode="factory" class="role-page factory-page">
@@ -50,7 +50,7 @@
               </button>
               <button id="factoryOutBtn" class="scan-mode-button scan-out" type="button" aria-pressed="false">
                 <strong>连续出库</strong>
-                <span>扫到即出库并生成送回任务</span>
+                <span>扫到即出库、生成任务和贴纸</span>
               </button>
             </div>
             <div id="factoryModeStatus" class="scan-mode-status" role="status">请先选择本轮作业模式</div>
@@ -67,6 +67,26 @@
               <button id="stopScanBtn" class="ghost" type="button">结束本轮</button>
             </div>
             <p id="scanResult" class="scan-feedback idle" role="status" aria-live="assertive">选择作业模式后将自动打开后置摄像头。</p>
+            <section class="factory-label-panel" aria-labelledby="factoryLabelTitle">
+              <div class="factory-label-heading">
+                <div>
+                  <h3 id="factoryLabelTitle">出库贴纸</h3>
+                  <p class="hint">每件出库后立即生成一张 60×60 毫米贴纸。</p>
+                </div>
+                <label class="factory-auto-print">
+                  <input id="factoryAutoPrintToggle" type="checkbox" />
+                  <span>出库后自动打开打印</span>
+                </label>
+              </div>
+              <p id="factoryLabelEmpty" class="factory-label-empty">还没有出库贴纸。扫描出库成功后会显示在这里。</p>
+              <div id="factoryLabelPreview" class="factory-label-preview hidden"></div>
+              <p id="factoryLabelStatus" class="factory-label-status" role="status" aria-live="polite"></p>
+              <div class="toolbar wrap factory-label-actions">
+                <button id="printFactoryLabelBtn" type="button" disabled>重新打印当前贴纸</button>
+                <button id="clearFactoryLabelBtn" class="ghost" type="button" disabled>清除预览</button>
+              </div>
+              <iframe id="factoryLabelPrintFrame" class="factory-print-frame" title="出库贴纸打印区域"></iframe>
+            </section>
             <section class="scan-history-panel" aria-labelledby="factoryScanHistoryTitle">
               <div class="card-head">
                 <h3 id="factoryScanHistoryTitle">最近处理</h3>
@@ -89,6 +109,6 @@
       </section>
     </main>
 
-    <script src="./app.js?v=20"></script>
+    <script src="./app.js?v=25"></script>
   </body>
 </html>
