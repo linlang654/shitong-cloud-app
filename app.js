@@ -1,4 +1,5 @@
 const CONFIG_KEY = "shitong_cloud_supabase_config";
+const FACTORY_LABEL_AUTO_PRINT_KEY = "shitong_factory_label_auto_print";
 const AFTER_SALES_PHONE = "15599157072";
 const DEFAULT_SUPABASE_CONFIG = {
   url: "https://ukzjgjfefqlyeqecqyiz.supabase.co",
@@ -41,6 +42,7 @@ let factoryScanSuccessCount = 0;
 let factoryLastAction = null;
 let factoryLastSeenBarcode = "";
 let factoryLastSeenAt = 0;
+let factoryCurrentLabel = null;
 const factoryProcessedBarcodes = new Set();
 const factoryScanHistory = [];
 let recognitionRules = [];
@@ -49,12 +51,59 @@ let orderManagementRows = [];
 let orderDashboardFilter = "";
 let courierDashboardFilter = "";
 let factoryDashboardFilter = "";
+let currentExceptionRows = [];
+let exceptionActionMessage = "";
 
 const $ = (id) => document.getElementById(id);
 const on = (id, eventName, handler) => $(id)?.addEventListener(eventName, handler);
 
 function text(value) {
   return String(value ?? "").replace(/_x000d_/gi, "\n").replace(/\s+/g, " ").trim();
+}
+
+function normalizeRecognitionText(value) {
+  return text(value).replace(/\s+/g, "").toLowerCase();
+}
+
+function isUnresolvedDormValue(value, type) {
+  const normalized = text(value);
+  if (!normalized) return true;
+  if (type === "school") return normalized === "学校未识别";
+  if (type === "campus") return normalized === "校区未识别";
+  if (type === "building") return normalized === "楼栋未识别";
+  return /未识别/.test(normalized);
+}
+
+function isDormComplete(values) {
+  return !isUnresolvedDormValue(values.school, "school")
+    && !isUnresolvedDormValue(values.campus, "campus")
+    && !isUnresolvedDormValue(values.building, "building");
+}
+
+function isRecognitionReviewNote(value) {
+  return /未识别学校|未识别校区|未识别楼栋|地址推测，?待确认|楼栋与校区不匹配，?待确认/.test(text(value));
+}
+
+function cleanRecognitionNote(value) {
+  return text(value)
+    .split(/[；;]/)
+    .map(text)
+    .filter(Boolean)
+    .filter((part) => !/^(未识别学校|未识别校区|未识别楼栋|地址推测，?待确认|楼栋与校区不匹配，?待确认)$/.test(part))
+    .join("；");
+}
+
+function appendRecognitionNote(value, note) {
+  const parts = text(value).split(/[；;]/).map(text).filter(Boolean);
+  if (note && !parts.includes(note)) parts.push(note);
+  return parts.join("；");
+}
+
+function recognitionTier(dorm) {
+  if (!isDormComplete(dorm)) return "review";
+  if (isRecognitionReviewNote(dorm.note)) return "confirm";
+  if (dorm.recognitionSource === "rule" || dorm.recognitionSource === "form") return "high";
+  return "confirm";
 }
 
 function numberValue(value) {
@@ -480,7 +529,7 @@ function chineseNumberToDigit(value) {
 function normalizeSchool(source) {
   if (/师范|师大/.test(source)) return "师大";
   if (/财经|财大/.test(source)) return "财大";
-  if (/民族|民大/.test(source)) return "民大";
+  if (/民族|民大|贵山校区|百川校区/.test(source)) return "民大";
   if (/理工/.test(source)) return "理工";
   if (/中医|贵中医/.test(source)) return "贵中医";
   if (/科院|贵州科学院|贵科院/.test(source)) return "贵科院";
@@ -494,6 +543,119 @@ function defaultCampusForSchool(school) {
   if (school === "贵科院") return "学生公寓";
   if (school === "人文") return "学生宿舍";
   return "";
+}
+
+function canonicalCampusName(value, school) {
+  const source = text(value);
+  const isMinzuUniversity = school === "民大" || /民族|民大/.test(school);
+  if (isMinzuUniversity && /贵山(?:校区)?|南校区|南区/.test(source)) return "贵山校区";
+  if (isMinzuUniversity && /百川(?:校区)?|北校区|北区/.test(source)) return "百川校区";
+  return source;
+}
+
+function orderCampusName(order) {
+  return canonicalCampusName(order?.campus, order?.school) || "";
+}
+
+function detectCampus(source, school) {
+  if (school === "民大") {
+    const minzuCampus = canonicalCampusName(source, school);
+    if (["贵山校区", "百川校区"].includes(minzuCampus)) return minzuCampus;
+  }
+  if (/龙文苑/.test(source)) return "龙文苑";
+  if (/东校区|东区/.test(source)) return "东区";
+  if (/西校区|西区/.test(source)) return "西区";
+  if (/南校区|南区/.test(source)) return "南区";
+  if (/北校区|北区/.test(source)) return "北区";
+  if (/一期/.test(source)) return "学生公寓一期";
+  if (/三期|善德居/.test(source)) return "学生公寓三期";
+  if (/桂园|橘园|杏园|李园|竹园|桃园|H7|H8|J2|J3/.test(source)) return "宿舍区";
+  return defaultCampusForSchool(school);
+}
+
+function buildingNumberValue(building) {
+  const match = text(building).match(/(\d{1,2})栋(?:（[^）]+）)?$/);
+  return match ? Number(match[1]) : 0;
+}
+
+function inferMinzuCampusFromBuilding(school, campus, building) {
+  if (school !== "民大" || campus !== "校区未识别") return campus;
+  const buildingNumber = buildingNumberValue(building);
+  return buildingNumber >= 9 && buildingNumber <= 17 ? "贵山校区" : campus;
+}
+
+function inferCampusFromBuilding(school, campus, building) {
+  const minzuCampus = inferMinzuCampusFromBuilding(school, campus, building);
+  if (minzuCampus !== "校区未识别") return minzuCampus;
+  if (campus !== "校区未识别") return campus;
+
+  const normalizedBuilding = text(building);
+  if (school === "师大") {
+    const buildingNumber = buildingNumberValue(normalizedBuilding);
+    if ((buildingNumber >= 9 && buildingNumber <= 10) || (buildingNumber >= 14 && buildingNumber <= 18)) return "东区";
+    if (/^9[AB]栋$/i.test(normalizedBuilding)) return "西区";
+    if (/^龙文苑(?:[1-9])栋$/.test(normalizedBuilding)) return "龙文苑";
+  }
+  if (school === "财大") {
+    if (/^文心苑[1-4]栋$/.test(normalizedBuilding)) return "东区";
+    if (/^(?:玉兰苑[1-5]栋|丹桂苑[1-4]栋|樱花苑[1-4]栋|翠竹苑[1-3]栋|D17栋)$/i.test(normalizedBuilding)) return "西区";
+  }
+  if (school === "理工") {
+    if (/^(?:学生公寓三期)?H(?:01-2|02-[1-4])$/i.test(normalizedBuilding)) return "学生公寓三期";
+    if (/^(?:学生公寓)?一期[1-5]栋$/.test(normalizedBuilding)) return "学生公寓一期";
+  }
+  return campus;
+}
+
+function minzuLocationNeedsReview(school, campus, building) {
+  if (school !== "民大") return false;
+  const buildingNumber = buildingNumberValue(building);
+  if (!buildingNumber) return false;
+  if (campus === "贵山校区") return buildingNumber < 1 || buildingNumber > 17;
+  if (campus === "百川校区") return buildingNumber < 1 || buildingNumber > 8;
+  return false;
+}
+
+function locationNeedsReview(school, campus, building) {
+  if (minzuLocationNeedsReview(school, campus, building)) return true;
+  const normalizedBuilding = text(building);
+  const buildingNumber = buildingNumberValue(normalizedBuilding);
+
+  if (school === "师大") {
+    if (campus === "东区" && /^9[AB]栋$/i.test(normalizedBuilding)) return true;
+    if (campus === "东区" && buildingNumber > 18) return true;
+    if (campus === "西区" && buildingNumber >= 9 && ![11, 12, 13].includes(buildingNumber)) return true;
+    if (campus === "龙文苑" && buildingNumber > 9) return true;
+  }
+  if (school === "财大") {
+    const eastBuilding = /^文心苑(\d{1,2})栋$/.exec(normalizedBuilding);
+    const westBuilding = /^(玉兰苑|丹桂苑|樱花苑|翠竹苑)(\d{1,2})栋$/.exec(normalizedBuilding);
+    if (campus === "西区" && eastBuilding) return true;
+    if (campus === "东区" && (westBuilding || /^D17栋$/i.test(normalizedBuilding))) return true;
+    if (eastBuilding && Number(eastBuilding[1]) > 4) return true;
+    if (westBuilding) {
+      const limits = { 玉兰苑: 5, 丹桂苑: 4, 樱花苑: 4, 翠竹苑: 3 };
+      if (Number(westBuilding[2]) > limits[westBuilding[1]]) return true;
+    }
+  }
+  if (school === "理工") {
+    if (campus === "学生公寓一期" && /^H(?:01|02)-/i.test(normalizedBuilding)) return true;
+    if (campus === "学生公寓三期" && /^(?:学生公寓)?一期[1-5]栋$/.test(normalizedBuilding)) return true;
+    if (/^H/i.test(normalizedBuilding) && !/^H(?:01-2|02-[1-4])$/i.test(normalizedBuilding)) return true;
+    if (campus === "学生公寓一期" && buildingNumber > 5) return true;
+  }
+  if (school === "贵中医") {
+    const gardenBuilding = /^(橘园|桂园|杏园|李园)(\d{1,2})(?:栋)?$/.exec(normalizedBuilding);
+    if (gardenBuilding) {
+      const limits = { 橘园: 4, 桂园: 3, 杏园: 3, 李园: 2 };
+      if (Number(gardenBuilding[2]) > limits[gardenBuilding[1]]) return true;
+    }
+    const peachBuilding = /^桃园([A-Z])区$/i.exec(normalizedBuilding);
+    if (peachBuilding && !/[A-D]/i.test(peachBuilding[1])) return true;
+  }
+  if (school === "贵科院" && buildingNumber > 14) return true;
+  if (school === "人文" && buildingNumber > 8) return true;
+  return false;
 }
 
 function normalizeBuilding(value) {
@@ -513,36 +675,43 @@ function normalizeBuilding(value) {
 
 function parseDormLine(form) {
   const lines = text(form).split(/[\n\r，,；;]+/).map(text).filter(Boolean);
-  const dormLine = lines.find((line) => /[:：]/.test(line) && /(师大|师范|财大|财经|民大|民族|贵中医|中医|理工|贵科院|科院|人文|城市学院|职业学院|东区|西区|南区|北区|龙文苑)/.test(line));
+  const dormLine = lines.find((line) => /[:：]/.test(line) && /(师大|师范|财大|财经|民大|民族|贵中医|中医|理工|贵科院|科院|人文|城市学院|职业学院|东区|西区|南区|北区|贵山|百川|龙文苑)/.test(line));
   if (!dormLine) return null;
   const [left, right] = dormLine.split(/[:：]/);
   const school = normalizeSchool(left);
-  let campus = "校区未识别";
-  if (/龙文苑/.test(left)) campus = "龙文苑";
-  else if (/东校区|东区/.test(left)) campus = "东区";
-  else if (/西校区|西区/.test(left)) campus = "西区";
-  else if (/南校区|南区/.test(left)) campus = "南区";
-  else if (/北校区|北区/.test(left)) campus = "北区";
-  else if (/一期/.test(left)) campus = "学生公寓一期";
-  else if (/三期|善德居/.test(left)) campus = "学生公寓三期";
-  else if (/桂园|橘园|杏园|李园|竹园|桃园|H7|H8|J2|J3/.test(left)) campus = "宿舍区";
-  else campus = defaultCampusForSchool(school) || campus;
   const building = normalizeBuilding(right);
+  let campus = detectCampus(left, school) || "校区未识别";
+  campus = inferCampusFromBuilding(school, campus, building);
   const notes = [];
   if (school === "学校未识别") notes.push("未识别学校");
   if (campus === "校区未识别") notes.push("未识别校区");
   if (!building) notes.push("未识别楼栋");
-  return { school, campus, building: building || "楼栋未识别", note: notes.join("；") };
+  if (locationNeedsReview(school, campus, building)) notes.push("楼栋与校区不匹配，待确认");
+  return {
+    school,
+    campus,
+    building: building || "楼栋未识别",
+    note: notes.join("；"),
+    recognitionSource: "form",
+  };
 }
 
 function applyRecognitionRule(source) {
-  const rule = recognitionRules.find((item) => item.enabled !== false && item.keyword && source.includes(item.keyword));
+  const normalizedSource = normalizeRecognitionText(source);
+  const rule = recognitionRules
+    .filter((item) => item.enabled !== false && item.keyword && normalizedSource.includes(normalizeRecognitionText(item.keyword)))
+    .sort((left, right) => normalizeRecognitionText(right.keyword).length - normalizeRecognitionText(left.keyword).length)[0];
   if (!rule) return null;
+  const school = rule.school || "学校未识别";
+  const campus = canonicalCampusName(rule.campus, school) || "校区未识别";
+  const building = rule.building || "楼栋未识别";
   return {
-    school: rule.school || "学校未识别",
-    campus: rule.campus || "校区未识别",
-    building: rule.building || "楼栋未识别",
-    note: "",
+    school,
+    campus,
+    building,
+    note: locationNeedsReview(school, campus, building) ? "楼栋与校区不匹配，待确认" : "",
+    recognitionSource: "rule",
+    recognitionRuleId: rule.id || "",
   };
 }
 
@@ -557,20 +726,19 @@ function extractDormInfo(row) {
   if (formDorm) return formDorm;
 
   const school = normalizeSchool(source);
-  let campus = "";
+  let campus = detectCampus(source, school) || "校区未识别";
   let building = "";
-  if (/龙文苑/.test(source)) campus = "龙文苑";
-  else if (/东校区|东区/.test(source)) campus = "东区";
-  else if (/西校区|西区/.test(source)) campus = "西区";
-  else if (/南校区|南区/.test(source)) campus = "南区";
-  else if (/北校区|北区/.test(source)) campus = "北区";
-  else if (/一期/.test(source)) campus = "学生公寓一期";
-  else if (/三期|善德居/.test(source)) campus = "学生公寓三期";
-  else if (/桂园|橘园|杏园|李园|竹园|桃园|H7|H8|J2|J3/.test(source)) campus = "宿舍区";
-  else if (defaultCampusForSchool(school)) campus = defaultCampusForSchool(school);
-  else campus = "校区未识别";
 
   const cleaned = source.replace(/学校[:：]/g, " ").replace(/校区[:：]/g, " ");
+  if (school === "民大") {
+    const minzuBuildingMatch = cleaned.match(
+      /(?:贵州民族大学|贵州民大|民族大学|民大|贵山校区|百川校区|南校区|北校区|南区|北区)[^，,。；;]{0,35}?([0-9一二三四五六七八九十]{1,3})\s*(栋|号楼|宿舍楼)/,
+    );
+    if (minzuBuildingMatch) {
+      const buildingNumber = Number(chineseNumberToDigit(minzuBuildingMatch[1]));
+      if (buildingNumber >= 1 && buildingNumber <= 17) building = `${buildingNumber}栋`;
+    }
+  }
   const patterns = [
     /(玉兰苑|丹桂苑|樱花苑|翠竹苑|文心苑)\s*([0-9一二三四五六七八九十]+)\s*(栋)?/,
     /(桂园|橘园|杏园|李园)\s*([0-9一二三四五六七八九十]+)\s*(栋|号楼)?/,
@@ -581,16 +749,19 @@ function extractDormInfo(row) {
     /(竹园|善德居|J2|J3|H7|H8)/,
   ];
 
-  for (const pattern of patterns) {
-    const match = cleaned.match(pattern);
-    if (!match) continue;
-    if (match[1] && match[2] && /苑|园/.test(match[1])) building = `${match[1]}${chineseNumberToDigit(match[2])}${match[1] === "桃园" ? "区" : "栋"}`;
-    else if (match[1] && match[2] && /留学生公寓/.test(match[1])) building = `${chineseNumberToDigit(match[2])}栋（留学生公寓）`;
-    else if (match[1] && match[2] && /学生公寓/.test(match[1])) building = `${match[1]}${chineseNumberToDigit(match[2])}栋`;
-    else if (match[1] && /^[一二三四五六七八九十]+$/.test(match[1])) building = `${chineseNumberToDigit(match[1])}栋`;
-    else if (match[2] && /^[A-Z]?\d/.test(match[2])) building = `${match[1] || ""}${match[2]}`;
-    else building = match[1];
-    break;
+  if (!building) {
+    for (const pattern of patterns) {
+      const match = cleaned.match(pattern);
+      if (!match) continue;
+      if (match[1] && match[2] && /苑|园/.test(match[1])) building = `${match[1]}${chineseNumberToDigit(match[2])}${match[1] === "桃园" ? "区" : "栋"}`;
+      else if (match[1] && match[2] && /留学生公寓/.test(match[1])) building = `${chineseNumberToDigit(match[2])}栋（留学生公寓）`;
+      else if (match[1] && match[2] && /学生公寓/.test(match[1])) building = `${match[1]}${chineseNumberToDigit(match[2])}栋`;
+      else if (match[1] && /^[一二三四五六七八九十]+$/.test(match[1])) building = `${chineseNumberToDigit(match[1])}栋`;
+      else if (match[2] && /^[一二三四五六七八九十]+$/.test(match[2])) building = `${chineseNumberToDigit(match[2])}栋`;
+      else if (match[2] && /^[A-Z]?\d/.test(match[2])) building = `${match[1] || ""}${match[2]}`;
+      else building = match[1];
+      break;
+    }
   }
 
   building = text(building)
@@ -600,12 +771,21 @@ function extractDormInfo(row) {
     .replace(/^H7\d+栋$/, "H7")
     .replace(/^H8\d*栋$/, "H8");
   if (!building) building = "楼栋未识别";
+  campus = inferCampusFromBuilding(school, campus, building);
 
   const notes = [];
   if (school === "学校未识别") notes.push("未识别学校");
   if (campus === "校区未识别") notes.push("未识别校区");
   if (building === "楼栋未识别") notes.push("未识别楼栋");
-  return { school, campus, building, note: notes.join("；") };
+  if (locationNeedsReview(school, campus, building)) notes.push("楼栋与校区不匹配，待确认");
+  if (!notes.length) notes.push("地址推测，待确认");
+  return {
+    school,
+    campus,
+    building,
+    note: notes.join("；"),
+    recognitionSource: "address",
+  };
 }
 
 function extractImages(row) {
@@ -680,6 +860,19 @@ function rowsToWorkItems(rows) {
   });
   items.sort((a, b) => `${a.dorm.school}${a.dorm.campus}${a.dorm.building}`.localeCompare(`${b.dorm.school}${b.dorm.campus}${b.dorm.building}`, "zh-Hans-CN", { numeric: true }));
   return items;
+}
+
+function summarizeRecognition(workItems) {
+  const uniqueOrders = new Map();
+  workItems.forEach((item) => {
+    const orderNo = text(field(item.row, ["订单号", "订单编号"]));
+    if (orderNo && !uniqueOrders.has(orderNo)) uniqueOrders.set(orderNo, item.dorm);
+  });
+  const result = { total: uniqueOrders.size, high: 0, confirm: 0, review: 0 };
+  uniqueOrders.forEach((dorm) => {
+    result[recognitionTier(dorm)] += 1;
+  });
+  return result;
 }
 
 function diagnoseRows(rows) {
@@ -861,6 +1054,7 @@ async function handleImport(event) {
       const orderNo = text(field(row, ["订单号", "订单编号"]));
       if (!orderWorkItems.has(orderNo)) orderWorkItems.set(orderNo, workItem);
     });
+    const recognitionSummary = summarizeRecognition(workItems);
     const orderPayloads = [...orderWorkItems.values()].map((workItem) => buildOrderPayload(workItem.row, workItem.dorm, batch.id));
     const orders = await batchUpsert("orders", orderPayloads, { onConflict: "order_no" }, 120);
     const orderCache = new Map(orders.map((order) => [order.order_no, order]));
@@ -910,7 +1104,10 @@ async function handleImport(event) {
     const createdItems = createdItemRows.length;
     await updateImportBatch(batch.id, orderCache.size, createdItems);
     await refreshAll();
-    $("adminImportStatus").innerHTML = renderImportDiagnosis(diagnosis, `导入完成：${orderCache.size} 个订单，新增 ${createdItems} 件物品，跳过重复 ${skippedItems} 件。`);
+    $("adminImportStatus").innerHTML = renderImportDiagnosis(
+      diagnosis,
+      `导入完成：${orderCache.size} 个订单，新增 ${createdItems} 件物品，跳过重复 ${skippedItems} 件。地址识别：自动通过 ${recognitionSummary.high} 单，快速确认 ${recognitionSummary.confirm} 单，需补充信息 ${recognitionSummary.review} 单。`,
+    );
   } catch (error) {
     console.error(error);
     setMessage("adminImportStatus", `导入失败：${error.message || error}`, "warn");
@@ -1041,7 +1238,7 @@ async function loadAdminOverview() {
               <td>${escapeHtml(order.order_no)}</td>
               <td>${escapeHtml(order.customer_name)}</td>
               <td>${escapeHtml(order.phone)}</td>
-              <td>${escapeHtml(`${order.school || ""}${order.campus || ""}${order.building || ""}`)}</td>
+              <td>${escapeHtml(`${order.school || ""}${orderCampusName(order)}${order.building || ""}`)}</td>
               <td>${escapeHtml(order.order_status)}</td>
               <td>${order.order_items?.length || 0}</td>
               <td><button class="ghost small" type="button" data-detail="${order.id}">详情</button></td>
@@ -1134,7 +1331,7 @@ function filteredOrderRows() {
   const startDate = text($("orderStartDate")?.value);
   const endDate = text($("orderEndDate")?.value);
   return orderManagementRows.filter((order) => {
-    const searchable = `${order.order_no} ${order.customer_name} ${order.phone} ${order.school} ${order.campus} ${order.building} ${order.address} ${(order.order_items || []).map((item) => `${item.barcode} ${item.product_name} ${item.spec}`).join(" ")}`.toLowerCase();
+    const searchable = `${order.order_no} ${order.customer_name} ${order.phone} ${order.school} ${order.campus} ${orderCampusName(order)} ${order.building} ${order.address} ${(order.order_items || []).map((item) => `${item.barcode} ${item.product_name} ${item.spec}`).join(" ")}`.toLowerCase();
     if (keyword && !searchable.includes(keyword)) return false;
     if (selectedStatus && order.order_status !== selectedStatus) return false;
     if (orderDashboardFilter === "overdue" && !isOverdueOrder(order)) return false;
@@ -1155,7 +1352,7 @@ function renderOrderRows(rows) {
       <td>${escapeHtml(order.order_no)}</td>
       <td>${escapeHtml(order.customer_name)}</td>
       <td>${escapeHtml(order.phone)}</td>
-      <td>${escapeHtml(`${order.school || ""}${order.campus || ""}${order.building || ""}`)}</td>
+      <td>${escapeHtml(`${order.school || ""}${orderCampusName(order)}${order.building || ""}`)}</td>
       <td>
         <select class="input compact-input" data-order-status="${order.id}">
           ${ORDER_STATUSES.map((status) => `<option value="${escapeHtml(status)}" ${status === order.order_status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}
@@ -1194,15 +1391,31 @@ async function updateOrderStatus(orderId, status) {
 }
 
 async function loadExceptions() {
-  const { data, error } = await sb.from("orders").select("*").or("exception_note.neq.,school.eq.学校未识别,campus.eq.校区未识别,building.eq.楼栋未识别,order_status.eq.异常,order_status.eq.未找到").order("created_at", { ascending: false }).limit(100);
+  const { data, error } = await sb.from("orders").select("*").or("exception_note.neq.,school.eq.学校未识别,campus.eq.校区未识别,building.eq.楼栋未识别,order_status.eq.异常,order_status.eq.未找到").order("created_at", { ascending: false }).limit(300);
   if (error) return setMessage("adminExceptions", error.message, "warn");
+  currentExceptionRows = data || [];
+  const quickConfirmCount = currentExceptionRows.filter((order) => isDormComplete(order) && isRecognitionReviewNote(order.exception_note)).length;
+  const incompleteCount = currentExceptionRows.filter((order) => !isDormComplete(order)).length;
+  const operationalCount = currentExceptionRows.length - quickConfirmCount - incompleteCount;
   $("adminExceptions").innerHTML = `
     <section class="panel">
-      <h2>异常处理中心</h2>
-      <p class="hint">“保存修正”只改当前订单；“保存并记住规则”会同时修正当前订单，并让以后含有相同关键词的地址自动归类。</p>
-      <p class="hint">卡片仍可能显示“已取件”等正常进度，因为这里检查的是地址和异常备注，不是只检查订单进度。</p>
-      <div class="card-list">${(data || []).map(renderExceptionCard).join("") || '<p class="hint">暂无异常订单</p>'}</div>
+      <div class="exception-heading">
+        <div>
+          <h2>地址确认与异常处理</h2>
+          <p class="hint">先确认系统推测结果；遇到重复写法时保存为规则，系统会立即处理同类历史订单，并用于以后导入。</p>
+        </div>
+        <button class="ghost" type="button" data-reprocess-orders>用现有规则重新识别</button>
+      </div>
+      <div class="mini-stats exception-stats">
+        <div><strong>${quickConfirmCount}</strong><span>快速确认</span></div>
+        <div><strong>${incompleteCount}</strong><span>信息不完整</span></div>
+        <div><strong>${operationalCount}</strong><span>其他异常</span></div>
+        <div><strong>${currentExceptionRows.length}</strong><span>本页待处理</span></div>
+      </div>
+      ${exceptionActionMessage ? `<p class="success-note">${escapeHtml(exceptionActionMessage)}</p>` : ""}
+      <div class="card-list">${currentExceptionRows.map(renderExceptionCard).join("") || '<p class="hint">暂无待确认或异常订单</p>'}</div>
     </section>`;
+  exceptionActionMessage = "";
 }
 
 function renderExceptionCard(order) {
@@ -1210,55 +1423,169 @@ function renderExceptionCard(order) {
   if (!order.school || order.school === "学校未识别") reasons.push("学校未识别");
   if (!order.campus || order.campus === "校区未识别") reasons.push("校区未识别");
   if (!order.building || order.building === "楼栋未识别") reasons.push("楼栋未识别");
+  if (/地址推测，?待确认/.test(order.exception_note || "")) reasons.push("系统推测，待确认");
   if (["异常", "未找到"].includes(order.order_status)) reasons.push(order.order_status);
-  if (order.exception_note && !reasons.some((reason) => order.exception_note.includes(reason.replace("未识别", "")))) reasons.push("有异常备注");
+  if (cleanRecognitionNote(order.exception_note)) reasons.push("有异常备注");
+  const quickConfirm = isDormComplete(order) && isRecognitionReviewNote(order.exception_note);
+  const addressNeedsReview = needsRecognitionReview(order);
+  const levelLabel = quickConfirm ? "黄色 · 快速确认" : "红色 · 需人工处理";
   return `
-    <article class="task-card alert">
-      <div class="card-head"><h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3><span>${escapeHtml(reasons.join("、") || "需检查")}</span></div>
+    <article class="task-card ${quickConfirm ? "review" : "alert"}" data-exception-card="${order.id}">
+      <div class="card-head">
+        <h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3>
+        <span class="confidence-badge ${quickConfirm ? "confirm" : "review"}">${levelLabel}</span>
+      </div>
       <p>订单号：${escapeHtml(order.order_no)}｜当前状态：${escapeHtml(order.order_status || "未知")}</p>
+      <p class="exception-reasons">${escapeHtml(reasons.join("、") || "需检查")}</p>
       <p>${escapeHtml(order.address || "")}</p>
       <div class="edit-grid">
         <input class="input" data-edit-school="${order.id}" value="${escapeHtml(order.school || "")}" placeholder="学校" />
-        <input class="input" data-edit-campus="${order.id}" value="${escapeHtml(order.campus || "")}" placeholder="校区" />
+        <input class="input" data-edit-campus="${order.id}" value="${escapeHtml(canonicalCampusName(order.campus, order.school) || "")}" placeholder="校区" />
         <input class="input" data-edit-building="${order.id}" value="${escapeHtml(order.building || "")}" placeholder="楼栋" />
         <input class="input" data-edit-note="${order.id}" value="${escapeHtml(order.exception_note || "")}" placeholder="异常备注" />
       </div>
       <div class="actions">
-        <button type="button" data-save-dorm="${order.id}">保存修正</button>
+        ${addressNeedsReview ? `<button type="button" data-confirm-dorm="${order.id}">${isDormComplete(order) ? "确认并下一条" : "补全并下一条"}</button>` : ""}
+        <button class="ghost" type="button" data-save-dorm="${order.id}">仅保存</button>
         <button class="ghost" type="button" data-detail="${order.id}">详情</button>
-        <button class="ghost" type="button" data-learn-rule="${order.id}" data-address="${escapeHtml(order.address || "")}">保存并记住规则</button>
+        ${addressNeedsReview ? `<button class="ghost learn-action" type="button" data-learn-rule="${order.id}" data-address="${escapeHtml(order.address || "")}">确认、记住并处理同类</button>` : ""}
       </div>
     </article>`;
 }
 
-async function saveDorm(orderId) {
-  const school = text(document.querySelector(`[data-edit-school="${orderId}"]`)?.value);
-  const campus = text(document.querySelector(`[data-edit-campus="${orderId}"]`)?.value);
-  const building = text(document.querySelector(`[data-edit-building="${orderId}"]`)?.value);
-  const note = text(document.querySelector(`[data-edit-note="${orderId}"]`)?.value);
+function readDormEditor(orderId) {
+  return {
+    school: text(document.querySelector(`[data-edit-school="${orderId}"]`)?.value),
+    campus: text(document.querySelector(`[data-edit-campus="${orderId}"]`)?.value),
+    building: text(document.querySelector(`[data-edit-building="${orderId}"]`)?.value),
+    note: text(document.querySelector(`[data-edit-note="${orderId}"]`)?.value),
+  };
+}
+
+function focusFirstException() {
+  requestAnimationFrame(() => {
+    document.querySelector("[data-exception-card] [data-edit-school]")?.focus();
+  });
+}
+
+async function saveDorm(orderId, options = {}) {
+  const editor = readDormEditor(orderId);
+  const school = editor.school;
+  const campus = canonicalCampusName(editor.campus, school);
+  const building = editor.building;
+  const normalizedEditor = { ...editor, school, campus, building };
+  if (options.confirm && !isDormComplete(normalizedEditor)) {
+    return alert("请先把学校、校区和楼栋填写完整，再确认这一单。");
+  }
+  const note = isDormComplete(normalizedEditor) ? cleanRecognitionNote(editor.note) : editor.note;
   const { error } = await sb.from("orders").update({ school, campus, building, exception_note: note, updated_at: new Date().toISOString() }).eq("id", orderId);
   if (error) return alert(error.message);
-  await insertLog({ orderId, status: "后台修正宿舍", note: `${school}${campus}${building} ${note}` });
-  await refreshAll();
+  await insertLog({
+    orderId,
+    status: options.confirm ? "人工确认地址" : "后台修正宿舍",
+    note: `${school}/${campus}/${building}${note ? `；${note}` : ""}`,
+  });
+  exceptionActionMessage = options.confirm ? `已确认 ${school} / ${campus} / ${building}` : "修改已保存";
+  await Promise.all([loadStats(), loadExceptions()]);
+  if (options.next) focusFirstException();
+}
+
+function suggestRecognitionKeyword(address, building) {
+  const compactAddress = normalizeRecognitionText(address);
+  const variants = [
+    normalizeRecognitionText(building),
+    normalizeRecognitionText(building).replace(/栋$/, "号楼"),
+    normalizeRecognitionText(building).replace(/号楼$/, "栋"),
+  ].filter(Boolean);
+  for (const variant of variants) {
+    const index = compactAddress.indexOf(variant);
+    if (index < 0) continue;
+    return compactAddress.slice(Math.max(0, index - 10), index + variant.length);
+  }
+  return compactAddress.slice(-16);
+}
+
+function validateRecognitionKeyword(keyword) {
+  const normalized = normalizeRecognitionText(keyword);
+  if (normalized.length < 4) return "关键词过短，容易误伤其他学校，请至少保留学校/校区和楼栋信息。";
+  if (/^(?:[a-z]?\d{1,3}|[一二三四五六七八九十]+)(?:栋|号楼|宿舍)?$/i.test(normalized)) {
+    return "不能只用“17栋”这类楼栋名作为规则，请同时包含学校或校区关键词。";
+  }
+  if (/\d{7,}/.test(normalized)) return "关键词里不能包含手机号、订单号或寝室号等个人信息。";
+  return "";
+}
+
+function needsRecognitionReview(order) {
+  return !isDormComplete(order) || isRecognitionReviewNote(order.exception_note);
+}
+
+async function applyRuleToExistingOrders(keyword, mapping) {
+  const { data, error } = await sb.from("orders")
+    .select("id,address,school,campus,building,exception_note")
+    .or("exception_note.neq.,school.eq.学校未识别,campus.eq.校区未识别,building.eq.楼栋未识别")
+    .limit(1000);
+  if (error) throw error;
+  const normalizedKeyword = normalizeRecognitionText(keyword);
+  const matches = (data || []).filter((order) => (
+    needsRecognitionReview(order)
+    && normalizeRecognitionText(order.address).includes(normalizedKeyword)
+  ));
+  for (const group of chunkArray(matches, 100)) {
+    const ids = group.map((order) => order.id);
+    const operationalNotes = [...new Set(group.map((order) => cleanRecognitionNote(order.exception_note)))];
+    if (operationalNotes.length === 1) {
+      const { error: updateError } = await sb.from("orders").update({
+        school: mapping.school,
+        campus: mapping.campus,
+        building: mapping.building,
+        exception_note: operationalNotes[0],
+        updated_at: new Date().toISOString(),
+      }).in("id", ids);
+      if (updateError) throw updateError;
+      continue;
+    }
+    await Promise.all(group.map(async (order) => {
+      const { error: updateError } = await sb.from("orders").update({
+        school: mapping.school,
+        campus: mapping.campus,
+        building: mapping.building,
+        exception_note: cleanRecognitionNote(order.exception_note),
+        updated_at: new Date().toISOString(),
+      }).eq("id", order.id);
+      if (updateError) throw updateError;
+    }));
+  }
+  return matches.length;
 }
 
 async function learnRule(orderId, address) {
-  const school = text(document.querySelector(`[data-edit-school="${orderId}"]`)?.value);
-  const campus = text(document.querySelector(`[data-edit-campus="${orderId}"]`)?.value);
-  const building = text(document.querySelector(`[data-edit-building="${orderId}"]`)?.value);
-  const note = text(document.querySelector(`[data-edit-note="${orderId}"]`)?.value);
+  const editor = readDormEditor(orderId);
+  const school = editor.school;
+  const campus = canonicalCampusName(editor.campus, school);
+  const building = editor.building;
+  const note = cleanRecognitionNote(editor.note);
   if (!school || !campus || !building || /未识别/.test(`${school}${campus}${building}`)) {
     return alert("请先把学校、校区和楼栋填写完整，再保存规则。");
   }
-  const suggestedKeyword = text(address).replace(/\s+/g, "").slice(-16);
+  const suggestedKeyword = suggestRecognitionKeyword(address, building);
   const keyword = prompt(
-    "请输入地址里稳定出现、能够代表这一地点的关键词。\n例如地址含“贵州师范大学花溪校区17栋宿舍”，可填“花溪校区17栋”。\n以后导入的地址只要包含该关键词，就会自动填入当前学校、校区和楼栋。",
+    "请输入地址里稳定出现、能代表这一地点的关键词。\n例如“贵州师范大学花溪校区东区17栋”，可填“花溪校区东区17栋”。\n不要包含姓名、电话、寝室号。保存后会立即处理同类历史订单。",
     suggestedKeyword,
   );
   if (!text(keyword)) return;
   const normalizedKeyword = text(keyword);
-  const duplicate = recognitionRules.find((rule) => rule.enabled !== false && rule.keyword === normalizedKeyword);
-  if (duplicate && !confirm(`已经存在关键词“${normalizedKeyword}”的规则，仍要新增吗？`)) return;
+  const validationMessage = validateRecognitionKeyword(normalizedKeyword);
+  if (validationMessage) return alert(validationMessage);
+  const duplicate = recognitionRules.find((rule) => (
+    rule.enabled !== false
+    && normalizeRecognitionText(rule.keyword) === normalizeRecognitionText(normalizedKeyword)
+  ));
+  const mappingChanged = duplicate && (
+    duplicate.school !== school
+    || duplicate.campus !== campus
+    || duplicate.building !== building
+  );
+  if (mappingChanged && !confirm(`关键词“${normalizedKeyword}”已有其他识别结果，确定替换为 ${school} / ${campus} / ${building} 吗？`)) return;
 
   const { error: orderError } = await sb.from("orders").update({
     school,
@@ -1269,17 +1596,80 @@ async function learnRule(orderId, address) {
   }).eq("id", orderId);
   if (orderError) return alert(orderError.message);
 
-  const { error: ruleError } = await sb.from("recognition_rules").insert({
-    keyword: normalizedKeyword,
-    school,
-    campus,
-    building,
-    created_by: currentProfile?.id || null,
-  });
+  const rulePayload = { school, campus, building, enabled: true, created_by: currentProfile?.id || null };
+  const ruleQuery = duplicate
+    ? sb.from("recognition_rules").update(rulePayload).eq("id", duplicate.id)
+    : sb.from("recognition_rules").insert({ keyword: normalizedKeyword, ...rulePayload });
+  const { error: ruleError } = await ruleQuery;
   if (ruleError) return alert(`当前订单已修正，但规则保存失败：${ruleError.message}`);
+  await loadRecognitionRules();
+  let appliedCount = 0;
+  try {
+    appliedCount = await applyRuleToExistingOrders(normalizedKeyword, { school, campus, building });
+  } catch (error) {
+    return alert(`规则已经保存，但处理同类历史订单时失败：${error.message || error}`);
+  }
   await insertLog({ orderId, status: "后台修正并保存识别规则", note: `${normalizedKeyword} → ${school}/${campus}/${building}` });
-  alert(`已修正当前订单，并记住规则：\n地址包含“${normalizedKeyword}” → ${school} / ${campus} / ${building}\n该规则从下次导入 Excel 时生效。`);
-  await refreshAll();
+  exceptionActionMessage = `已记住“${normalizedKeyword}”，并自动处理 ${appliedCount} 个同类历史订单`;
+  await Promise.all([loadStats(), loadExceptions()]);
+  focusFirstException();
+}
+
+function buildRecognitionUpdate(order, candidate) {
+  const useFullCandidate = candidate.recognitionSource === "rule";
+  const next = {
+    school: useFullCandidate || isUnresolvedDormValue(order.school, "school") ? candidate.school : order.school,
+    campus: useFullCandidate || isUnresolvedDormValue(order.campus, "campus") ? candidate.campus : order.campus,
+    building: useFullCandidate || isUnresolvedDormValue(order.building, "building") ? candidate.building : order.building,
+  };
+  next.campus = canonicalCampusName(next.campus, next.school) || next.campus;
+  let nextNote = cleanRecognitionNote(order.exception_note);
+  if (isUnresolvedDormValue(next.school, "school")) nextNote = appendRecognitionNote(nextNote, "未识别学校");
+  if (isUnresolvedDormValue(next.campus, "campus")) nextNote = appendRecognitionNote(nextNote, "未识别校区");
+  if (isUnresolvedDormValue(next.building, "building")) nextNote = appendRecognitionNote(nextNote, "未识别楼栋");
+  if (locationNeedsReview(next.school, next.campus, next.building)) {
+    nextNote = appendRecognitionNote(nextNote, "楼栋与校区不匹配，待确认");
+  }
+  if (isDormComplete(next) && candidate.recognitionSource === "address") {
+    nextNote = appendRecognitionNote(nextNote, "地址推测，待确认");
+  }
+  return { ...next, exception_note: nextNote };
+}
+
+async function reprocessUnresolvedOrders() {
+  await loadRecognitionRules();
+  const { data, error } = await sb.from("orders")
+    .select("id,address,school,campus,building,exception_note")
+    .or("exception_note.neq.,school.eq.学校未识别,campus.eq.校区未识别,building.eq.楼栋未识别")
+    .limit(1000);
+  if (error) return alert(`读取待确认订单失败：${error.message}`);
+  const updates = [];
+  (data || []).filter(needsRecognitionReview).forEach((order) => {
+    const candidate = extractDormInfo({ 收货地址: order.address || "" });
+    const update = buildRecognitionUpdate(order, candidate);
+    const changed = ["school", "campus", "building", "exception_note"].some((key) => text(order[key]) !== text(update[key]));
+    if (changed) updates.push({ id: order.id, ...update });
+  });
+  let updatedCount = 0;
+  try {
+    for (const group of chunkArray(updates, 25)) {
+      await Promise.all(group.map(async (update) => {
+        const { id, ...payload } = update;
+        const { error: updateError } = await sb.from("orders").update({
+          ...payload,
+          updated_at: new Date().toISOString(),
+        }).eq("id", id);
+        if (updateError) throw updateError;
+        updatedCount += 1;
+      }));
+    }
+  } catch (updateError) {
+    return alert(`重新识别中断：已更新 ${updatedCount} 单；${updateError.message || updateError}`);
+  }
+  exceptionActionMessage = `重新识别完成：检查 ${(data || []).length} 单，更新 ${updatedCount} 单`;
+  await Promise.all([loadStats(), loadExceptions()]);
+  if (document.querySelector('.subtab.active')?.dataset.adminSection === "rules") await loadRules();
+  alert(`重新识别完成：检查 ${(data || []).length} 单，更新 ${updatedCount} 单。`);
 }
 
 async function loadBatches() {
@@ -1314,13 +1704,19 @@ async function loadRules() {
   const rows = recognitionRules;
   $("adminRules").innerHTML = `
     <section class="panel">
-      <h2>地址识别规则（仅影响以后导入）</h2>
+      <div class="exception-heading">
+        <div>
+          <h2>地址识别规则</h2>
+          <p class="hint">规则既用于以后导入，也可以一键重新处理已经导入但尚未确认的订单。</p>
+        </div>
+        <button class="ghost" type="button" data-reprocess-orders>重新识别待确认订单</button>
+      </div>
       <div class="rule-explainer">
         <strong>它的作用很简单：</strong>
         <ol>
           <li>导入 Excel 时，系统在“表单信息 + 收货地址”里查找关键词。</li>
           <li>只要地址包含关键词，就自动填入这条规则对应的学校、校区和楼栋。</li>
-          <li>规则不会修改已经导入的订单；已有订单请到“异常修正”处理。</li>
+          <li>人工确认时选择“确认、记住并处理同类”，会立即修正相同写法的历史订单。</li>
         </ol>
         <p><strong>例：</strong>关键词“花溪校区17栋” → 师大 / 东区 / 17栋。</p>
       </div>
@@ -1348,7 +1744,7 @@ async function loadRules() {
         <table>
           <thead><tr><th>关键词</th><th>学校</th><th>校区</th><th>楼栋</th><th>状态</th><th>操作</th></tr></thead>
           <tbody>${rows.map((rule) => `
-            <tr><td>${escapeHtml(rule.keyword)}</td><td>${escapeHtml(rule.school)}</td><td>${escapeHtml(rule.campus)}</td><td>${escapeHtml(rule.building)}</td><td>${rule.enabled === false ? "停用" : "启用"}</td><td><button class="ghost small danger" type="button" data-delete-rule="${rule.id}">删除</button></td></tr>
+            <tr><td>${escapeHtml(rule.keyword)}</td><td>${escapeHtml(rule.school)}</td><td>${escapeHtml(canonicalCampusName(rule.campus, rule.school))}</td><td>${escapeHtml(rule.building)}</td><td>${rule.enabled === false ? "停用" : "启用"}</td><td><button class="ghost small danger" type="button" data-delete-rule="${rule.id}">删除</button></td></tr>
           `).join("") || '<tr><td colspan="6">暂无规则</td></tr>'}</tbody>
         </table>
       </div>
@@ -1359,11 +1755,23 @@ async function loadRules() {
 async function addRule() {
   const keyword = text($("ruleKeyword").value);
   const school = text($("ruleSchool").value);
-  const campus = text($("ruleCampus").value);
+  const campus = canonicalCampusName($("ruleCampus").value, school);
   const building = text($("ruleBuilding").value);
   if (!keyword || !school || !campus || !building) return alert("关键词、学校、校区、楼栋都要填写");
+  const validationMessage = validateRecognitionKeyword(keyword);
+  if (validationMessage) return alert(validationMessage);
+  const duplicate = recognitionRules.find((rule) => normalizeRecognitionText(rule.keyword) === normalizeRecognitionText(keyword));
+  if (duplicate) return alert(`已经存在关键词“${duplicate.keyword}”，请直接使用或先删除旧规则。`);
   const { error } = await sb.from("recognition_rules").insert({ keyword, school, campus, building, created_by: currentProfile?.id || null });
   if (error) return alert(error.message);
+  await loadRecognitionRules();
+  let appliedCount = 0;
+  try {
+    appliedCount = await applyRuleToExistingOrders(keyword, { school, campus, building });
+  } catch (applyError) {
+    return alert(`规则已保存，但处理历史订单失败：${applyError.message || applyError}`);
+  }
+  alert(`规则已保存，并处理 ${appliedCount} 个同类历史订单。`);
   await refreshAll();
 }
 
@@ -1376,7 +1784,7 @@ async function deleteRule(ruleId) {
 
 function washLabelCampus(order) {
   const school = order.school || "";
-  const campus = order.campus || "";
+  const campus = canonicalCampusName(order.campus, school) || "";
   const building = order.building || "";
   if (school === "理工" && campus.includes("一期")) return `理工一期:${building.replace("学生公寓一期", "")}`;
   if (school === "理工" && campus.includes("三期")) return `理工三期:${building.replace("学生公寓三期", "")}`;
@@ -1497,7 +1905,7 @@ async function showOrderDetail(orderId) {
     <section class="panel">
       <h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3>
       <p>${escapeHtml(order.address || "")}</p>
-      <p>宿舍：${escapeHtml(`${order.school || ""}${order.campus || ""}${order.building || ""}`)}</p>
+      <p>宿舍：${escapeHtml(`${order.school || ""}${orderCampusName(order)}${order.building || ""}`)}</p>
       <p>状态：${escapeHtml(order.order_status || "")}　金额：${escapeHtml(order.paid_amount ?? "")}</p>
       ${order.exception_note ? `<p class="warn">异常：${escapeHtml(order.exception_note)}</p>` : ""}
     </section>
@@ -1533,13 +1941,13 @@ function groupByArea(records, renderCard) {
   const sortedRecords = [...records].sort((left, right) => {
     const a = left.order || {};
     const b = right.order || {};
-    return `${a.school || ""}|${a.campus || ""}|${a.building || ""}|${a.customer_name || ""}`.localeCompare(`${b.school || ""}|${b.campus || ""}|${b.building || ""}|${b.customer_name || ""}`, "zh-CN", { numeric: true });
+    return `${a.school || ""}|${orderCampusName(a)}|${a.building || ""}|${a.customer_name || ""}`.localeCompare(`${b.school || ""}|${orderCampusName(b)}|${b.building || ""}|${b.customer_name || ""}`, "zh-CN", { numeric: true });
   });
   const schools = new Map();
   sortedRecords.forEach((record) => {
     const order = record.order || {};
     const school = areaLabel(order.school, "学校未识别");
-    const campus = areaLabel(order.campus, "校区未识别");
+    const campus = areaLabel(orderCampusName(order), "校区未识别");
     const building = areaLabel(order.building, "楼栋未识别");
     if (!schools.has(school)) schools.set(school, { count: 0, campuses: new Map() });
     const schoolGroup = schools.get(school);
@@ -1651,7 +2059,7 @@ async function loadCourierTasks() {
 function renderPickupTasks(tasks) {
   const records = tasks.filter((task) => {
     const order = task.orders || {};
-    return matchSearch(`${order.customer_name} ${order.phone} ${order.school} ${order.campus} ${order.building} ${order.address}`);
+    return matchSearch(`${order.customer_name} ${order.phone} ${order.school} ${order.campus} ${orderCampusName(order)} ${order.building} ${order.address}`);
   }).map((task) => ({ task, order: task.orders || {} }));
   const pickupDate = selectedCourierPickupDate();
   $("pickupTaskList").innerHTML = records.length ? groupByArea(records, renderPickupCard) : `<p class="hint">${escapeHtml(pickupDate)} 暂无取件任务</p>`;
@@ -1659,27 +2067,27 @@ function renderPickupTasks(tasks) {
 
 function renderPickupCard(record) {
   const { task, order } = record;
-  const sms = `【事事通】同学您好，事事洗护今晚将到${order.school || ""}${order.campus || ""}${order.building || ""}取件，请把衣物/鞋子装袋并放好姓名电话纸条。`;
+  const sms = `【事事通】同学您好，事事洗护今晚将到${order.school || ""}${orderCampusName(order)}${order.building || ""}取件，请把衣物/鞋子装袋并放好姓名电话纸条。`;
   const images = collectOrderImages(order);
   const imageBtn = previewButton(`pickup-${task.id}`, images);
-  return `<article class="task-card ${task.status === "已取件" ? "done" : ""}"><div class="card-head"><h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3><span>${escapeHtml(task.status)}</span></div><p>${escapeHtml(`${task.pickup_date || "日期未定"}｜${order.school || ""}｜${order.campus || ""}｜${order.building || ""}`)}</p><p>${escapeHtml(order.address || "")}</p><p>订单号：${escapeHtml(order.order_no || "")}</p>${order.exception_note ? `<p class="warn">异常：${escapeHtml(order.exception_note)}</p>` : ""}${contactButtons(order.phone || "", sms)}<div class="actions"><button type="button" data-pickup="${task.id}" data-order="${order.id}" data-status="已取件">已取到</button><button type="button" data-pickup="${task.id}" data-order="${order.id}" data-status="未找到">未找到</button><button type="button" data-pickup="${task.id}" data-order="${order.id}" data-status="异常">异常</button>${imageBtn}<button class="ghost" type="button" data-detail="${order.id}">详情</button></div></article>`;
+  return `<article class="task-card ${task.status === "已取件" ? "done" : ""}"><div class="card-head"><h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3><span>${escapeHtml(task.status)}</span></div><p>${escapeHtml(`${task.pickup_date || "日期未定"}｜${order.school || ""}｜${orderCampusName(order)}｜${order.building || ""}`)}</p><p>${escapeHtml(order.address || "")}</p><p>订单号：${escapeHtml(order.order_no || "")}</p>${order.exception_note ? `<p class="warn">异常：${escapeHtml(order.exception_note)}</p>` : ""}${contactButtons(order.phone || "", sms)}<div class="actions"><button type="button" data-pickup="${task.id}" data-order="${order.id}" data-status="已取件">已取到</button><button type="button" data-pickup="${task.id}" data-order="${order.id}" data-status="未找到">未找到</button><button type="button" data-pickup="${task.id}" data-order="${order.id}" data-status="异常">异常</button>${imageBtn}<button class="ghost" type="button" data-detail="${order.id}">详情</button></div></article>`;
 }
 
 function renderReturnTasks(tasks) {
   const records = tasks.filter((task) => {
     const item = task.order_items || {};
     const order = item.orders || {};
-    return matchSearch(`${item.barcode} ${order.customer_name} ${order.phone} ${order.school} ${order.campus} ${order.building}`);
+    return matchSearch(`${item.barcode} ${order.customer_name} ${order.phone} ${order.school} ${order.campus} ${orderCampusName(order)} ${order.building}`);
   }).map((task) => ({ task, item: task.order_items || {}, order: task.order_items?.orders || {} }));
   $("returnTaskList").innerHTML = records.length ? groupByArea(records, renderReturnCard) : '<p class="hint">暂无送回任务</p>';
 }
 
 function renderReturnCard(record) {
   const { task, item, order } = record;
-  const sms = `【事事通】同学您好，您的事事洗护订单已出库，配送员将送回${order.school || ""}${order.campus || ""}${order.building || ""}，请保持电话畅通。`;
+  const sms = `【事事通】同学您好，您的事事洗护订单已出库，配送员将送回${order.school || ""}${orderCampusName(order)}${order.building || ""}，请保持电话畅通。`;
   const images = text(item.image_links).split(/[\n,，\s]+/).filter((url) => /^https?:\/\//i.test(url));
   const imageBtn = previewButton(`return-${task.id}`, images);
-  return `<article class="task-card ${task.status === "已送达" ? "done" : ""}"><div class="card-head"><h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3><span>${escapeHtml(task.status)}</span></div><p>${escapeHtml(`${task.outbound_date || ""}｜${order.school || ""}｜${order.campus || ""}｜${order.building || ""}`)}</p><p>水洗标：${escapeHtml(item.barcode || "")}｜${escapeHtml(item.spec || item.product_name || "")}</p>${contactButtons(order.phone || "", sms)}<div class="actions"><button type="button" data-return="${task.id}" data-item="${item.id}" data-order="${order.id}" data-status="配送中">配送中</button><button type="button" data-return="${task.id}" data-item="${item.id}" data-order="${order.id}" data-status="已送达">已送达</button><button type="button" data-return="${task.id}" data-item="${item.id}" data-order="${order.id}" data-status="异常">异常</button>${imageBtn}<button class="ghost" type="button" data-detail="${order.id}">详情</button></div></article>`;
+  return `<article class="task-card ${task.status === "已送达" ? "done" : ""}"><div class="card-head"><h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3><span>${escapeHtml(task.status)}</span></div><p>${escapeHtml(`${task.outbound_date || ""}｜${order.school || ""}｜${orderCampusName(order)}｜${order.building || ""}`)}</p><p>水洗标：${escapeHtml(item.barcode || "")}｜${escapeHtml(item.spec || item.product_name || "")}</p>${contactButtons(order.phone || "", sms)}<div class="actions"><button type="button" data-return="${task.id}" data-item="${item.id}" data-order="${order.id}" data-status="配送中">配送中</button><button type="button" data-return="${task.id}" data-item="${item.id}" data-order="${order.id}" data-status="已送达">已送达</button><button type="button" data-return="${task.id}" data-item="${item.id}" data-order="${order.id}" data-status="异常">异常</button>${imageBtn}<button class="ghost" type="button" data-detail="${order.id}">详情</button></div></article>`;
 }
 
 async function updatePickup(taskId, orderId, status) {
@@ -1729,7 +2137,7 @@ async function loadFactoryItems() {
   if ($("factoryQueueTitle")) $("factoryQueueTitle").textContent = queueTitle;
   $("factoryItemList").innerHTML = rows.map((item) => {
     const order = item.orders || {};
-    return `<article class="task-card compact"><div class="card-head"><h3>${escapeHtml(item.barcode)}</h3><span>${escapeHtml(item.item_status)}</span></div><p>${escapeHtml(order.customer_name || "")} · ${escapeHtml(order.phone || "")}</p><p>${escapeHtml(`${order.school || ""}${order.campus || ""}${order.building || ""}`)}</p><p>${escapeHtml(item.spec || item.product_name || "")}</p></article>`;
+    return `<article class="task-card compact"><div class="card-head"><h3>${escapeHtml(item.barcode)}</h3><span>${escapeHtml(item.item_status)}</span></div><p>${escapeHtml(order.customer_name || "")} · ${escapeHtml(order.phone || "")}</p><p>${escapeHtml(`${order.school || ""}${orderCampusName(order)}${order.building || ""}`)}</p><p>${escapeHtml(item.spec || item.product_name || "")}</p></article>`;
   }).join("") || '<p class="hint">暂无待处理物品</p>';
 }
 
@@ -1751,7 +2159,7 @@ function updateFactoryScanModeUi() {
   if (modeStatus) {
     modeStatus.className = `scan-mode-status ${factoryScanMode === "factory_in" ? "in" : factoryScanMode === "factory_out" ? "out" : ""}`.trim();
     modeStatus.textContent = factoryScanMode
-      ? `当前模式：${factoryModeLabel()}。扫到水洗标后将自动${factoryScanMode === "factory_in" ? "入库" : "出库"}。`
+      ? `当前模式：${factoryModeLabel()}。扫到水洗标后将自动${factoryScanMode === "factory_in" ? "入库" : "出库并生成贴纸"}。`
       : "请先选择本轮作业模式";
   }
   if ($("factoryScanCount")) $("factoryScanCount").textContent = `本轮 ${factoryScanSuccessCount} 件`;
@@ -1786,6 +2194,204 @@ function addFactoryScanHistory(message, state = "success") {
     time: new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }),
   });
   renderFactoryScanHistory();
+}
+
+function factoryLabelData(item) {
+  const order = Array.isArray(item?.orders) ? item.orders[0] : item?.orders || {};
+  return {
+    barcode: text(item?.barcode),
+    campus: washLabelCampus(order),
+    customerName: text(order.customer_name),
+    phone: text(order.phone),
+    itemName: text(item?.spec || item?.product_name),
+    afterSalesPhone: AFTER_SALES_PHONE,
+  };
+}
+
+function setFactoryLabelStatus(message, tone = "") {
+  const target = $("factoryLabelStatus");
+  if (!target) return;
+  target.className = `factory-label-status ${tone}`.trim();
+  target.textContent = message;
+}
+
+function renderFactoryLabelPreview(item, message = "贴纸已生成，可立即打印。") {
+  const preview = $("factoryLabelPreview");
+  const empty = $("factoryLabelEmpty");
+  const printButton = $("printFactoryLabelBtn");
+  const clearButton = $("clearFactoryLabelBtn");
+  if (!preview) return;
+  factoryCurrentLabel = factoryLabelData(item);
+  preview.innerHTML = `
+    <div class="factory-sticker" aria-label="当前出库贴纸">
+      <table>
+        <colgroup><col class="label-column" /><col class="value-column" /></colgroup>
+        <tbody>
+          <tr><th colspan="2">事事通超级洗护馆</th></tr>
+          <tr><td>条码</td><td class="barcode-value">${escapeHtml(factoryCurrentLabel.barcode)}</td></tr>
+          <tr><td>校区</td><td>${escapeHtml(factoryCurrentLabel.campus)}</td></tr>
+          <tr><td>姓名</td><td>${escapeHtml(factoryCurrentLabel.customerName)}</td></tr>
+          <tr><td>电话</td><td>${escapeHtml(factoryCurrentLabel.phone)}</td></tr>
+          <tr><td>物品</td><td>${escapeHtml(factoryCurrentLabel.itemName)}</td></tr>
+          <tr><td>售后</td><td>${escapeHtml(factoryCurrentLabel.afterSalesPhone)}</td></tr>
+        </tbody>
+      </table>
+    </div>`;
+  preview.classList.remove("hidden");
+  empty?.classList.add("hidden");
+  if (printButton) printButton.disabled = false;
+  if (clearButton) clearButton.disabled = false;
+  setFactoryLabelStatus(message, "ready");
+}
+
+function clearFactoryLabel(message = "还没有出库贴纸。扫描出库成功后会显示在这里。") {
+  factoryCurrentLabel = null;
+  const preview = $("factoryLabelPreview");
+  const empty = $("factoryLabelEmpty");
+  if (preview) {
+    preview.innerHTML = "";
+    preview.classList.add("hidden");
+  }
+  empty?.classList.remove("hidden");
+  if ($("printFactoryLabelBtn")) $("printFactoryLabelBtn").disabled = true;
+  if ($("clearFactoryLabelBtn")) $("clearFactoryLabelBtn").disabled = true;
+  setFactoryLabelStatus(message);
+}
+
+function factoryLabelPrintDocument(label) {
+  const fields = [
+    ["条码", label.barcode, "barcode-value"],
+    ["校区", label.campus, ""],
+    ["姓名", label.customerName, ""],
+    ["电话", label.phone, ""],
+    ["物品", label.itemName, ""],
+    ["售后", label.afterSalesPhone, ""],
+  ];
+  return `<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>出库贴纸 ${escapeHtml(label.barcode)}</title>
+    <style>
+      @page { size: 60mm 60mm; margin: 0; }
+      * { box-sizing: border-box; }
+      html, body {
+        width: 60mm;
+        height: 60mm;
+        margin: 0;
+        padding: 0;
+        background: #fff;
+        color: #000;
+        font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+      }
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      table {
+        width: 52mm;
+        border-collapse: collapse;
+        table-layout: fixed;
+        font-size: 9.5pt;
+        font-weight: 700;
+      }
+      th, td {
+        border: 0.35mm solid #000;
+        padding: 1.05mm 1mm;
+        line-height: 1.15;
+        text-align: center;
+        overflow-wrap: anywhere;
+        word-break: break-all;
+      }
+      th {
+        padding: 1.45mm 1mm;
+        font-size: 14pt;
+        font-weight: 900;
+      }
+      td:first-child { width: 14mm; }
+      td:last-child { width: 38mm; }
+      .barcode-value {
+        font-family: Consolas, "Courier New", monospace;
+        font-size: 8.3pt;
+        letter-spacing: 0.05mm;
+        white-space: nowrap;
+      }
+    </style>
+  </head>
+  <body>
+    <table>
+      <colgroup><col style="width: 14mm" /><col style="width: 38mm" /></colgroup>
+      <tbody>
+        <tr><th colspan="2">事事通超级洗护馆</th></tr>
+        ${fields.map(([name, value, className]) => `<tr><td>${name}</td><td class="${className}">${escapeHtml(value)}</td></tr>`).join("")}
+      </tbody>
+    </table>
+  </body>
+</html>`;
+}
+
+function printFactoryLabel(options = {}) {
+  if (!factoryCurrentLabel) {
+    setFactoryLabelStatus("没有可打印的贴纸，请先完成一次出库扫码。", "error");
+    return false;
+  }
+  const frame = $("factoryLabelPrintFrame");
+  if (!frame) {
+    setFactoryLabelStatus("打印组件未加载，请刷新页面后重试。", "error");
+    return false;
+  }
+  const label = { ...factoryCurrentLabel };
+  frame.onload = () => {
+    window.setTimeout(() => {
+      try {
+        frame.contentWindow?.focus();
+        frame.contentWindow?.print();
+        setFactoryLabelStatus(
+          options.automatic
+            ? `已为 ${label.barcode} 打开打印窗口；如未弹出，请点“重新打印当前贴纸”。`
+            : `已为 ${label.barcode} 打开打印窗口。`,
+          "printed",
+        );
+      } catch {
+        setFactoryLabelStatus("浏览器阻止了打印，请点击“重新打印当前贴纸”。", "error");
+      }
+    }, 80);
+  };
+  frame.srcdoc = factoryLabelPrintDocument(label);
+  return true;
+}
+
+function factoryAutoPrintEnabled() {
+  return $("factoryAutoPrintToggle")?.checked === true;
+}
+
+function hydrateFactoryLabelPrinting() {
+  const toggle = $("factoryAutoPrintToggle");
+  if (toggle) {
+    try {
+      const saved = localStorage.getItem(FACTORY_LABEL_AUTO_PRINT_KEY);
+      toggle.checked = saved === null ? true : saved === "true";
+    } catch {
+      toggle.checked = true;
+    }
+  }
+  clearFactoryLabel();
+}
+
+function saveFactoryAutoPrintSetting() {
+  const enabled = factoryAutoPrintEnabled();
+  try {
+    localStorage.setItem(FACTORY_LABEL_AUTO_PRINT_KEY, String(enabled));
+  } catch {
+    // 本地设置不可写时，仅在当前页面保留选择。
+  }
+  setFactoryLabelStatus(
+    enabled
+      ? "已开启：每次出库成功后自动打开该件贴纸的打印窗口。"
+      : "已关闭自动打开；出库后可点击按钮打印当前贴纸。",
+    enabled ? "ready" : "",
+  );
 }
 
 function playFactoryScanTone(success = true) {
@@ -2129,7 +2735,10 @@ async function factoryScan(scanType, suppliedBarcode = "", options = {}) {
     const allowedStatuses = scanType === "factory_in" ? ["已取件"] : ["已入厂", "清洗中"];
     if (!allowedStatuses.includes(item.item_status)) {
       if (scanType === "factory_in" && item.item_status === "已入厂") throw new Error("已经入库，无需重复操作");
-      if (scanType === "factory_out" && item.item_status === "已出库") throw new Error("已经出库，无需重复操作");
+      if (scanType === "factory_out" && item.item_status === "已出库") {
+        renderFactoryLabelPreview(item, "该件已经出库，已载入贴纸，可按需重新打印。");
+        throw new Error("已经出库；贴纸已载入，可点击“重新打印当前贴纸”");
+      }
       const required = scanType === "factory_in" ? "已取件" : "已入厂或清洗中";
       throw new Error(`当前状态为“${item.item_status || "未知"}”，只有“${required}”的物品才能${scanType === "factory_in" ? "入库" : "出库"}`);
     }
@@ -2205,10 +2814,19 @@ async function factoryScan(scanType, suppliedBarcode = "", options = {}) {
     factoryProcessedBarcodes.add(barcode);
     factoryScanSuccessCount += 1;
     if ($("barcodeInput")) $("barcodeInput").value = "";
-    setFactoryScanFeedback(`成功：${barcode} 已${scanType === "factory_in" ? "入库" : "出库"}。请继续扫描下一件。`, "success");
-    addFactoryScanHistory(`${barcode} 已${scanType === "factory_in" ? "入库" : "出库"}`, "success");
+    if (scanType === "factory_out") {
+      renderFactoryLabelPreview(item, "出库成功，贴纸已按 60×60 毫米生成。");
+    }
+    setFactoryScanFeedback(
+      `成功：${barcode} 已${scanType === "factory_in" ? "入库" : "出库并生成贴纸"}。请继续扫描下一件。`,
+      "success",
+    );
+    addFactoryScanHistory(`${barcode} 已${scanType === "factory_in" ? "入库" : "出库并生成贴纸"}`, "success");
     notifyFactoryScan(true);
     await refreshFactoryAfterScan();
+    if (scanType === "factory_out" && factoryAutoPrintEnabled()) {
+      printFactoryLabel({ automatic: true });
+    }
     return true;
   } catch (error) {
     return factoryScanFailure(barcode, error?.message || "处理失败，请重试");
@@ -2248,6 +2866,9 @@ async function undoLastFactoryScan() {
     factoryProcessedBarcodes.delete(action.barcode);
     factoryScanSuccessCount = Math.max(0, factoryScanSuccessCount - 1);
     factoryLastAction = null;
+    if (action.scanType === "factory_out" && factoryCurrentLabel?.barcode === action.barcode) {
+      clearFactoryLabel(`${action.barcode} 的出库已撤销，贴纸预览已清除。`);
+    }
     addFactoryScanHistory(`${action.barcode} 已撤销，恢复为“${action.previousItemStatus}”`, "undo");
     setFactoryScanFeedback(`${action.barcode} 已撤销，可重新扫描。`, "success");
     notifyFactoryScan(true);
@@ -2360,7 +2981,7 @@ function renderStudentOrder(order) {
       <h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.order_no)}</h3>
       <span>${escapeHtml(order.order_status || "状态更新中")}</span>
     </div>
-    <p>${escapeHtml(`${order.school || ""}｜${order.campus || ""}｜${order.building || ""}`)}</p>
+    <p>${escapeHtml(`${order.school || ""}｜${orderCampusName(order)}｜${order.building || ""}`)}</p>
     <div class="student-items">
       ${uniqueItems.map((item) => `<p>水洗标：${escapeHtml(item.barcode || "未生成")}｜${escapeHtml(item.spec || item.product_name || "")}｜${escapeHtml(item.item_status || "")}</p>`).join("")}
     </div>
@@ -2410,6 +3031,9 @@ function bindEvents() {
   on("factoryOutBtn", "click", () => activateFactoryScanMode("factory_out"));
   on("manualScanBtn", "click", processManualFactoryScan);
   on("undoFactoryScanBtn", "click", undoLastFactoryScan);
+  on("printFactoryLabelBtn", "click", () => printFactoryLabel());
+  on("clearFactoryLabelBtn", "click", () => clearFactoryLabel());
+  on("factoryAutoPrintToggle", "change", saveFactoryAutoPrintSetting);
   on("barcodeInput", "keydown", (event) => {
     if (event.key === "Enter") processManualFactoryScan();
   });
@@ -2437,10 +3061,14 @@ function bindEvents() {
     if (previewBtn) showImagePreview(previewBtn.dataset.previewImages);
     const detailBtn = event.target.closest("[data-detail]");
     if (detailBtn) showOrderDetail(detailBtn.dataset.detail);
+    const confirmDormBtn = event.target.closest("[data-confirm-dorm]");
+    if (confirmDormBtn) saveDorm(confirmDormBtn.dataset.confirmDorm, { confirm: true, next: true });
     const saveBtn = event.target.closest("[data-save-dorm]");
     if (saveBtn) saveDorm(saveBtn.dataset.saveDorm);
     const learnBtn = event.target.closest("[data-learn-rule]");
     if (learnBtn) learnRule(learnBtn.dataset.learnRule, learnBtn.dataset.address || "");
+    const reprocessBtn = event.target.closest("[data-reprocess-orders]");
+    if (reprocessBtn) reprocessUnresolvedOrders();
     const deleteBatchBtn = event.target.closest("[data-delete-batch]");
     if (deleteBatchBtn) deleteBatch(deleteBatchBtn.dataset.deleteBatch);
     const deleteRuleBtn = event.target.closest("[data-delete-rule]");
@@ -2463,6 +3091,7 @@ if ("serviceWorker" in navigator) {
 window.addEventListener("beforeunload", stopScanner);
 
 hydrateStaticContent();
+hydrateFactoryLabelPrinting();
 bindEvents();
 initSupabase();
 applyRouteFromUrl();
