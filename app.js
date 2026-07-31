@@ -1,5 +1,6 @@
 const CONFIG_KEY = "shitong_cloud_supabase_config";
 const FACTORY_LABEL_AUTO_PRINT_KEY = "shitong_factory_label_auto_print";
+const FACTORY_LABEL_BATCH_KEY = "shitong_factory_label_batch";
 const AFTER_SALES_PHONE = "15599157072";
 const DEFAULT_SUPABASE_CONFIG = {
   url: "https://ukzjgjfefqlyeqecqyiz.supabase.co",
@@ -42,7 +43,7 @@ let factoryScanSuccessCount = 0;
 let factoryLastAction = null;
 let factoryLastSeenBarcode = "";
 let factoryLastSeenAt = 0;
-let factoryCurrentLabel = null;
+const factoryLabelBatch = [];
 const factoryProcessedBarcodes = new Set();
 const factoryScanHistory = [];
 let recognitionRules = [];
@@ -2149,6 +2150,7 @@ function updateFactoryScanModeUi() {
   const inButton = $("factoryInBtn");
   const outButton = $("factoryOutBtn");
   const modeStatus = $("factoryModeStatus");
+  const stopButton = $("stopScanBtn");
   if (inButton) inButton.setAttribute("aria-pressed", String(factoryScanMode === "factory_in"));
   if (outButton) outButton.setAttribute("aria-pressed", String(factoryScanMode === "factory_out"));
   if (inButton) inButton.disabled = factoryScanBusy;
@@ -2159,8 +2161,13 @@ function updateFactoryScanModeUi() {
   if (modeStatus) {
     modeStatus.className = `scan-mode-status ${factoryScanMode === "factory_in" ? "in" : factoryScanMode === "factory_out" ? "out" : ""}`.trim();
     modeStatus.textContent = factoryScanMode
-      ? `当前模式：${factoryModeLabel()}。扫到水洗标后将自动${factoryScanMode === "factory_in" ? "入库" : "出库并生成贴纸"}。`
+      ? `当前模式：${factoryModeLabel()}。扫到水洗标后将自动${factoryScanMode === "factory_in" ? "入库" : "出库并按顺序加入本批贴纸"}。`
       : "请先选择本轮作业模式";
+  }
+  if (stopButton) {
+    stopButton.textContent = factoryScanMode === "factory_out" && factoryLabelBatch.length
+      ? `结束本轮（${factoryLabelBatch.length} 页）`
+      : "结束本轮";
   }
   if ($("factoryScanCount")) $("factoryScanCount").textContent = `本轮 ${factoryScanSuccessCount} 件`;
   if ($("undoFactoryScanBtn")) $("undoFactoryScanBtn").disabled = !factoryLastAction || factoryScanBusy;
@@ -2205,6 +2212,7 @@ function factoryLabelData(item) {
     phone: text(order.phone),
     itemName: text(item?.spec || item?.product_name),
     afterSalesPhone: AFTER_SALES_PHONE,
+    scannedAt: new Date().toISOString(),
   };
 }
 
@@ -2215,51 +2223,99 @@ function setFactoryLabelStatus(message, tone = "") {
   target.textContent = message;
 }
 
-function renderFactoryLabelPreview(item, message = "贴纸已生成，可立即打印。") {
+function validFactoryBatchLabel(label) {
+  return Boolean(label && typeof label === "object" && text(label.barcode));
+}
+
+function persistFactoryLabelBatch() {
+  try {
+    if (factoryLabelBatch.length) {
+      sessionStorage.setItem(FACTORY_LABEL_BATCH_KEY, JSON.stringify(factoryLabelBatch));
+    } else {
+      sessionStorage.removeItem(FACTORY_LABEL_BATCH_KEY);
+    }
+  } catch {
+    // 浏览器禁用会话存储时，当前页面内仍可正常使用批次。
+  }
+}
+
+function factoryBatchListItem(label, index) {
+  return `<li>
+    <span class="factory-label-page-number">第 ${index + 1} 页</span>
+    <div class="factory-label-batch-main">
+      <strong>${escapeHtml(label.barcode)}</strong>
+      <span>${escapeHtml(`${label.campus || "校区未识别"} · ${label.customerName || "姓名未填写"}`)}</span>
+    </div>
+    <span class="factory-label-batch-item">${escapeHtml(label.itemName || "物品未填写")}</span>
+  </li>`;
+}
+
+function renderFactoryLabelBatch() {
   const preview = $("factoryLabelPreview");
   const empty = $("factoryLabelEmpty");
   const printButton = $("printFactoryLabelBtn");
+  const downloadButton = $("downloadFactoryLabelBtn");
   const clearButton = $("clearFactoryLabelBtn");
+  const count = factoryLabelBatch.length;
+  if ($("factoryLabelCount")) $("factoryLabelCount").textContent = `本批 ${count} 页`;
+  if (printButton) {
+    printButton.disabled = count === 0;
+    printButton.textContent = count ? `打印本批贴纸（${count} 页）` : "打印本批贴纸";
+  }
+  if (downloadButton) downloadButton.disabled = count === 0;
+  if (clearButton) clearButton.disabled = count === 0;
   if (!preview) return;
-  factoryCurrentLabel = factoryLabelData(item);
-  preview.innerHTML = `
-    <div class="factory-sticker" aria-label="当前出库贴纸">
-      <table>
-        <colgroup><col class="label-column" /><col class="value-column" /></colgroup>
-        <tbody>
-          <tr><th colspan="2">事事通超级洗护馆</th></tr>
-          <tr><td>条码</td><td class="barcode-value">${escapeHtml(factoryCurrentLabel.barcode)}</td></tr>
-          <tr><td>校区</td><td>${escapeHtml(factoryCurrentLabel.campus)}</td></tr>
-          <tr><td>姓名</td><td>${escapeHtml(factoryCurrentLabel.customerName)}</td></tr>
-          <tr><td>电话</td><td>${escapeHtml(factoryCurrentLabel.phone)}</td></tr>
-          <tr><td>物品</td><td>${escapeHtml(factoryCurrentLabel.itemName)}</td></tr>
-          <tr><td>售后</td><td>${escapeHtml(factoryCurrentLabel.afterSalesPhone)}</td></tr>
-        </tbody>
-      </table>
-    </div>`;
-  preview.classList.remove("hidden");
-  empty?.classList.add("hidden");
-  if (printButton) printButton.disabled = false;
-  if (clearButton) clearButton.disabled = false;
-  setFactoryLabelStatus(message, "ready");
-}
-
-function clearFactoryLabel(message = "还没有出库贴纸。扫描出库成功后会显示在这里。") {
-  factoryCurrentLabel = null;
-  const preview = $("factoryLabelPreview");
-  const empty = $("factoryLabelEmpty");
-  if (preview) {
+  if (!count) {
     preview.innerHTML = "";
     preview.classList.add("hidden");
+    empty?.classList.remove("hidden");
+  } else {
+    preview.innerHTML = factoryLabelBatch.map(factoryBatchListItem).join("");
+    preview.classList.remove("hidden");
+    empty?.classList.add("hidden");
   }
-  empty?.classList.remove("hidden");
-  if ($("printFactoryLabelBtn")) $("printFactoryLabelBtn").disabled = true;
-  if ($("clearFactoryLabelBtn")) $("clearFactoryLabelBtn").disabled = true;
+  updateFactoryScanModeUi();
+}
+
+function addFactoryLabelToBatch(item) {
+  const label = factoryLabelData(item);
+  const existingIndex = factoryLabelBatch.findIndex((entry) => entry.barcode === label.barcode);
+  if (existingIndex >= 0) {
+    renderFactoryLabelBatch();
+    setFactoryLabelStatus(`${label.barcode} 已在本批第 ${existingIndex + 1} 页，没有重复加入。`);
+    return { added: false, page: existingIndex + 1, label: factoryLabelBatch[existingIndex] };
+  }
+  factoryLabelBatch.push(label);
+  persistFactoryLabelBatch();
+  renderFactoryLabelBatch();
+  setFactoryLabelStatus(`${label.barcode} 已加入本批第 ${factoryLabelBatch.length} 页。`, "ready");
+  return { added: true, page: factoryLabelBatch.length, label };
+}
+
+function removeFactoryLabelFromBatch(barcode) {
+  const index = factoryLabelBatch.findIndex((label) => label.barcode === barcode);
+  if (index < 0) return false;
+  factoryLabelBatch.splice(index, 1);
+  persistFactoryLabelBatch();
+  renderFactoryLabelBatch();
+  return true;
+}
+
+function clearFactoryLabelBatch(message = "新批次已就绪，等待扫描出库。") {
+  factoryLabelBatch.length = 0;
+  persistFactoryLabelBatch();
+  renderFactoryLabelBatch();
   setFactoryLabelStatus(message);
 }
 
-function factoryLabelPrintDocument(label) {
-  const fields = [
+function startNewFactoryLabelBatch() {
+  if (!factoryLabelBatch.length) return;
+  if (!confirm(`确定清空当前 ${factoryLabelBatch.length} 页贴纸并开始新批次吗？订单出库状态不会改变。`)) return;
+  clearFactoryLabelBatch();
+}
+
+function factoryLabelFields(label) {
+  return [
     ["条码", label.barcode, "barcode-value"],
     ["校区", label.campus, ""],
     ["姓名", label.customerName, ""],
@@ -2267,27 +2323,50 @@ function factoryLabelPrintDocument(label) {
     ["物品", label.itemName, ""],
     ["售后", label.afterSalesPhone, ""],
   ];
+}
+
+function factoryLabelPageMarkup(label, index) {
+  return `<section class="label-page" aria-label="第 ${index + 1} 页贴纸">
+    <table>
+      <colgroup><col style="width: 14mm" /><col style="width: 38mm" /></colgroup>
+      <tbody>
+        <tr><th colspan="2">事事通超级洗护馆</th></tr>
+        ${factoryLabelFields(label).map(([name, value, className]) => `<tr><td>${name}</td><td class="${className}">${escapeHtml(value)}</td></tr>`).join("")}
+      </tbody>
+    </table>
+  </section>`;
+}
+
+function factoryLabelPrintDocument(labels) {
+  const pages = (Array.isArray(labels) ? labels : []).filter(validFactoryBatchLabel);
   return `<!doctype html>
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
-    <title>出库贴纸 ${escapeHtml(label.barcode)}</title>
+    <title>出库贴纸批次 - ${pages.length} 页</title>
     <style>
       @page { size: 60mm 60mm; margin: 0; }
       * { box-sizing: border-box; }
       html, body {
-        width: 60mm;
-        height: 60mm;
         margin: 0;
         padding: 0;
-        background: #fff;
         color: #000;
         font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
       }
-      body {
+      .label-page {
+        width: 60mm;
+        height: 60mm;
         display: flex;
         align-items: center;
         justify-content: center;
+        overflow: hidden;
+        background: #fff;
+        break-after: page;
+        page-break-after: always;
+      }
+      .label-page:last-child {
+        break-after: auto;
+        page-break-after: auto;
       }
       table {
         width: 52mm;
@@ -2317,23 +2396,26 @@ function factoryLabelPrintDocument(label) {
         letter-spacing: 0.05mm;
         white-space: nowrap;
       }
+      @media screen {
+        body { padding: 4mm 0; background: #dfe3e6; }
+        .label-page {
+          margin: 0 auto 4mm;
+          box-shadow: 0 2mm 6mm rgba(0, 0, 0, 0.18);
+        }
+      }
+      @media print {
+        html, body { background: #fff; }
+        .label-page { margin: 0; box-shadow: none; }
+      }
     </style>
   </head>
-  <body>
-    <table>
-      <colgroup><col style="width: 14mm" /><col style="width: 38mm" /></colgroup>
-      <tbody>
-        <tr><th colspan="2">事事通超级洗护馆</th></tr>
-        ${fields.map(([name, value, className]) => `<tr><td>${name}</td><td class="${className}">${escapeHtml(value)}</td></tr>`).join("")}
-      </tbody>
-    </table>
-  </body>
+  <body>${pages.map(factoryLabelPageMarkup).join("")}</body>
 </html>`;
 }
 
-function printFactoryLabel(options = {}) {
-  if (!factoryCurrentLabel) {
-    setFactoryLabelStatus("没有可打印的贴纸，请先完成一次出库扫码。", "error");
+function printFactoryLabelBatch(options = {}) {
+  if (!factoryLabelBatch.length) {
+    setFactoryLabelStatus("当前批次没有贴纸，请先扫描出库。", "error");
     return false;
   }
   const frame = $("factoryLabelPrintFrame");
@@ -2341,7 +2423,7 @@ function printFactoryLabel(options = {}) {
     setFactoryLabelStatus("打印组件未加载，请刷新页面后重试。", "error");
     return false;
   }
-  const label = { ...factoryCurrentLabel };
+  const labels = factoryLabelBatch.map((label) => ({ ...label }));
   frame.onload = () => {
     window.setTimeout(() => {
       try {
@@ -2349,17 +2431,39 @@ function printFactoryLabel(options = {}) {
         frame.contentWindow?.print();
         setFactoryLabelStatus(
           options.automatic
-            ? `已为 ${label.barcode} 打开打印窗口；如未弹出，请点“重新打印当前贴纸”。`
-            : `已为 ${label.barcode} 打开打印窗口。`,
+            ? `本批 ${labels.length} 页打印文档已自动打开；如未弹出，请点击“打印本批贴纸”。`
+            : `本批 ${labels.length} 页打印文档已打开。`,
           "printed",
         );
       } catch {
-        setFactoryLabelStatus("浏览器阻止了打印，请点击“重新打印当前贴纸”。", "error");
+        setFactoryLabelStatus("浏览器阻止了打印，请点击“打印本批贴纸”。", "error");
       }
     }, 80);
   };
-  frame.srcdoc = factoryLabelPrintDocument(label);
+  frame.srcdoc = factoryLabelPrintDocument(labels);
   return true;
+}
+
+function factoryLabelBatchFileName() {
+  const now = new Date();
+  return `出库贴纸_${dateOnly(now)}_${pad(now.getHours())}${pad(now.getMinutes())}_${factoryLabelBatch.length}页.html`;
+}
+
+function downloadFactoryLabelBatch() {
+  if (!factoryLabelBatch.length) {
+    setFactoryLabelStatus("当前批次没有贴纸，无法下载打印文件。", "error");
+    return;
+  }
+  const html = factoryLabelPrintDocument(factoryLabelBatch);
+  const url = URL.createObjectURL(new Blob([html], { type: "text/html;charset=utf-8" }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = factoryLabelBatchFileName();
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setFactoryLabelStatus(`已下载本批 ${factoryLabelBatch.length} 页打印文件。`, "printed");
 }
 
 function factoryAutoPrintEnabled() {
@@ -2376,7 +2480,19 @@ function hydrateFactoryLabelPrinting() {
       toggle.checked = true;
     }
   }
-  clearFactoryLabel();
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(FACTORY_LABEL_BATCH_KEY) || "[]");
+    if (Array.isArray(saved)) factoryLabelBatch.push(...saved.filter(validFactoryBatchLabel));
+  } catch {
+    factoryLabelBatch.length = 0;
+  }
+  renderFactoryLabelBatch();
+  setFactoryLabelStatus(
+    factoryLabelBatch.length
+      ? `已恢复当前出库批次，共 ${factoryLabelBatch.length} 页。`
+      : "等待扫描出库；每成功扫描一件，就按顺序加入一页。",
+    factoryLabelBatch.length ? "ready" : "",
+  );
 }
 
 function saveFactoryAutoPrintSetting() {
@@ -2388,8 +2504,8 @@ function saveFactoryAutoPrintSetting() {
   }
   setFactoryLabelStatus(
     enabled
-      ? "已开启：每次出库成功后自动打开该件贴纸的打印窗口。"
-      : "已关闭自动打开；出库后可点击按钮打印当前贴纸。",
+      ? "已开启：结束出库本轮时，自动打开整批多页打印文档。"
+      : "已关闭自动打开；扫码完成后可手动打印或下载整批文件。",
     enabled ? "ready" : "",
   );
 }
@@ -2439,16 +2555,27 @@ async function activateFactoryScanMode(mode) {
     renderFactoryScanHistory();
   }
   updateFactoryScanModeUi();
-  setFactoryScanFeedback(`${factoryModeLabel()}已就绪，正在打开后置摄像头...`, "processing");
+  const batchNotice = mode === "factory_out" && factoryLabelBatch.length
+    ? ` 当前批次已有 ${factoryLabelBatch.length} 页，将继续追加。`
+    : "";
+  setFactoryScanFeedback(`${factoryModeLabel()}已就绪，正在打开后置摄像头...${batchNotice}`, "processing");
   if (!scannerIsActive) await startScanner();
 }
 
 function endFactoryScanSession() {
+  const completedMode = factoryScanMode;
+  const processedCount = factoryScanSuccessCount;
   stopScanner();
   factoryScanMode = "";
   factoryScanBusy = false;
   updateFactoryScanModeUi();
-  setFactoryScanFeedback(`本轮已结束，共处理 ${factoryScanSuccessCount} 件。`, "idle");
+  if (completedMode === "factory_out" && factoryLabelBatch.length) {
+    setFactoryScanFeedback(`本轮出库已结束，已按扫码顺序生成 ${factoryLabelBatch.length} 页贴纸。`, "success");
+    setFactoryLabelStatus(`本批打印文档已生成，共 ${factoryLabelBatch.length} 页。`, "ready");
+    if (factoryAutoPrintEnabled()) printFactoryLabelBatch({ automatic: true });
+    return;
+  }
+  setFactoryScanFeedback(`本轮已结束，共处理 ${processedCount} 件。`, "idle");
 }
 
 async function startScanner() {
@@ -2736,8 +2863,16 @@ async function factoryScan(scanType, suppliedBarcode = "", options = {}) {
     if (!allowedStatuses.includes(item.item_status)) {
       if (scanType === "factory_in" && item.item_status === "已入厂") throw new Error("已经入库，无需重复操作");
       if (scanType === "factory_out" && item.item_status === "已出库") {
-        renderFactoryLabelPreview(item, "该件已经出库，已载入贴纸，可按需重新打印。");
-        throw new Error("已经出库；贴纸已载入，可点击“重新打印当前贴纸”");
+        const batchResult = addFactoryLabelToBatch(item);
+        factoryProcessedBarcodes.add(barcode);
+        if ($("barcodeInput")) $("barcodeInput").value = "";
+        const message = batchResult.added
+          ? `${barcode} 已经出库，现已加入补打批次第 ${batchResult.page} 页。`
+          : `${barcode} 已经出库，并且已在本批第 ${batchResult.page} 页。`;
+        setFactoryScanFeedback(message, "success");
+        addFactoryScanHistory(message, batchResult.added ? "success" : "undo");
+        notifyFactoryScan(true);
+        return true;
       }
       const required = scanType === "factory_in" ? "已取件" : "已入厂或清洗中";
       throw new Error(`当前状态为“${item.item_status || "未知"}”，只有“${required}”的物品才能${scanType === "factory_in" ? "入库" : "出库"}`);
@@ -2814,19 +2949,17 @@ async function factoryScan(scanType, suppliedBarcode = "", options = {}) {
     factoryProcessedBarcodes.add(barcode);
     factoryScanSuccessCount += 1;
     if ($("barcodeInput")) $("barcodeInput").value = "";
+    let batchResult = null;
     if (scanType === "factory_out") {
-      renderFactoryLabelPreview(item, "出库成功，贴纸已按 60×60 毫米生成。");
+      batchResult = addFactoryLabelToBatch(item);
     }
     setFactoryScanFeedback(
-      `成功：${barcode} 已${scanType === "factory_in" ? "入库" : "出库并生成贴纸"}。请继续扫描下一件。`,
+      `成功：${barcode} 已${scanType === "factory_in" ? "入库" : `出库并加入本批第 ${batchResult.page} 页`}。请继续扫描下一件。`,
       "success",
     );
-    addFactoryScanHistory(`${barcode} 已${scanType === "factory_in" ? "入库" : "出库并生成贴纸"}`, "success");
+    addFactoryScanHistory(`${barcode} 已${scanType === "factory_in" ? "入库" : `出库并加入第 ${batchResult.page} 页`}`, "success");
     notifyFactoryScan(true);
     await refreshFactoryAfterScan();
-    if (scanType === "factory_out" && factoryAutoPrintEnabled()) {
-      printFactoryLabel({ automatic: true });
-    }
     return true;
   } catch (error) {
     return factoryScanFailure(barcode, error?.message || "处理失败，请重试");
@@ -2866,8 +2999,8 @@ async function undoLastFactoryScan() {
     factoryProcessedBarcodes.delete(action.barcode);
     factoryScanSuccessCount = Math.max(0, factoryScanSuccessCount - 1);
     factoryLastAction = null;
-    if (action.scanType === "factory_out" && factoryCurrentLabel?.barcode === action.barcode) {
-      clearFactoryLabel(`${action.barcode} 的出库已撤销，贴纸预览已清除。`);
+    if (action.scanType === "factory_out" && removeFactoryLabelFromBatch(action.barcode)) {
+      setFactoryLabelStatus(`${action.barcode} 的出库已撤销，对应贴纸页已移除，后续页码已更新。`, "ready");
     }
     addFactoryScanHistory(`${action.barcode} 已撤销，恢复为“${action.previousItemStatus}”`, "undo");
     setFactoryScanFeedback(`${action.barcode} 已撤销，可重新扫描。`, "success");
@@ -3031,8 +3164,9 @@ function bindEvents() {
   on("factoryOutBtn", "click", () => activateFactoryScanMode("factory_out"));
   on("manualScanBtn", "click", processManualFactoryScan);
   on("undoFactoryScanBtn", "click", undoLastFactoryScan);
-  on("printFactoryLabelBtn", "click", () => printFactoryLabel());
-  on("clearFactoryLabelBtn", "click", () => clearFactoryLabel());
+  on("printFactoryLabelBtn", "click", () => printFactoryLabelBatch());
+  on("downloadFactoryLabelBtn", "click", downloadFactoryLabelBatch);
+  on("clearFactoryLabelBtn", "click", startNewFactoryLabelBatch);
   on("factoryAutoPrintToggle", "change", saveFactoryAutoPrintSetting);
   on("barcodeInput", "keydown", (event) => {
     if (event.key === "Enter") processManualFactoryScan();
