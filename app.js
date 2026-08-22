@@ -2158,12 +2158,40 @@ function bindOrderManagementFilters() {
 }
 
 async function updateOrderStatus(orderId, status) {
-  const { error } = await sb.from("orders").update({ order_status: status, updated_at: new Date().toISOString() }).eq("id", orderId);
-  if (error) return alert(error.message);
+  const now = new Date().toISOString();
+  const updates = [
+    sb.from("orders").update({ order_status: status, updated_at: now }).eq("id", orderId),
+  ];
+  const pickupStatus = status === "待取件" || status === "未找到"
+    ? status
+    : ["已取件", "已入厂", "已出库", "配送中", "已送达"].includes(status)
+      ? "已取件"
+      : "";
+  if (pickupStatus) {
+    updates.push(sb.from("pickup_tasks").update({ status: pickupStatus, updated_at: now }).eq("order_id", orderId));
+  }
+  if (["待取件", "已取件", "已入厂", "已出库", "配送中", "已送达", "异常"].includes(status)) {
+    updates.push(sb.from("order_items").update({ item_status: status, updated_at: now }).eq("order_id", orderId));
+  }
+  const returnStatus = {
+    已出库: "待送回",
+    配送中: "配送中",
+    已送达: "已送达",
+  }[status];
+  if (returnStatus) {
+    const { data: itemRows, error: itemReadError } = await sb.from("order_items").select("id").eq("order_id", orderId);
+    if (itemReadError) return alert(`状态同步失败：${itemReadError.message}`);
+    const itemIds = (itemRows || []).map((item) => item.id).filter(Boolean);
+    if (itemIds.length) updates.push(sb.from("return_tasks").update({ status: returnStatus, updated_at: now }).in("item_id", itemIds));
+  }
+  const results = await Promise.all(updates);
+  const failure = results.find((result) => result.error)?.error;
+  if (failure) {
+    await refreshAll();
+    return alert(`状态同步失败：${failure.message}`);
+  }
   await insertLog({ orderId, status, note: `后台手动改状态为：${status}` });
-  const target = orderManagementRows.find((order) => order.id === orderId);
-  if (target) target.order_status = status;
-  applyOrderFilters();
+  await refreshAll();
 }
 
 async function loadExceptions() {
