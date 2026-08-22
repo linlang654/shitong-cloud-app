@@ -3576,6 +3576,7 @@ function updateFactoryOutboundSelectionUi() {
   }
   if ($("printFactoryLabelBtn")) $("printFactoryLabelBtn").disabled = pageCount === 0;
   if ($("downloadFactoryLabelBtn")) $("downloadFactoryLabelBtn").disabled = pageCount === 0;
+  if ($("shareFactoryLabelBtn")) $("shareFactoryLabelBtn").disabled = pageCount === 0;
   if ($("selectAllFactoryOutBtn")) $("selectAllFactoryOutBtn").disabled = factoryDailyOutboundGroups.length === 0;
   if ($("clearFactoryOutSelectionBtn")) $("clearFactoryOutSelectionBtn").disabled = selectedGroups.length === 0;
 }
@@ -4138,6 +4139,56 @@ function factoryLabelBatchFileName() {
   return `出库贴纸_${paperSize.key}mm_${dateOnly(now)}_${pad(now.getHours())}${pad(now.getMinutes())}_${factoryLabelBatch.length}页.pdf`;
 }
 
+function saveFactoryLabelPdf(blob, fileName) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
+async function shareFactoryLabelBatch() {
+  rebuildFactoryLabelBatchFromSelection();
+  if (!factoryLabelBatch.length) {
+    setFactoryLabelStatus("请先从今日出库清单勾选需要打印的订单。", "error");
+    return;
+  }
+  const paperSize = factoryLabelPaperSize();
+  const fileName = factoryLabelBatchFileName();
+  setFactoryLabelStatus(`正在生成 ${factoryLabelBatch.length} 页 ${paperSize.label} 手机打印文件……`, "ready");
+  try {
+    const blob = await buildFactoryLabelPdfBlob(factoryLabelBatch);
+    if (navigator.share && typeof File === "function") {
+      const file = new File([blob], fileName, { type: "application/pdf" });
+      let canShareFile = true;
+      try {
+        canShareFile = !navigator.canShare || navigator.canShare({ files: [file] });
+      } catch {
+        canShareFile = false;
+      }
+      if (canShareFile) {
+        await navigator.share({
+          files: [file],
+          title: `事事通出库贴纸（${factoryLabelBatch.length} 页）`,
+        });
+        setFactoryLabelStatus("文件已交给手机分享面板。请选择 XPrinter，并按实际大小 100% 打印。", "printed");
+        return;
+      }
+    }
+    saveFactoryLabelPdf(blob, fileName);
+    setFactoryLabelStatus("当前浏览器不能直接分享 PDF，文件已下载。请打开 XPrinter → PDF 打印 → 选择该文件。", "printed");
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      setFactoryLabelStatus("已取消手机分享，未重复下载文件。", "ready");
+      return;
+    }
+    setFactoryLabelStatus(`手机分享失败：${error.message}。可改用“生成 PDF 打印文件”。`, "error");
+  }
+}
+
 async function downloadFactoryLabelBatch() {
   rebuildFactoryLabelBatchFromSelection();
   if (!factoryLabelBatch.length) {
@@ -4148,14 +4199,7 @@ async function downloadFactoryLabelBatch() {
   setFactoryLabelStatus(`正在生成 ${factoryLabelBatch.length} 页 ${paperSize.label} PDF……`, "ready");
   try {
     const blob = await buildFactoryLabelPdfBlob(factoryLabelBatch);
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = factoryLabelBatchFileName();
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+    saveFactoryLabelPdf(blob, factoryLabelBatchFileName());
     setFactoryLabelStatus(`已下载 ${factoryLabelBatch.length} 页 PDF。打印时选择 XP-420B、${paperSize.label}、实际大小。`, "printed");
   } catch (error) {
     setFactoryLabelStatus(`生成 PDF 失败：${error.message}`, "error");
@@ -4834,6 +4878,7 @@ function bindEvents() {
   on("undoFactoryScanBtn", "click", undoLastFactoryScan);
   on("clearFactoryScanBatchBtn", "click", () => clearFactoryScanQueue());
   on("printFactoryLabelBtn", "click", () => printFactoryLabelBatch());
+  on("shareFactoryLabelBtn", "click", shareFactoryLabelBatch);
   on("downloadFactoryLabelBtn", "click", downloadFactoryLabelBatch);
   on("selectAllFactoryOutBtn", "click", selectAllFactoryOutboundOrders);
   on("clearFactoryOutSelectionBtn", "click", clearFactoryOutboundSelection);

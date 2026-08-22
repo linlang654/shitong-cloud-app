@@ -150,6 +150,7 @@
                   </select>
                 </label>
                 <div class="toolbar wrap">
+                  <button id="shareFactoryLabelBtn" type="button" disabled>手机分享打印</button>
                   <button id="downloadFactoryLabelBtn" type="button" disabled>生成 PDF 打印文件</button>
                   <button id="printFactoryLabelBtn" class="ghost" type="button" disabled>直接打印</button>
                 </div>
@@ -163,6 +164,7 @@
                   <li>介质类型选择“间隙标签纸”，方向选“纵向”，每张纸 1 页。</li>
                   <li>PDF 打印缩放选择“实际大小”或 100%，不要选择“适合页面”。</li>
                   <li>如果仍跨标签，请在 XP-420B 驱动工具中执行一次“标签校准/纸张探测”，再打印 1 页测试。</li>
+                  <li>手机端优先点击“手机分享打印”，在系统分享面板选择 XPrinter；若没有显示 XPrinter，请先保存 PDF，再到 XPrinter 的“PDF 打印”中选择该文件。</li>
                 </ol>
               </details>
               <iframe id="factoryLabelPrintFrame" class="factory-print-frame" title="所选出库订单贴纸打印区域"></iframe>
@@ -194,6 +196,6 @@
       </section>
     </main>
 
-    <script src="./app.js?v=45"></script>
+    <script src="./app.js?v=46"></script>
   </body>
 </html>
