@@ -1,9 +1,9 @@
-const CACHE_NAME = "shitong-cloud-v26";
+const CACHE_NAME = "shitong-cloud-v42";
 const ASSETS = [
   "./",
   "./index.html",
-  "./styles.css?v=26",
-  "./app.js?v=26",
+  "./styles.css?v=42",
+  "./app.js?v=42",
   "./manifest.webmanifest",
   "./courier.html",
   "./factory.html",
@@ -39,6 +39,29 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
+  const requestUrl = new URL(event.request.url);
+  const isAppShellRequest = requestUrl.origin === self.location.origin && (
+    event.request.mode === "navigate"
+    || requestUrl.pathname.endsWith(".html")
+    || requestUrl.pathname.endsWith(".js")
+    || requestUrl.pathname.endsWith(".css")
+  );
+
+  if (isAppShellRequest) {
+    event.respondWith(
+      fetch(event.request, { cache: "no-store" })
+        .then((response) => {
+          if (response.ok) {
+            const copy = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+          }
+          return response;
+        })
+        .catch(() => caches.match(event.request).then((cached) => cached || caches.match("./index.html"))),
+    );
+    return;
+  }
+
   event.respondWith(
     caches.match(event.request).then((cached) =>
       cached || fetch(event.request).catch(() => caches.match("./index.html")),

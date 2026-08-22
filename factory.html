@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#f26a1b" />
     <title>工厂扫码台 - 事事通校园配送系统</title>
     <link rel="manifest" href="./manifest.webmanifest" />
-    <link rel="stylesheet" href="./styles.css?v=26" />
+    <link rel="stylesheet" href="./styles.css?v=42" />
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   </head>
   <body data-app-mode="factory" class="role-page factory-page">
@@ -15,7 +15,7 @@
         <div class="brand-mark">厂</div>
         <div>
           <h1>工厂扫码台</h1>
-          <p>扫码入库、扫码出库、自动生成送回任务</p>
+          <p>整批扫码、统一出入库、按清单生成贴纸</p>
         </div>
       </div>
       <div class="session-actions">
@@ -38,63 +38,63 @@
           <section class="panel scanner-panel">
             <div class="card-head scanner-heading">
               <div>
-                <h2>连续扫码作业</h2>
-                <p class="hint">先选择入库或出库，本轮每扫一件都会自动处理。</p>
+                <h2>整批扫码作业</h2>
+                <p class="hint">先连续扫完整批，确认无误后再统一入库或出库。</p>
               </div>
-              <strong id="factoryScanCount" class="scan-count">本轮 0 件</strong>
+              <strong id="factoryScanCount" class="scan-count">待提交 0 件</strong>
             </div>
             <div class="scan-mode-picker" aria-label="选择扫码作业模式">
               <button id="factoryInBtn" class="scan-mode-button scan-in" type="button" aria-pressed="false">
-                <strong>连续入库</strong>
-                <span>扫到即入库</span>
+                <strong>批量入库</strong>
+                <span>先扫码，最后统一入库</span>
               </button>
               <button id="factoryOutBtn" class="scan-mode-button scan-out" type="button" aria-pressed="false">
-                <strong>连续出库</strong>
-                <span>扫到即出库并按顺序加入打印批次</span>
+                <strong>批量出库</strong>
+                <span>先扫码，最后统一出库</span>
               </button>
             </div>
             <div id="factoryModeStatus" class="scan-mode-status" role="status">请先选择本轮作业模式</div>
-            <video id="scanVideo" class="scan-video" muted autoplay playsinline></video>
-            <div class="toolbar wrap">
+            <div class="factory-scan-summary" aria-label="本轮扫码统计">
+              <div><strong id="factorySuccessCount">0</strong><span>成功加入</span></div>
+              <div><strong id="factoryFailureCount">0</strong><span>识别失败</span></div>
+              <div><strong id="factoryPendingCount">0</strong><span>待提交</span></div>
+            </div>
+            <div class="toolbar wrap factory-manual-scan">
               <input id="barcodeInput" class="input" placeholder="扫码枪或手动输入水洗标" />
               <button id="manualScanBtn" type="button">处理输入</button>
-              <label class="file-button ghost-file">
-                拍照识别
-                <input id="barcodePhotoInput" type="file" accept="image/*" capture="environment" />
-              </label>
-              <button id="startScanBtn" class="ghost" type="button">重新打开摄像头</button>
-              <button id="toggleTorchBtn" class="ghost hidden" type="button">打开补光灯</button>
-              <button id="stopScanBtn" class="ghost" type="button">结束本轮</button>
             </div>
             <p id="scanResult" class="scan-feedback idle" role="status" aria-live="assertive">选择作业模式后将自动打开后置摄像头。</p>
-            <section class="factory-label-panel" aria-labelledby="factoryLabelTitle">
-              <div class="factory-label-heading">
+            <div id="factoryCameraPanel" class="factory-camera-panel hidden">
+              <video id="scanVideo" class="scan-video" muted autoplay playsinline></video>
+              <div class="toolbar wrap factory-camera-actions">
+                <label class="file-button ghost-file">
+                  拍照识别
+                  <input id="barcodePhotoInput" type="file" accept="image/*" capture="environment" />
+                </label>
+                <button id="startScanBtn" class="ghost" type="button">重新打开摄像头</button>
+                <button id="toggleTorchBtn" class="ghost hidden" type="button">打开补光灯</button>
+                <button id="stopScanBtn" class="ghost" type="button">停止摄像头</button>
+              </div>
+            </div>
+            <section class="factory-scan-queue-panel" aria-labelledby="factoryScanQueueTitle">
+              <div class="card-head">
                 <div>
-                  <h3 id="factoryLabelTitle">出库贴纸批次</h3>
-                  <p class="hint">每成功扫描一件加入一页，最终页序就是扫码顺序。</p>
+                  <h3 id="factoryScanQueueTitle">待提交批次</h3>
+                  <p class="hint">扫码只会加入这里，点击确认后才会修改订单状态。</p>
                 </div>
-                <div class="factory-label-controls">
-                  <strong id="factoryLabelCount" class="factory-label-count">本批 0 页</strong>
-                  <label class="factory-auto-print">
-                    <input id="factoryAutoPrintToggle" type="checkbox" />
-                    <span>结束本轮后自动打开打印</span>
-                  </label>
-                </div>
+                <strong id="factoryQueueCount" class="factory-label-count">0 件</strong>
               </div>
-              <p id="factoryLabelEmpty" class="factory-label-empty">当前批次为空。开始连续出库后，贴纸会按扫码顺序排列。</p>
-              <ol id="factoryLabelPreview" class="factory-label-batch-list hidden"></ol>
-              <p id="factoryLabelStatus" class="factory-label-status" role="status" aria-live="polite"></p>
-              <div class="toolbar wrap factory-label-actions">
-                <button id="printFactoryLabelBtn" type="button" disabled>打印本批贴纸</button>
-                <button id="downloadFactoryLabelBtn" class="ghost" type="button" disabled>下载本批打印文件</button>
-                <button id="clearFactoryLabelBtn" class="ghost" type="button" disabled>清空并新建批次</button>
+              <p id="factoryScanQueueEmpty" class="factory-label-empty">当前还没有扫码记录。</p>
+              <ol id="factoryScanQueue" class="factory-scan-queue hidden"></ol>
+              <div class="toolbar wrap factory-batch-actions">
+                <button id="submitFactoryScanBatchBtn" type="button" disabled>确认整批处理</button>
+                <button id="undoFactoryScanBtn" class="ghost" type="button" disabled>移除上一件</button>
+                <button id="clearFactoryScanBatchBtn" class="ghost" type="button" disabled>清空本批</button>
               </div>
-              <iframe id="factoryLabelPrintFrame" class="factory-print-frame" title="出库贴纸批次打印区域"></iframe>
             </section>
             <section class="scan-history-panel" aria-labelledby="factoryScanHistoryTitle">
               <div class="card-head">
                 <h3 id="factoryScanHistoryTitle">最近处理</h3>
-                <button id="undoFactoryScanBtn" class="ghost small-btn" type="button" disabled>撤销上一单</button>
               </div>
               <ol id="factoryScanHistory" class="scan-history">
                 <li class="empty">本轮还没有处理记录</li>
@@ -102,17 +102,98 @@
             </section>
           </section>
 
-          <section class="panel">
+          <section class="panel factory-daily-panel" aria-labelledby="factoryDailyTitle">
             <div class="card-head">
-              <h2>待出库物品</h2>
-              <button id="refreshFactoryBtn" class="ghost" type="button">刷新</button>
+              <div>
+                <h2 id="factoryDailyTitle">今日出入库清单</h2>
+                <p id="factoryDailyDate" class="hint">按今天实际完成的扫码记录统计</p>
+              </div>
+              <button id="refreshFactoryDailyBtn" class="ghost" type="button">刷新清单</button>
             </div>
-            <div id="factoryItemList" class="card-list"></div>
+            <div class="factory-daily-tabs" role="tablist" aria-label="切换今日清单">
+              <button id="factoryDailyOutTab" type="button" role="tab" aria-selected="true" data-factory-daily-tab="out">今日出库 <strong id="factoryTodayOutTabCount">0 件</strong></button>
+              <button id="factoryDailyInTab" class="ghost" type="button" role="tab" aria-selected="false" data-factory-daily-tab="in">今日入库 <strong id="factoryTodayInTabCount">0 件</strong></button>
+            </div>
+            <div class="factory-daily-grid">
+              <section class="factory-daily-column hidden" aria-labelledby="factoryTodayInTitle" data-factory-daily-view="in">
+              <div class="factory-daily-heading">
+                <h3 id="factoryTodayInTitle">今日入库</h3>
+                <strong id="factoryTodayInCount" class="factory-daily-count in">0 单 / 0 件</strong>
+              </div>
+              <div id="factoryTodayInList" class="factory-daily-list">
+                <p class="hint">正在加载今日入库记录...</p>
+              </div>
+              </section>
+              <section class="factory-daily-column outbound" aria-labelledby="factoryTodayOutTitle" data-factory-daily-view="out">
+              <div class="factory-daily-heading">
+                <div>
+                  <h3 id="factoryTodayOutTitle">今日出库</h3>
+                  <p class="hint">勾选订单后，按清单顺序生成一件一页的贴纸。</p>
+                </div>
+                <strong id="factoryTodayOutCount" class="factory-daily-count out">0 单 / 0 件</strong>
+              </div>
+              <div class="toolbar wrap factory-daily-select-actions">
+                <button id="selectAllFactoryOutBtn" class="ghost" type="button">全选今日出库</button>
+                <button id="clearFactoryOutSelectionBtn" class="ghost" type="button">取消选择</button>
+              </div>
+              <div id="factoryTodayOutList" class="factory-daily-list">
+                <p class="hint">正在加载今日出库记录...</p>
+              </div>
+              <div class="factory-print-selection">
+                <strong id="factorySelectedPrintCount">已选 0 单 / 0 页</strong>
+                <label class="factory-paper-size-control" for="factoryLabelPaperSize">
+                  <span>标签纸尺寸</span>
+                  <select id="factoryLabelPaperSize">
+                    <option value="60x60" selected>60 × 60 mm（当前模板）</option>
+                    <option value="60x50">60 × 50 mm</option>
+                    <option value="60x40">60 × 40 mm</option>
+                  </select>
+                </label>
+                <div class="toolbar wrap">
+                  <button id="downloadFactoryLabelBtn" type="button" disabled>生成 PDF 打印文件</button>
+                  <button id="printFactoryLabelBtn" class="ghost" type="button" disabled>直接打印</button>
+                </div>
+              </div>
+              <p id="factoryLabelStatus" class="factory-label-status" role="status" aria-live="polite"></p>
+              <details class="printer-setup-guide">
+                <summary>XP-420B 首次打印设置（必须核对一次）</summary>
+                <ol>
+                  <li>先测量一张标签纸，在上方选择相同尺寸；当前 Word 模板为 60 × 60 mm。</li>
+                  <li>在“打印机属性/首选项”中新建相同纸张尺寸；不要选择 A4 或 A6。</li>
+                  <li>介质类型选择“间隙标签纸”，方向选“纵向”，每张纸 1 页。</li>
+                  <li>PDF 打印缩放选择“实际大小”或 100%，不要选择“适合页面”。</li>
+                  <li>如果仍跨标签，请在 XP-420B 驱动工具中执行一次“标签校准/纸张探测”，再打印 1 页测试。</li>
+                </ol>
+              </details>
+              <iframe id="factoryLabelPrintFrame" class="factory-print-frame" title="所选出库订单贴纸打印区域"></iframe>
+              </section>
+            </div>
           </section>
         </div>
+
+        <details id="factoryPendingPanel" class="panel factory-pending-panel">
+          <summary>
+            <span class="factory-pending-summary-main"><strong id="factoryQueueTitle">待处理物品</strong><small>需要查找某件物品时再展开</small></span>
+            <span class="factory-pending-summary-count"><strong id="factoryPendingOverviewCount">0 件</strong><small>展开查看</small></span>
+          </summary>
+          <div class="factory-pending-body">
+            <div class="toolbar wrap factory-pending-tools">
+              <input id="factoryItemSearch" class="input" placeholder="搜索水洗标、姓名、电话、学校或楼栋" />
+              <select id="factoryItemStatusFilter" class="input">
+                <option value="">全部待处理状态</option>
+                <option value="已取件">只看待入库</option>
+                <option value="已入厂">只看已入厂</option>
+                <option value="清洗中">只看清洗中</option>
+              </select>
+              <button id="refreshFactoryBtn" class="ghost" type="button">刷新待处理</button>
+            </div>
+            <p id="factoryPendingOverviewHint" class="hint"></p>
+            <div id="factoryItemList" class="card-list factory-pending-list"></div>
+          </div>
+        </details>
       </section>
     </main>
 
-    <script src="./app.js?v=26"></script>
+    <script src="./app.js?v=42"></script>
   </body>
 </html>
