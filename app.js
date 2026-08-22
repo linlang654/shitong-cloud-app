@@ -1946,9 +1946,20 @@ async function saveReconciliation() {
   setMessage("reconciliationMessage", resultMessage, unconfirmedCount || mismatch ? "warn" : "success");
 }
 
-function formatDateTime(value) {
+function formatDateTime(value, includeSeconds = false) {
   const date = parseDate(value);
-  return date ? `${dateOnly(date)} ${pad(date.getHours())}:${pad(date.getMinutes())}` : "";
+  if (!date) return "";
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    ...(includeSeconds ? { second: "2-digit" } : {}),
+    hourCycle: "h23",
+  }).formatToParts(date).map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}${includeSeconds ? `:${parts.second}` : ""}`;
 }
 
 function orderBusinessTime(order) {
@@ -2474,7 +2485,7 @@ async function loadBatches() {
           <thead><tr><th>批次</th><th>文件</th><th>总行</th><th>已支付</th><th>洗护</th><th>订单</th><th>物品</th><th>导入时间</th><th>操作</th></tr></thead>
           <tbody>${(data || []).map((batch) => `
             <tr>
-              <td>${escapeHtml(batch.name)}</td><td>${escapeHtml(batch.file_names || "")}</td><td>${batch.total_rows || 0}</td><td>${batch.paid_rows || 0}</td><td>${batch.wash_rows || 0}</td><td>${batch.imported_orders || 0}</td><td>${batch.imported_items || 0}</td><td>${escapeHtml(String(batch.created_at || "").slice(0, 19).replace("T", " "))}</td>
+              <td>${escapeHtml(batch.name)}</td><td>${escapeHtml(batch.file_names || "")}</td><td>${batch.total_rows || 0}</td><td>${batch.paid_rows || 0}</td><td>${batch.wash_rows || 0}</td><td>${batch.imported_orders || 0}</td><td>${batch.imported_items || 0}</td><td>${escapeHtml(formatDateTime(batch.created_at, true))}</td>
               <td><button class="ghost small danger" type="button" data-delete-batch="${batch.id}">删除批次</button></td>
             </tr>`).join("") || '<tr><td colspan="9">暂无批次</td></tr>'}</tbody>
         </table>
@@ -2730,7 +2741,7 @@ async function loadWashLabelRows(limit = 1000, batchDate = "") {
       校区: washLabelCampus(order),
       物品: washItemShortName(item),
       实付款: order.paid_amount ?? "",
-      下单时间: order.order_time ? String(order.order_time).replace("T", " ").slice(0, 19) : "",
+      下单时间: formatDateTime(order.order_time, true),
       售后电话: AFTER_SALES_PHONE,
       item_status: item.item_status || "",
       settlement_category: settlement.storedKey,
@@ -2932,7 +2943,7 @@ async function showOrderDetail(orderId) {
     </section>
     <section class="panel">
       <h3>状态时间线</h3>
-      <ul class="timeline">${(logResult.data || []).map((log) => `<li><strong>${escapeHtml(log.status)}</strong><span>${escapeHtml(String(log.created_at || "").replace("T", " ").slice(0, 19))}</span><p>${escapeHtml(log.note || "")}</p></li>`).join("") || "<li>暂无记录</li>"}</ul>
+      <ul class="timeline">${(logResult.data || []).map((log) => `<li><strong>${escapeHtml(log.status)}</strong><span>${escapeHtml(formatDateTime(log.created_at, true))}</span><p>${escapeHtml(log.note || "")}</p></li>`).join("") || "<li>暂无记录</li>"}</ul>
     </section>`;
   $("orderDialog").showModal();
 }
