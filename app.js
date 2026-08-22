@@ -18,6 +18,7 @@ const ROLE_ACCESS = {
   factory: ["admin", "factory"],
 };
 const ORDER_STATUSES = ["待取件", "已取件", "未找到", "已入厂", "已出库", "配送中", "已送达", "异常"];
+const ITEM_STATUSES = ["待取件", "已取件", "未找到", "已入厂", "清洗中", "已出库", "配送中", "已送达", "异常"];
 const SETTLEMENT_UNCONFIRMED = "unconfirmed";
 const SETTLEMENT_OTHER = "other";
 const DEFAULT_SETTLEMENT_CATEGORIES = [
@@ -2159,9 +2160,12 @@ function bindOrderManagementFilters() {
 
 async function updateOrderStatus(orderId, status) {
   const now = new Date().toISOString();
-  const updates = [
-    sb.from("orders").update({ order_status: status, updated_at: now }).eq("id", orderId),
-  ];
+  const { data: itemRows, error: itemReadError } = await sb.from("order_items").select("id").eq("order_id", orderId);
+  if (itemReadError) return alert(`状态同步失败：${itemReadError.message}`);
+  const itemIds = (itemRows || []).map((item) => item.id).filter(Boolean);
+  const updates = itemIds.length
+    ? [sb.from("order_items").update({ item_status: status, updated_at: now }).in("id", itemIds)]
+    : [sb.from("orders").update({ order_status: status, updated_at: now }).eq("id", orderId)];
   const pickupStatus = status === "待取件" || status === "未找到"
     ? status
     : ["已取件", "已入厂", "已出库", "配送中", "已送达"].includes(status)
@@ -2169,20 +2173,6 @@ async function updateOrderStatus(orderId, status) {
       : "";
   if (pickupStatus) {
     updates.push(sb.from("pickup_tasks").update({ status: pickupStatus, updated_at: now }).eq("order_id", orderId));
-  }
-  if (["待取件", "已取件", "已入厂", "已出库", "配送中", "已送达", "异常"].includes(status)) {
-    updates.push(sb.from("order_items").update({ item_status: status, updated_at: now }).eq("order_id", orderId));
-  }
-  const returnStatus = {
-    已出库: "待送回",
-    配送中: "配送中",
-    已送达: "已送达",
-  }[status];
-  if (returnStatus) {
-    const { data: itemRows, error: itemReadError } = await sb.from("order_items").select("id").eq("order_id", orderId);
-    if (itemReadError) return alert(`状态同步失败：${itemReadError.message}`);
-    const itemIds = (itemRows || []).map((item) => item.id).filter(Boolean);
-    if (itemIds.length) updates.push(sb.from("return_tasks").update({ status: returnStatus, updated_at: now }).in("item_id", itemIds));
   }
   const results = await Promise.all(updates);
   const failure = results.find((result) => result.error)?.error;
@@ -2192,6 +2182,28 @@ async function updateOrderStatus(orderId, status) {
   }
   await insertLog({ orderId, status, note: `后台手动改状态为：${status}` });
   await refreshAll();
+}
+
+async function updateOrderItemStatus(itemId, orderId, barcode, status, selectElement) {
+  if (!itemId || !orderId || !ITEM_STATUSES.includes(status)) return;
+  if (selectElement) selectElement.disabled = true;
+  const { error } = await sb.from("order_items").update({
+    item_status: status,
+    updated_at: new Date().toISOString(),
+  }).eq("id", itemId);
+  if (error) {
+    if (selectElement) selectElement.disabled = false;
+    return alert(`水洗标状态修改失败：${error.message}`);
+  }
+  await insertLog({
+    orderId,
+    itemId,
+    barcode,
+    status,
+    note: `后台单独修改水洗标 ${barcode || itemId} 为：${status}`,
+  });
+  await refreshAll();
+  await showOrderDetail(orderId);
 }
 
 async function loadExceptions() {
@@ -2956,6 +2968,7 @@ async function showOrderDetail(orderId) {
   ]);
   if (orderResult.error || !orderResult.data) return alert(orderResult.error?.message || "订单不存在");
   const order = orderResult.data;
+  const canEditItemStatus = APP_MODE === "admin" && currentProfile?.role === "admin";
   $("orderDialogTitle").textContent = `订单详情：${order.order_no}`;
   $("orderDialogBody").innerHTML = `
     <section class="panel">
@@ -2967,13 +2980,14 @@ async function showOrderDetail(orderId) {
     </section>
     <section class="panel table-panel">
       <h3>物品 / 水洗标</h3>
-      <div class="table-wrap"><table><thead><tr><th>水洗标</th><th>商品</th><th>规格</th><th>结算品类</th><th>状态</th><th>图片</th></tr></thead><tbody>${(itemResult.data || []).map((item) => `<tr><td>${escapeHtml(item.barcode)}</td><td>${escapeHtml(item.product_name)}</td><td>${escapeHtml(item.spec)}</td><td>${escapeHtml(settlementDisplayLabel(item))}${resolvedSettlementCategory(item).confirmed ? "" : "（待确认）"}</td><td>${escapeHtml(item.item_status)}</td><td>${item.image_links ? `<a href="${escapeHtml(item.image_links.split("\n")[0])}" target="_blank">查看</a>` : ""}</td></tr>`).join("")}</tbody></table></div>
+      ${canEditItemStatus ? '<p class="hint">这里修改只影响当前水洗标；整单状态会按该订单下所有水洗标的最慢进度自动汇总。</p>' : ""}
+      <div class="table-wrap"><table><thead><tr><th>水洗标</th><th>商品</th><th>规格</th><th>结算品类</th><th>状态</th><th>图片</th></tr></thead><tbody>${(itemResult.data || []).map((item) => `<tr><td>${escapeHtml(item.barcode)}</td><td>${escapeHtml(item.product_name)}</td><td>${escapeHtml(item.spec)}</td><td>${escapeHtml(settlementDisplayLabel(item))}${resolvedSettlementCategory(item).confirmed ? "" : "（待确认）"}</td><td>${canEditItemStatus ? `<select class="input compact-input" data-order-item-status="${escapeHtml(item.id)}" data-order-id="${escapeHtml(order.id)}" data-item-barcode="${escapeHtml(item.barcode)}">${ITEM_STATUSES.map((status) => `<option value="${escapeHtml(status)}" ${status === item.item_status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}</select>` : escapeHtml(item.item_status)}</td><td>${item.image_links ? `<a href="${escapeHtml(item.image_links.split("\n")[0])}" target="_blank">查看</a>` : ""}</td></tr>`).join("")}</tbody></table></div>
     </section>
     <section class="panel">
       <h3>状态时间线</h3>
       <ul class="timeline">${(logResult.data || []).map((log) => `<li><strong>${escapeHtml(log.status)}</strong><span>${escapeHtml(formatDateTime(log.created_at, true))}</span><p>${escapeHtml(log.note || "")}</p></li>`).join("") || "<li>暂无记录</li>"}</ul>
     </section>`;
-  $("orderDialog").showModal();
+  if (!$("orderDialog").open) $("orderDialog").showModal();
 }
 
 function matchSearch(content) {
@@ -3297,13 +3311,11 @@ async function batchUpdateCourierReturns(status = "配送中") {
   const records = groups.flatMap((group) => group.records).filter((record) => record.task.status !== "已送达");
   const taskIds = records.map((record) => record.task.id).filter(Boolean);
   const itemIds = records.map((record) => record.item.id).filter(Boolean);
-  const orderIds = [...new Set(groups.map((group) => group.order.id).filter(Boolean))];
   const now = new Date().toISOString();
   setCourierBatchMessage(`正在处理 ${groups.length} 单、${records.length} 件……`);
   const results = await Promise.all([
     taskIds.length ? sb.from("return_tasks").update({ status, operator_id: currentProfile?.id || null, updated_at: now }).in("id", taskIds) : Promise.resolve({ error: null }),
     itemIds.length ? sb.from("order_items").update({ item_status: status, updated_at: now }).in("id", itemIds) : Promise.resolve({ error: null }),
-    orderIds.length ? sb.from("orders").update({ order_status: status, updated_at: now }).in("id", orderIds) : Promise.resolve({ error: null }),
   ]);
   const failure = results.find((result) => result.error)?.error;
   if (failure) return setCourierBatchMessage(`整批处理失败：${failure.message}`, "warn");
@@ -3349,7 +3361,7 @@ async function updateReturnGroup(groupKey, status) {
   const results = await Promise.all([
     sb.from("return_tasks").update({ status, exception_note: note, operator_id: currentProfile?.id || null, updated_at: now }).in("id", taskIds),
     sb.from("order_items").update({ item_status: status, updated_at: now }).in("id", itemIds),
-    sb.from("orders").update({ order_status: status, exception_note: note, updated_at: now }).eq("id", group.order.id),
+    sb.from("orders").update({ exception_note: note, updated_at: now }).eq("id", group.order.id),
   ]);
   const failure = results.find((result) => result.error)?.error;
   if (failure) return alert(failure.message);
@@ -3371,25 +3383,28 @@ async function confirmCourierDeliveredByBarcode() {
 
 async function updatePickup(taskId, orderId, status) {
   const note = status === "未找到" || status === "异常" ? prompt("请输入异常备注", status) || status : "";
-  const { error } = await sb.from("pickup_tasks").update({ status, exception_note: note, operator_id: currentProfile?.id || null, updated_at: new Date().toISOString() }).eq("id", taskId);
-  if (error) return alert(error.message);
-  await sb.from("orders").update({ order_status: status, exception_note: note, updated_at: new Date().toISOString() }).eq("id", orderId);
-  if (status === "已取件") await sb.from("order_items").update({ item_status: "已取件", updated_at: new Date().toISOString() }).eq("order_id", orderId);
+  const now = new Date().toISOString();
+  const results = await Promise.all([
+    sb.from("pickup_tasks").update({ status, exception_note: note, operator_id: currentProfile?.id || null, updated_at: now }).eq("id", taskId),
+    sb.from("order_items").update({ item_status: status, updated_at: now }).eq("order_id", orderId),
+    note ? sb.from("orders").update({ exception_note: note, updated_at: now }).eq("id", orderId) : Promise.resolve({ error: null }),
+  ]);
+  const failure = results.find((result) => result.error)?.error;
+  if (failure) return alert(failure.message);
   await insertLog({ orderId, status, note });
   await refreshAll();
 }
 
 async function updateReturn(taskId, itemId, orderId, status) {
   const note = status === "异常" ? prompt("请输入异常备注", "送回异常") || "送回异常" : "";
-  const { error } = await sb.from("return_tasks").update({ status, exception_note: note, operator_id: currentProfile?.id || null, updated_at: new Date().toISOString() }).eq("id", taskId);
-  if (error) return alert(error.message);
-  await sb.from("order_items").update({ item_status: status, updated_at: new Date().toISOString() }).eq("id", itemId);
-  let orderStatus = status;
-  if (status === "已送达") {
-    const { data: itemRows } = await sb.from("order_items").select("item_status").eq("order_id", orderId);
-    orderStatus = (itemRows || []).length && itemRows.every((item) => item.item_status === "已送达") ? "已送达" : "配送中";
-  }
-  await sb.from("orders").update({ order_status: orderStatus, exception_note: note, updated_at: new Date().toISOString() }).eq("id", orderId);
+  const now = new Date().toISOString();
+  const results = await Promise.all([
+    sb.from("return_tasks").update({ status, exception_note: note, operator_id: currentProfile?.id || null, updated_at: now }).eq("id", taskId),
+    sb.from("order_items").update({ item_status: status, updated_at: now }).eq("id", itemId),
+    note ? sb.from("orders").update({ exception_note: note, updated_at: now }).eq("id", orderId) : Promise.resolve({ error: null }),
+  ]);
+  const failure = results.find((result) => result.error)?.error;
+  if (failure) return alert(failure.message);
   await insertLog({ orderId, itemId, status, note });
   await refreshAll();
 }
@@ -4455,7 +4470,6 @@ function returnTaskPayload(task) {
 async function restoreFactoryState(action) {
   if (!action?.itemId) return;
   await sb.from("order_items").update({ item_status: action.previousItemStatus, updated_at: new Date().toISOString() }).eq("id", action.itemId);
-  await sb.from("orders").update({ order_status: action.previousOrderStatus, updated_at: new Date().toISOString() }).eq("id", action.orderId);
   if (action.scanType !== "factory_out") return;
   if (action.previousReturnTask) {
     await sb.from("return_tasks").upsert(returnTaskPayload(action.previousReturnTask), { onConflict: "item_id" });
@@ -4504,7 +4518,6 @@ async function factoryScan(scanType, suppliedBarcode = "", options = {}) {
       throw new Error(`当前状态为“${item.item_status || "未知"}”，只有“${required}”的物品才能${scanType === "factory_in" ? "入库" : "出库"}`);
     }
 
-    const order = Array.isArray(item.orders) ? item.orders[0] : item.orders;
     let previousReturnTask = null;
     if (scanType === "factory_out") {
       const { data: task, error: taskError } = await sb.from("return_tasks").select("*").eq("item_id", item.id).maybeSingle();
@@ -4520,20 +4533,12 @@ async function factoryScan(scanType, suppliedBarcode = "", options = {}) {
       scanType,
       resultStatus: status,
       previousItemStatus: item.item_status,
-      previousOrderStatus: order?.order_status || item.item_status,
       previousReturnTask,
     };
 
     const updatedAt = new Date().toISOString();
     const { error: itemError } = await sb.from("order_items").update({ item_status: status, updated_at: updatedAt }).eq("id", item.id);
     if (itemError) throw new Error(itemError.message);
-
-    const { error: orderError } = await sb.from("orders").update({ order_status: status, updated_at: updatedAt }).eq("id", item.order_id);
-    if (orderError) {
-      await restoreFactoryState(rollbackAction);
-      rollbackAction = null;
-      throw new Error(orderError.message);
-    }
 
     if (scanType === "factory_out") {
       const { error: returnError } = await sb.from("return_tasks").upsert({
@@ -4910,6 +4915,14 @@ function bindEvents() {
     }
     const statusSelect = event.target.closest("[data-order-status]");
     if (statusSelect) updateOrderStatus(statusSelect.dataset.orderStatus, statusSelect.value);
+    const itemStatusSelect = event.target.closest("[data-order-item-status]");
+    if (itemStatusSelect) updateOrderItemStatus(
+      itemStatusSelect.dataset.orderItemStatus,
+      itemStatusSelect.dataset.orderId,
+      itemStatusSelect.dataset.itemBarcode,
+      itemStatusSelect.value,
+      itemStatusSelect,
+    );
     const factorySettlementSelect = event.target.closest("[data-factory-queue-settlement]");
     if (factorySettlementSelect) {
       const entry = factoryScanQueue[Number(factorySettlementSelect.dataset.factoryQueueSettlement)];

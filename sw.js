@@ -1,9 +1,9 @@
-const CACHE_NAME = "shitong-cloud-v44";
+const CACHE_NAME = "shitong-cloud-v45";
 const ASSETS = [
   "./",
   "./index.html",
   "./styles.css?v=42",
-  "./app.js?v=44",
+  "./app.js?v=45",
   "./manifest.webmanifest",
   "./courier.html",
   "./factory.html",
