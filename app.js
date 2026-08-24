@@ -4211,7 +4211,7 @@ async function activateFactoryScanMode(mode) {
   renderFactoryScanQueue();
   updateFactoryScanModeUi();
   const batchNotice = factoryScanQueue.length ? ` 当前已有 ${factoryScanQueue.length} 件，将继续追加。` : "";
-  setFactoryScanFeedback(`${factoryModeLabel()}已就绪，正在打开后置摄像头...${batchNotice}`, "processing");
+  setFactoryScanFeedback(`${factoryModeLabel()}已就绪，正在打开二维码/条形码识别...${batchNotice}`, "processing");
   if (!scannerIsActive) await startScanner();
 }
 
@@ -4241,16 +4241,16 @@ async function startScanner() {
   }
   stopScanner();
   const session = scanSession;
-  setFactoryScanFeedback("正在请求后置摄像头权限...", "processing");
+  setFactoryScanFeedback("正在请求后置摄像头权限，支持二维码和条形码...", "processing");
   try {
-    await startZxingScanner(session);
-  } catch (zxingError) {
+    await startNativeScanner(session);
+  } catch (nativeError) {
     if (session !== scanSession) return;
     try {
-      await startNativeScanner(session);
-    } catch (nativeError) {
+      await startZxingScanner(session);
+    } catch (zxingError) {
       if (session !== scanSession) return;
-      setFactoryScanFeedback(cameraErrorMessage(nativeError || zxingError), "error");
+      setFactoryScanFeedback(cameraErrorMessage(zxingError || nativeError), "error");
     }
   }
 }
@@ -4376,7 +4376,7 @@ async function toggleTorch() {
 }
 
 async function startZxingScanner(session) {
-  setFactoryScanFeedback("正在加载手机扫码组件...", "processing");
+  setFactoryScanFeedback("正在加载二维码/条形码兼容识别组件...", "processing");
   await loadZxing();
   if (!window.ZXingBrowser?.BrowserMultiFormatReader) throw new Error("备用扫码组件不可用");
   const reader = new ZXingBrowser.BrowserMultiFormatReader();
@@ -4391,12 +4391,12 @@ async function startZxingScanner(session) {
   scanControls = controls;
   scannerIsActive = true;
   updateTorchButton();
-  setFactoryScanFeedback(`${factoryModeLabel()}进行中，请将水洗标放在画面中央。`, "processing");
+  setFactoryScanFeedback(`${factoryModeLabel()}进行中，支持二维码和Code-128条形码，请将码放在画面中央。`, "processing");
 }
 
 async function startNativeScanner(session) {
   if (!("BarcodeDetector" in window)) throw new Error("当前浏览器不支持条码识别");
-  const wantedFormats = ["qr_code", "code_128", "code_39", "ean_13"];
+  const wantedFormats = ["qr_code", "code_128", "data_matrix", "code_39", "ean_13"];
   const supportedFormats = await BarcodeDetector.getSupportedFormats();
   const formats = wantedFormats.filter((format) => supportedFormats.includes(format));
   if (!formats.length) throw new Error("当前浏览器不支持水洗标条码格式");
@@ -4424,9 +4424,9 @@ async function startNativeScanner(session) {
     } finally {
       detecting = false;
     }
-  }, 500);
+  }, 250);
   scannerIsActive = true;
-  setFactoryScanFeedback(`${factoryModeLabel()}进行中，请将水洗标放在画面中央。`, "processing");
+  setFactoryScanFeedback(`${factoryModeLabel()}进行中，支持二维码和Code-128条形码，请将码放在画面中央。`, "processing");
 }
 
 async function handleBarcodePhoto(event) {
@@ -4438,7 +4438,7 @@ async function handleBarcodePhoto(event) {
     event.target.value = "";
     return;
   }
-  setFactoryScanFeedback("正在识别照片中的水洗标...", "processing");
+  setFactoryScanFeedback("正在识别照片中的二维码或条形码...", "processing");
   try {
     await loadZxing();
     if (!window.ZXingBrowser?.BrowserMultiFormatReader) throw new Error("扫码组件不可用");
@@ -4447,7 +4447,7 @@ async function handleBarcodePhoto(event) {
     const result = await reader.decodeFromImageUrl(objectUrl);
     await acceptScannedBarcode(result?.getText?.() || "", "照片");
   } catch {
-    setFactoryScanFeedback("照片中没有识别到条码。请靠近水洗标、保持清晰和光线充足后重拍。", "error");
+    setFactoryScanFeedback("照片中没有识别到二维码或条形码。请靠近水洗标、保持清晰和光线充足后重拍。", "error");
   } finally {
     if (objectUrl) URL.revokeObjectURL(objectUrl);
     event.target.value = "";

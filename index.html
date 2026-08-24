@@ -221,10 +221,10 @@
                 <div><strong id="factoryPendingCount">0</strong><span>待提交</span></div>
               </div>
               <div class="toolbar wrap factory-manual-scan">
-                <input id="barcodeInput" class="input" placeholder="扫码枪或手动输入水洗标" />
+                <input id="barcodeInput" class="input" placeholder="扫码枪、二维码或手动输入水洗标" />
                 <button id="manualScanBtn" type="button">处理输入</button>
               </div>
-              <p id="scanResult" class="scan-feedback idle" role="status" aria-live="assertive">选择作业模式后将自动打开后置摄像头。</p>
+              <p id="scanResult" class="scan-feedback idle" role="status" aria-live="assertive">选择作业模式后自动打开后置摄像头，支持二维码和Code-128条形码。</p>
               <div id="factoryCameraPanel" class="factory-camera-panel hidden">
                 <video id="scanVideo" class="scan-video" muted autoplay playsinline></video>
                 <div class="toolbar wrap factory-camera-actions">
@@ -386,6 +386,6 @@
       <div id="orderDialogBody" class="stack"></div>
     </dialog>
 
-    <script src="./app.js?v=45"></script>
+    <script src="./app.js?v=46"></script>
   </body>
 </html>
