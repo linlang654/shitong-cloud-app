@@ -1030,6 +1030,180 @@ body.has-access .layout {
   align-items: stretch;
 }
 
+.pickup-cockpit {
+  position: sticky;
+  top: 8px;
+  z-index: 6;
+  display: grid;
+  gap: 9px;
+  margin-bottom: 12px;
+  border: 1px solid #efb479;
+  border-radius: 12px;
+  padding: 13px;
+  background: rgba(255, 250, 240, 0.97);
+  box-shadow: 0 10px 24px rgba(98, 54, 15, 0.12);
+  backdrop-filter: blur(8px);
+}
+
+.pickup-cockpit.complete {
+  border-color: rgba(31, 138, 91, 0.35);
+  background: rgba(245, 255, 250, 0.97);
+}
+
+.pickup-cockpit-head,
+.pickup-progress-row,
+.pickup-processed > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.pickup-cockpit-head > div {
+  display: grid;
+  gap: 3px;
+}
+
+.pickup-cockpit-head strong {
+  font-size: 16px;
+}
+
+.pickup-eyebrow {
+  color: var(--orange-deep);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.pickup-current-count {
+  border-radius: 999px;
+  padding: 6px 9px;
+  color: var(--orange-deep);
+  background: #fff0df;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.pickup-progress-row {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.pickup-progress-track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #eadfce;
+}
+
+.pickup-progress-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--orange), var(--green));
+  transition: width 180ms ease;
+}
+
+.pickup-cockpit p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pickup-route-list {
+  display: grid;
+  gap: 10px;
+}
+
+.pickup-route-group.active {
+  border-color: var(--orange);
+  box-shadow: 0 0 0 2px rgba(242, 106, 27, 0.1);
+}
+
+.pickup-route-group.active > summary {
+  color: #6f330d;
+  background: #fff1e4;
+}
+
+.pickup-task-card[aria-busy="true"] {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.pickup-card-route {
+  color: var(--orange-deep) !important;
+  font-weight: 900;
+}
+
+.pickup-label-list {
+  margin-bottom: 10px;
+}
+
+.pickup-primary-tools {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.pickup-primary-tools button {
+  min-height: 44px;
+}
+
+.pickup-photo-button:not(:disabled) {
+  border-color: var(--orange);
+  color: #fff;
+  background: var(--orange);
+}
+
+.pickup-card-detail {
+  margin: 9px 0;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #fbfaf8;
+}
+
+.pickup-card-detail summary {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.pickup-card-detail p {
+  margin: 8px 0 0;
+}
+
+.pickup-status-actions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.pickup-processed {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #f8f7f4;
+}
+
+.pickup-processed > summary {
+  min-height: 48px;
+  padding: 10px 13px;
+  cursor: pointer;
+}
+
+.pickup-processed > summary span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.pickup-processed-body {
+  padding: 10px;
+}
+
 .date-filter {
   display: grid;
   gap: 4px;
@@ -2534,6 +2708,20 @@ code {
 
   .courier-batch-panel {
     position: static;
+  }
+
+  .pickup-cockpit {
+    top: 4px;
+  }
+
+  .pickup-cockpit-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .pickup-primary-tools,
+  .pickup-status-actions {
+    grid-template-columns: 1fr;
   }
 
   .courier-item-list li {
