@@ -1,5 +1,10 @@
 const CONFIG_KEY = "shitong_cloud_supabase_config";
 const AFTER_SALES_PHONE = "15599157072";
+const APP_BUILD = (() => {
+  const scriptUrl = document.currentScript?.src || "";
+  const scriptVersion = scriptUrl ? new URL(scriptUrl, window.location.href).searchParams.get("v") : "";
+  return scriptVersion || new URLSearchParams(window.location.search).get("build") || "";
+})();
 const DEFAULT_SUPABASE_CONFIG = {
   url: "https://ukzjgjfefqlyeqecqyiz.supabase.co",
   anonKey: "sb_publishable_OAwXdqIPnQqYHUJj4Md-pw_HAFIMMcO",
@@ -486,6 +491,18 @@ function setAuthGate(isAllowed) {
 }
 
 function switchView(viewName) {
+  if (APP_MODE === "admin") {
+    const dedicatedPages = {
+      courier: "./courier.html",
+      factory: "./factory.html",
+      student: "./track.html",
+    };
+    if (dedicatedPages[viewName]) {
+      const buildQuery = APP_BUILD ? `?build=${encodeURIComponent(APP_BUILD)}` : "";
+      window.location.href = `${dedicatedPages[viewName]}${buildQuery}`;
+      return;
+    }
+  }
   document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.view === viewName));
   document.querySelectorAll(".view").forEach((view) => view.classList.add("hidden"));
   $(`${viewName}View`)?.classList.remove("hidden");
@@ -5243,7 +5260,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker
-    .register("./sw.js?v=52", { updateViaCache: "none" })
+    .register("./sw.js?v=53", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
