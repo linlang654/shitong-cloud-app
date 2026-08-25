@@ -79,6 +79,7 @@ let factoryDashboardFilter = "";
 let courierPickupTaskRows = [];
 let courierReturnTaskRows = [];
 let courierActivePickupAreaKey = "";
+let courierPickupDateInitialized = false;
 let courierPickupBusyTaskId = "";
 let courierPickupScrollToNext = false;
 let courierReturnOrderGroups = [];
@@ -663,15 +664,18 @@ function normalizeSchool(source) {
   if (/财经|财大/.test(source)) return "财大";
   if (/民族|民大|贵山校区|百川校区/.test(source)) return "民大";
   if (/理工/.test(source)) return "理工";
-  if (/中医|贵中医/.test(source)) return "贵中医";
+  if (/贵州中医药大学|贵中医|中医/.test(source)) return "中医";
   if (/科院|贵州科学院|贵科院/.test(source)) return "贵科院";
   if (/人文/.test(source)) return "人文";
   if (/城市学院|职业学院/.test(source)) return "城市学院";
   return "学校未识别";
 }
 
+function isTcmSchool(school) {
+  return /^(?:中医|贵中医|贵州中医药大学)$/.test(text(school));
+}
+
 function defaultCampusForSchool(school) {
-  if (school === "贵中医") return "宿舍区";
   if (school === "贵科院") return "学生公寓";
   if (school === "人文") return "学生宿舍";
   return "";
@@ -730,6 +734,10 @@ function canonicalCampusName(value, school) {
   const isMinzuUniversity = school === "民大" || /民族|民大/.test(school);
   if (isMinzuUniversity && /贵山(?:校区)?|南校区|南区/.test(source)) return "贵山校区";
   if (isMinzuUniversity && /百川(?:校区)?|北校区|北区/.test(source)) return "百川校区";
+  if (isTcmSchool(school)) {
+    if (/大学城医院(?:校区)?|医院校区/.test(source)) return "大学城医院校区";
+    if (/花溪(?:校区)?|宿舍区/.test(source)) return "花溪校区";
+  }
   return source;
 }
 
@@ -742,6 +750,10 @@ function detectCampus(source, school) {
     const minzuCampus = canonicalCampusName(source, school);
     if (["贵山校区", "百川校区"].includes(minzuCampus)) return minzuCampus;
   }
+  if (isTcmSchool(school)) {
+    if (/大学城医院(?:校区)?|医院校区/.test(source)) return "大学城医院校区";
+    if (/花溪(?:校区)?|(?:^|[^A-Z0-9])(?:H[1-8]|J[1-6])(?=$|[^A-Z0-9])|桂园|橘园|杏园|李园|竹园|桃园/i.test(source)) return "花溪校区";
+  }
   if (/龙文苑/.test(source)) return "龙文苑";
   if (/东校区|东区/.test(source)) return "东区";
   if (/西校区|西区/.test(source)) return "西区";
@@ -749,8 +761,6 @@ function detectCampus(source, school) {
   if (/北校区|北区/.test(source)) return "北区";
   if (/一期/.test(source)) return "学生公寓一期";
   if (/三期|善德居/.test(source)) return "学生公寓三期";
-  if (school === "贵中医" && /(?:^|[^A-Z0-9])(?:H[1-8]|J[1-6])(?=$|[^A-Z0-9])/i.test(source)) return "宿舍区";
-  if (/桂园|橘园|杏园|李园|竹园|桃园|H7|H8|J2|J3/.test(source)) return "宿舍区";
   return defaultCampusForSchool(school);
 }
 
@@ -825,7 +835,7 @@ function locationNeedsReview(school, campus, building) {
     if (/^H/i.test(normalizedBuilding) && !/^H(?:01-2|02-[1-4])$/i.test(normalizedBuilding)) return true;
     if (campus === "学生公寓一期" && buildingNumber > 5) return true;
   }
-  if (school === "贵中医") {
+  if (isTcmSchool(school)) {
     const gardenBuilding = /^(橘园|桂园|杏园|李园)(\d{1,2})(?:栋)?$/.exec(normalizedBuilding);
     if (gardenBuilding) {
       const limits = { 橘园: 4, 桂园: 3, 杏园: 3, 李园: 2 };
@@ -981,7 +991,7 @@ function unsafeBuildingHint(source) {
 function explicitBuildingEvidence(source, school = "") {
   const value = text(source);
   if (!value) return null;
-  if (school === "贵中医") {
+  if (isTcmSchool(school)) {
     const dormCodeEvidence = guizhouTcmDormCodeEvidence(value);
     if (dormCodeEvidence) return dormCodeEvidence;
   }
@@ -2690,10 +2700,11 @@ function washLabelCampus(order) {
   const building = order.building || "";
   if (school === "理工" && campus.includes("一期")) return `理工一期:${building.replace("学生公寓一期", "")}`;
   if (school === "理工" && campus.includes("三期")) return `理工三期:${building.replace("学生公寓三期", "")}`;
-  if (school === "贵中医" && /桂园/.test(building)) return `贵中医桂园:${building.replace("桂园", "")}`;
-  if (school === "贵中医" && /杏园/.test(building)) return `贵中医杏园:${building.replace("杏园", "")}`;
-  if (school === "贵中医" && /橘园/.test(building)) return `贵中医橘园:${building.replace("橘园", "")}`;
-  if (school === "贵中医" && /桃园/.test(building)) return `贵中医桃园:${building.replace("桃园", "")}`;
+  if (isTcmSchool(school) && /桂园/.test(building)) return `中医桂园:${building.replace("桂园", "")}`;
+  if (isTcmSchool(school) && /杏园/.test(building)) return `中医杏园:${building.replace("杏园", "")}`;
+  if (isTcmSchool(school) && /橘园/.test(building)) return `中医橘园:${building.replace("橘园", "")}`;
+  if (isTcmSchool(school) && /桃园/.test(building)) return `中医桃园:${building.replace("桃园", "")}`;
+  if (isTcmSchool(school)) return `中医${campus}:${building}`;
   return `${school}${campus}:${building}`;
 }
 
@@ -3194,7 +3205,10 @@ function showImagePreview(key) {
 
 function selectedCourierPickupDate() {
   const input = $("courierPickupDate");
-  if (input && !input.value) input.value = todayDate();
+  if (input && (!courierPickupDateInitialized || !input.value)) {
+    input.value = todayDate();
+    courierPickupDateInitialized = true;
+  }
   return input?.value || todayDate();
 }
 
@@ -3202,7 +3216,10 @@ function resetCourierPickupDate() {
   courierDashboardFilter = "";
   courierActivePickupAreaKey = "";
   const input = $("courierPickupDate");
-  if (input) input.value = todayDate();
+  if (input) {
+    input.value = todayDate();
+    courierPickupDateInitialized = true;
+  }
   loadCourierTasks();
 }
 
@@ -5226,7 +5243,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker
-    .register("./sw.js?v=51", { updateViaCache: "none" })
+    .register("./sw.js?v=52", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
