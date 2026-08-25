@@ -1287,13 +1287,6 @@ body.has-access .layout {
   background: #fbfaf7;
 }
 
-.courier-building-tools {
-  display: flex;
-  justify-content: flex-end;
-  padding: 8px 10px 0;
-  background: #fbfaf7;
-}
-
 .courier-batch-panel {
   position: sticky;
   top: 8px;
@@ -1309,10 +1302,253 @@ body.has-access .layout {
   backdrop-filter: blur(8px);
 }
 
-.courier-delivery-scan {
+.courier-batch-panel > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  font-weight: 900;
+  list-style: none;
+}
+
+.courier-batch-panel > summary::-webkit-details-marker {
+  display: none;
+}
+
+.courier-batch-panel > summary::after {
+  content: "展开";
+  margin-left: auto;
+  color: var(--orange-deep);
+  font-size: 12px;
+}
+
+.courier-batch-panel[open] > summary::after {
+  content: "收起";
+}
+
+.courier-batch-panel > summary strong {
+  color: #7c5d31;
+  font-size: 13px;
+}
+
+.courier-batch-body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(216, 182, 93, 0.45);
+}
+
+.courier-route-panel {
+  min-width: 0;
+}
+
+.courier-route-cockpit .pickup-cockpit-head {
+  align-items: center;
+}
+
+.courier-route-cockpit .pickup-current-count {
+  max-width: 48%;
+  white-space: normal;
+  text-align: right;
+}
+
+.courier-route-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.courier-route-stats div {
+  display: grid;
+  gap: 1px;
+  border: 1px solid rgba(242, 106, 27, 0.2);
+  border-radius: 9px;
+  padding: 7px 8px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.courier-route-stats strong {
+  color: var(--orange-deep);
+  font-size: 20px;
+}
+
+.courier-route-stats span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.courier-route-list {
+  display: grid;
   gap: 8px;
+}
+
+.courier-route-area.active {
+  border-color: #e18a45;
+  box-shadow: 0 0 0 2px rgba(242, 106, 27, 0.1);
+}
+
+.courier-route-area > summary {
+  gap: 10px;
+}
+
+.courier-route-area > summary strong {
+  color: #2f241a;
+}
+
+.courier-route-area > summary span {
+  margin-left: auto;
+  color: #745d49;
+  font-size: 12px;
+  text-align: right;
+}
+
+.courier-route-area-content {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  background: #fbfaf7;
+}
+
+.courier-route-section {
+  display: grid;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px;
+}
+
+.courier-route-return-section {
+  border-color: #aad8c2;
+  background: #edf8f2;
+}
+
+.courier-route-return-section .courier-batch-panel {
+  margin: 2px 0 0;
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.courier-route-pickup-section {
+  border-color: #f1c49f;
+  background: #fff5ea;
+}
+
+.courier-route-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.courier-route-section-head > div {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.courier-route-section-head strong {
+  font-size: 14px;
+}
+
+.courier-route-return-section .courier-route-section-head strong {
+  color: #176746;
+}
+
+.courier-route-pickup-section .courier-route-section-head strong {
+  color: var(--orange-deep);
+}
+
+.courier-route-section-head span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.courier-route-section > .card-list {
+  gap: 7px;
+  padding: 0;
+}
+
+.courier-return-card {
+  border-left-color: #23875f;
+}
+
+.courier-pickup-card {
+  border-left-color: var(--orange);
+}
+
+.courier-card-summary {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.courier-return-item-list {
+  gap: 7px;
+  margin: 7px 0;
+}
+
+.courier-return-item-list .courier-return-item {
+  display: grid;
+  gap: 7px;
+  padding: 7px;
+  border: 1px solid #e4e1da;
+  background: #fff;
+}
+
+.courier-return-item.done {
+  border-color: #b8dec9;
+  background: #f1faf5;
+}
+
+.courier-return-item.alert {
+  border-color: #f1b8ad;
+  background: #fff5f3;
+}
+
+.courier-return-item-main {
+  display: grid;
+  grid-template-columns: minmax(86px, auto) minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.courier-return-item-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.courier-return-item-actions button,
+.courier-return-item-actions a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 5px 6px;
+  background: #fff;
+  color: var(--orange-deep);
+  font-size: 12px;
+  font-weight: 800;
+  text-align: center;
+  text-decoration: none;
+}
+
+.courier-return-item-actions button:not(.ghost) {
+  border-color: #23875f;
+  background: #23875f;
+  color: #fff;
+}
+
+.courier-card-secondary-actions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.courier-route-processed {
+  margin-top: 10px;
 }
 
 .courier-order-card.selected {
@@ -2702,12 +2938,9 @@ code {
     aspect-ratio: 4 / 3;
   }
 
-  .courier-delivery-scan {
-    grid-template-columns: 1fr;
-  }
-
   .courier-batch-panel {
     position: static;
+    padding: 9px 10px;
   }
 
   .pickup-cockpit {
@@ -2781,104 +3014,104 @@ code {
     font-size: 15px;
   }
 
-  #pickupTaskList .delivery-group + .delivery-group {
+  #courierRouteTaskList .delivery-group + .delivery-group {
     margin-top: 5px;
   }
 
-  #pickupTaskList .delivery-group summary {
+  #courierRouteTaskList .delivery-group summary {
     min-height: 36px;
     padding: 6px 8px;
     font-size: 14px;
   }
 
-  #pickupTaskList .delivery-group summary span {
+  #courierRouteTaskList .delivery-group summary span {
     font-size: 12px;
   }
 
-  #pickupTaskList .group-nest,
-  #pickupTaskList .building-group .card-list {
+  #courierRouteTaskList .group-nest,
+  #courierRouteTaskList .building-group .card-list {
     gap: 5px;
     padding: 4px;
   }
 
-  #pickupTaskList .pickup-task-card {
+  #courierRouteTaskList .pickup-task-card {
     padding: 8px;
   }
 
-  #pickupTaskList .pickup-task-card .card-head {
+  #courierRouteTaskList .pickup-task-card .card-head {
     align-items: center;
     flex-direction: row;
     gap: 6px;
   }
 
-  #pickupTaskList .pickup-task-card .card-head h3 {
+  #courierRouteTaskList .pickup-task-card .card-head h3 {
     font-size: 14px;
   }
 
-  #pickupTaskList .pickup-task-card .card-head span {
+  #courierRouteTaskList .pickup-task-card .card-head span {
     padding: 3px 6px;
     font-size: 11px;
   }
 
-  #pickupTaskList .pickup-card-route {
+  #courierRouteTaskList .pickup-card-route {
     margin-top: 3px;
     font-size: 12px;
   }
 
-  #pickupTaskList .pickup-label-list {
+  #courierRouteTaskList .pickup-label-list {
     gap: 4px;
     margin: 6px 0;
   }
 
-  #pickupTaskList .pickup-label-list li {
+  #courierRouteTaskList .pickup-label-list li {
     grid-template-columns: minmax(82px, auto) minmax(0, 1fr) auto;
     gap: 5px;
     padding: 5px 7px;
     font-size: 11px;
   }
 
-  #pickupTaskList .pickup-label-list span {
+  #courierRouteTaskList .pickup-label-list span {
     grid-column: auto;
     grid-row: auto;
   }
 
-  #pickupTaskList .pickup-primary-tools {
+  #courierRouteTaskList .pickup-primary-tools {
     grid-template-columns: 1fr 1fr;
     gap: 5px;
     margin: 6px 0;
   }
 
-  #pickupTaskList .pickup-primary-tools button,
-  #pickupTaskList .pickup-task-card > .actions button,
-  #pickupTaskList .pickup-task-card > .actions a {
+  #courierRouteTaskList .pickup-primary-tools button,
+  #courierRouteTaskList .pickup-task-card > .actions button,
+  #courierRouteTaskList .pickup-task-card > .actions a {
     min-height: 34px;
     padding: 5px 6px;
     font-size: 13px;
   }
 
-  #pickupTaskList .pickup-card-detail {
+  #courierRouteTaskList .pickup-card-detail {
     margin: 5px 0;
     padding: 6px 8px;
   }
 
-  #pickupTaskList .pickup-card-detail summary {
+  #courierRouteTaskList .pickup-card-detail summary {
     font-size: 12px;
   }
 
-  #pickupTaskList .pickup-task-card > .actions {
+  #courierRouteTaskList .pickup-task-card > .actions {
     gap: 5px;
     margin-top: 5px;
   }
 
-  #pickupTaskList .pickup-status-actions {
+  #courierRouteTaskList .pickup-status-actions {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  #pickupTaskList .pickup-processed {
+  #courierRouteTaskList .pickup-processed {
     margin-top: 7px;
   }
 
-  #pickupTaskList .pickup-processed > summary {
+  #courierRouteTaskList .pickup-processed > summary {
     min-height: 38px;
     padding: 6px 9px;
   }
@@ -3039,5 +3272,123 @@ code {
 
   .image-preview-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .courier-route-panel {
+    padding: 6px 4px;
+  }
+
+  .courier-route-cockpit {
+    gap: 6px;
+    margin-bottom: 7px;
+  }
+
+  .courier-route-cockpit .pickup-cockpit-head {
+    align-items: flex-start;
+  }
+
+  .courier-route-cockpit .pickup-cockpit-head strong {
+    font-size: 13px;
+    line-height: 1.35;
+  }
+
+  .courier-route-cockpit .pickup-current-count {
+    max-width: 50%;
+    padding: 4px 6px;
+    font-size: 10px;
+    line-height: 1.35;
+  }
+
+  .courier-route-stats {
+    gap: 4px;
+  }
+
+  .courier-route-stats div {
+    padding: 5px 6px;
+  }
+
+  .courier-route-stats strong {
+    font-size: 17px;
+  }
+
+  .courier-route-area > summary {
+    min-height: 38px;
+    padding: 7px 8px;
+  }
+
+  .courier-route-area > summary span {
+    max-width: 70%;
+    font-size: 10px;
+  }
+
+  .courier-route-list .group-nest,
+  .courier-route-list .building-group .card-list,
+  .courier-route-processed .group-nest,
+  .courier-route-processed .building-group .card-list {
+    gap: 5px;
+    padding: 4px;
+  }
+
+  .courier-route-area-content {
+    gap: 6px;
+    padding: 5px;
+  }
+
+  .courier-route-section {
+    gap: 5px;
+    padding: 6px;
+  }
+
+  .courier-route-section-head button {
+    min-height: 30px;
+    padding: 4px 7px;
+    font-size: 11px;
+  }
+
+  .courier-route-card {
+    padding: 8px;
+  }
+
+  .courier-route-card .card-head {
+    align-items: center;
+    flex-direction: row;
+    gap: 5px;
+  }
+
+  .courier-route-card .card-head h3 {
+    font-size: 14px;
+  }
+
+  .courier-route-card .card-head span {
+    padding: 3px 6px;
+    font-size: 10px;
+  }
+
+  .courier-return-item-main {
+    grid-template-columns: minmax(78px, auto) minmax(0, 1fr) auto;
+    font-size: 11px;
+  }
+
+  .courier-return-item-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .courier-return-item-actions button,
+  .courier-return-item-actions a {
+    min-height: 32px;
+    padding: 4px;
+    font-size: 11px;
+  }
+
+  .courier-card-secondary-actions {
+    gap: 5px;
+    margin-top: 6px;
+  }
+
+  .courier-card-secondary-actions button,
+  .courier-card-secondary-actions a {
+    min-height: 34px;
+    padding: 5px;
+    font-size: 12px;
   }
 }

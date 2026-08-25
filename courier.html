@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#f26a1b" />
     <title>配送员工作台 - 事事通校园配送系统</title>
     <link rel="manifest" href="./manifest.webmanifest" />
-    <link rel="stylesheet" href="./styles.css?v=49" />
+    <link rel="stylesheet" href="./styles.css?v=51" />
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   </head>
   <body data-app-mode="courier" class="role-page courier-page">
@@ -35,12 +35,12 @@
 
       <section class="workspace hidden" data-auth-only>
         <div class="panel hero-panel">
-          <h2>今日配送任务</h2>
-          <p>按照水洗标顺序逐学校、逐校区、逐楼栋取件；完成一单后自动进入下一单。</p>
+          <h2>今日路线</h2>
+          <p>到达一栋楼后先完成送回，再完成取件；两类任务都处理完后进入下一栋。</p>
           <div class="toolbar wrap courier-filterbar">
-            <input id="courierSearch" class="input" placeholder="搜索姓名、电话、学校、楼栋、水洗标" />
+            <input id="courierSearch" class="input" placeholder="搜索姓名、电话、学校、楼栋、水洗标、物品" />
             <label class="date-filter">
-              <span>取件日期</span>
+              <span>任务日期</span>
               <input id="courierPickupDate" class="input compact-input" type="date" />
             </label>
             <button id="courierTodayBtn" class="ghost" type="button">今天</button>
@@ -48,16 +48,9 @@
           </div>
         </div>
 
-        <div class="split">
-          <section class="panel">
-            <h2>取件任务</h2>
-            <div id="pickupTaskList" class="card-list"></div>
-          </section>
-          <section class="panel">
-            <h2>送回任务</h2>
-            <div id="returnTaskList" class="card-list"></div>
-          </section>
-        </div>
+        <section class="panel courier-route-panel">
+          <div id="courierRouteTaskList" class="card-list"></div>
+        </section>
       </section>
     </main>
 
@@ -69,6 +62,6 @@
       <div id="orderDialogBody" class="stack"></div>
     </dialog>
 
-    <script src="./app.js?v=49"></script>
+    <script src="./app.js?v=51"></script>
   </body>
 </html>

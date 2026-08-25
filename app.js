@@ -82,6 +82,7 @@ let courierActivePickupAreaKey = "";
 let courierPickupBusyTaskId = "";
 let courierPickupScrollToNext = false;
 let courierReturnOrderGroups = [];
+let courierReturnBusyTaskId = "";
 const courierSelectedReturnOrders = new Set();
 const courierReturnAreaMap = new Map();
 let currentExceptionRows = [];
@@ -3061,8 +3062,13 @@ function matchSearch(content) {
   return !keyword || content.toLowerCase().includes(keyword);
 }
 
-function contactButtons(phone, message) {
-  return `<div class="actions"><a class="button-link" href="tel:${escapeHtml(phone)}">打电话</a><a class="button-link" href="sms:${escapeHtml(phone)}?body=${encodeURIComponent(message)}">发短信</a></div>`;
+function smsComposeHref(phone, message) {
+  const smsSeparator = /iPad|iPhone|iPod/i.test(navigator.userAgent) ? "&" : "?";
+  return `sms:${escapeHtml(phone)}${smsSeparator}body=${encodeURIComponent(message)}`;
+}
+
+function contactButtons(phone, message, smsLabel = "发短信") {
+  return `<div class="actions"><a class="button-link" href="tel:${escapeHtml(phone)}">打电话</a><a class="button-link" href="${smsComposeHref(phone, message)}">${escapeHtml(smsLabel)}</a></div>`;
 }
 
 function areaLabel(value, fallback) {
@@ -3103,10 +3109,6 @@ function firstOrderBarcode(order = {}) {
   return sortedOrderItems(order)[0]?.barcode || "";
 }
 
-function groupCountLabel(count) {
-  return `${count} 单`;
-}
-
 function comparePickupRecords(left, right) {
   const leftOrder = left.order || {};
   const rightOrder = right.order || {};
@@ -3114,17 +3116,6 @@ function comparePickupRecords(left, right) {
     || compareNaturalText(firstOrderBarcode(leftOrder), firstOrderBarcode(rightOrder))
     || compareNaturalText(leftOrder.order_no, rightOrder.order_no)
     || compareNaturalText(leftOrder.customer_name, rightOrder.customer_name);
-}
-
-function buildPickupAreas(records) {
-  const areas = new Map();
-  [...records].sort(comparePickupRecords).forEach((record) => {
-    const route = orderRouteParts(record.order || {});
-    const key = orderRouteKey(record.order || {});
-    if (!areas.has(key)) areas.set(key, { key, ...route, records: [] });
-    areas.get(key).records.push(record);
-  });
-  return [...areas.values()];
 }
 
 function pickupAreaAfterCurrent(areas) {
@@ -3159,55 +3150,6 @@ function ensureCourierActivePickupArea(areas) {
 
 function pickupAreaLabel(area) {
   return `${area.school} / ${area.campus} / ${area.building}`;
-}
-
-function renderPickupAreaTree(areas, renderCard, processed = false) {
-  const schools = new Map();
-  areas.forEach((area) => {
-    if (!schools.has(area.school)) schools.set(area.school, { count: 0, campuses: new Map() });
-    const school = schools.get(area.school);
-    school.count += area.records.length;
-    if (!school.campuses.has(area.campus)) school.campuses.set(area.campus, { count: 0, buildings: [] });
-    const campus = school.campuses.get(area.campus);
-    campus.count += area.records.length;
-    campus.buildings.push(area);
-  });
-
-  return [...schools.entries()].map(([schoolName, school]) => {
-    const schoolIsActive = !processed && areas.some((area) => area.key === courierActivePickupAreaKey && area.school === schoolName);
-    return `<details class="delivery-group school-group pickup-school-group" ${schoolIsActive ? "open" : ""}>
-      <summary>${escapeHtml(schoolName)} <span>${groupCountLabel(school.count)}</span></summary>
-      <div class="group-nest">${[...school.campuses.entries()].map(([campusName, campus]) => {
-        const campusIsActive = !processed && campus.buildings.some((area) => area.key === courierActivePickupAreaKey);
-        return `<details class="delivery-group campus-group" ${campusIsActive ? "open" : ""}>
-          <summary>${escapeHtml(campusName)} <span>${groupCountLabel(campus.count)}</span></summary>
-          <div class="group-nest">${campus.buildings.map((area) => {
-            const areaIsActive = !processed && area.key === courierActivePickupAreaKey;
-            return `<details class="delivery-group building-group pickup-route-group ${areaIsActive ? "active" : ""}" ${areaIsActive ? "open" : ""} data-pickup-area="${escapeHtml(area.key)}">
-              <summary ${processed ? "" : `data-select-pickup-area="${escapeHtml(area.key)}"`}>${escapeHtml(area.building)} <span>${groupCountLabel(area.records.length)}</span></summary>
-              <div class="card-list">${area.records.map(renderCard).join("")}</div>
-            </details>`;
-          }).join("")}</div>
-        </details>`;
-      }).join("")}</div>
-    </details>`;
-  }).join("");
-}
-
-function renderPickupCockpit(pendingRecords, processedRecords, areas, activeArea) {
-  const total = pendingRecords.length + processedRecords.length;
-  const percent = total ? Math.round((processedRecords.length / total) * 100) : 100;
-  const activeIndex = activeArea ? areas.findIndex((area) => area.key === activeArea.key) : -1;
-  const nextArea = activeIndex >= 0 ? areas[activeIndex + 1] : null;
-  return `<section class="pickup-cockpit ${pendingRecords.length ? "" : "complete"}">
-    <div class="pickup-cockpit-head">
-      <div><span class="pickup-eyebrow">当前取件路线</span><strong>${activeArea ? escapeHtml(pickupAreaLabel(activeArea)) : "今日待取件已完成"}</strong></div>
-      <span class="pickup-current-count">本栋待取 ${activeArea?.records.length || 0} 单</span>
-    </div>
-    <div class="pickup-progress-row"><span>待取 ${pendingRecords.length} 单</span><span>已处理 ${processedRecords.length} 单</span><span>完成 ${percent}%</span></div>
-    <div class="pickup-progress-track"><i style="width:${percent}%"></i></div>
-    <p>${nextArea ? `下一楼栋：${escapeHtml(pickupAreaLabel(nextArea))}` : pendingRecords.length ? "当前是最后一个待取楼栋" : "所有任务均已处理，可在下方查看处理记录"}</p>
-  </section>`;
 }
 
 function collectOrderImages(order) {
@@ -3266,12 +3208,14 @@ function resetCourierPickupDate() {
 
 async function loadCourierTasks() {
   const pickupDate = selectedCourierPickupDate();
-  const pickup = await sb
-    .from("pickup_tasks")
-    .select("*, orders(*, order_items(barcode,image_links,product_name,spec,item_status))")
-    .eq("pickup_date", pickupDate)
-    .order("pickup_date", { ascending: true });
-  const returns = await sb.from("return_tasks").select("*, order_items(*, orders(*))").order("outbound_date", { ascending: false });
+  const [pickup, returns] = await Promise.all([
+    sb
+      .from("pickup_tasks")
+      .select("*, orders(*, order_items(id,barcode,image_links,product_name,spec,item_status))")
+      .eq("pickup_date", pickupDate)
+      .order("pickup_date", { ascending: true }),
+    sb.from("return_tasks").select("*, order_items(*, orders(*))").order("outbound_date", { ascending: false }),
+  ]);
   let pickupRows = pickup.data || [];
   let returnRows = returns.data || [];
   let activeLabel = "";
@@ -3285,47 +3229,9 @@ async function loadCourierTasks() {
     activeLabel = "驾驶舱筛选：待送回";
   }
   renderActiveFilter("courierActiveFilter", activeLabel, "courier");
-  if (!pickup.error) {
-    courierPickupTaskRows = pickupRows;
-    renderPickupTasks(courierPickupTaskRows);
-  }
-  if (!returns.error) {
-    courierReturnTaskRows = returnRows;
-    renderReturnTasks(courierReturnTaskRows);
-  }
-}
-
-function renderPickupTasks(tasks) {
-  const records = tasks.filter((task) => {
-    const order = task.orders || {};
-    const items = sortedOrderItems(order);
-    return matchSearch(`${order.customer_name} ${order.phone} ${order.school} ${order.campus} ${orderCampusName(order)} ${order.building} ${order.address} ${order.order_no} ${items.map((item) => `${item.barcode} ${item.product_name} ${item.spec}`).join(" ")}`);
-  }).map((task) => ({ task, order: task.orders || {} })).sort(comparePickupRecords);
-  const pendingRecords = records.filter((record) => record.task.status === "待取件");
-  const processedRecords = records.filter((record) => record.task.status !== "待取件");
-  const pendingAreas = buildPickupAreas(pendingRecords);
-  const activeArea = ensureCourierActivePickupArea(pendingAreas);
-  const processedAreas = buildPickupAreas(processedRecords);
-  const pickupDate = selectedCourierPickupDate();
-  if (!records.length) {
-    $("pickupTaskList").innerHTML = `<p class="hint">${escapeHtml(pickupDate)} 暂无取件任务</p>`;
-    return;
-  }
-  const keyword = text($("courierSearch")?.value);
-  const openProcessed = !pendingRecords.length && Boolean(processedRecords.length);
-  $("pickupTaskList").innerHTML = `
-    ${renderPickupCockpit(pendingRecords, processedRecords, pendingAreas, activeArea)}
-    <div class="pickup-route-list">${pendingAreas.length ? renderPickupAreaTree(pendingAreas, (record) => renderPickupCard(record, false)) : '<p class="success-note">当前筛选范围内没有待取件订单。</p>'}</div>
-    ${processedRecords.length ? `<details class="pickup-processed" ${openProcessed ? "open" : ""}>
-      <summary><strong>已处理</strong><span>${processedRecords.length} 单${keyword ? "（当前搜索结果）" : ""}</span></summary>
-      <div class="pickup-processed-body">${renderPickupAreaTree(processedAreas, (record) => renderPickupCard(record, true), true)}</div>
-    </details>` : ""}`;
-  if (courierPickupScrollToNext) {
-    courierPickupScrollToNext = false;
-    requestAnimationFrame(() => {
-      document.querySelector(".pickup-route-group.active [data-pickup-card]")?.scrollIntoView({ behavior: "smooth", block: "center" });
-    });
-  }
+  courierPickupTaskRows = pickup.error ? [] : pickupRows;
+  courierReturnTaskRows = returns.error ? [] : returnRows;
+  renderCourierRouteTasks();
 }
 
 function renderPickupCard(record, processed = false) {
@@ -3337,7 +3243,7 @@ function renderPickupCard(record, processed = false) {
   const items = sortedOrderItems(order);
   const isBusy = courierPickupBusyTaskId === task.id;
   const processedClass = task.status === "已取件" ? "done" : task.status === "异常" || task.status === "未找到" ? "alert" : "";
-  return `<article class="task-card pickup-task-card ${processedClass}" data-pickup-card="${escapeHtml(task.id)}" ${isBusy ? 'aria-busy="true"' : ""}>
+  return `<article class="task-card pickup-task-card courier-route-card courier-pickup-card ${processedClass}" data-pickup-card="${escapeHtml(task.id)}" data-route-task-card="pickup-${escapeHtml(task.id)}" ${isBusy ? 'aria-busy="true"' : ""}>
     <div class="card-head"><h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3><span>${escapeHtml(isBusy ? "提交中…" : task.status)}</span></div>
     <p class="pickup-card-route">本单 ${items.length} 件</p>
     <ul class="courier-item-list pickup-label-list">${items.map((item) => `<li><strong>${escapeHtml(item.barcode || "无条码")}</strong><span>${escapeHtml(item.spec || item.product_name || "物品未填写")}</span><em>${escapeHtml(item.item_status || task.status)}</em></li>`).join("") || "<li><span>该订单尚未生成水洗标</span></li>"}</ul>
@@ -3354,9 +3260,9 @@ function renderPickupCard(record, processed = false) {
 
 function selectCourierPickupArea(areaKey) {
   courierActivePickupAreaKey = areaKey;
-  renderPickupTasks(courierPickupTaskRows);
+  renderCourierRouteTasks();
   requestAnimationFrame(() => {
-    document.querySelector(".pickup-route-group.active")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    document.querySelector(".courier-route-area.active")?.scrollIntoView({ behavior: "smooth", block: "start" });
   });
 }
 
@@ -3380,47 +3286,196 @@ function aggregateCourierReturnOrders(records) {
   });
 }
 
-function courierReturnAreaKey(order) {
-  return [areaLabel(order.school, "学校未识别"), areaLabel(orderCampusName(order), "校区未识别"), areaLabel(order.building, "楼栋未识别")].join("｜");
+const COURIER_RETURN_FINISHED_STATUSES = new Set(["已送达", "异常"]);
+
+function courierLocalDate(value) {
+  const date = parseDate(value);
+  if (!date) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
-function courierGroupCountLabel(groups) {
-  return `${groups.length} 单 / ${groups.reduce((sum, group) => sum + group.records.length, 0)} 件`;
+function courierReturnRecordFinished(record) {
+  return COURIER_RETURN_FINISHED_STATUSES.has(text(record?.task?.status));
 }
 
-function groupCourierReturnsByArea(groups) {
-  courierReturnAreaMap.clear();
+function courierReturnGroupHasPending(group) {
+  return group.records.some((record) => !courierReturnRecordFinished(record));
+}
+
+function courierReturnGroupFinishedOnDate(group, dateText) {
+  return group.records.some(({ task }) => task.outbound_date === dateText || courierLocalDate(task.updated_at) === dateText);
+}
+
+function filteredCourierPickupRecords(tasks = courierPickupTaskRows) {
+  return tasks.filter((task) => {
+    const order = task.orders || {};
+    const items = sortedOrderItems(order);
+    return matchSearch(`${order.customer_name} ${order.phone} ${order.school} ${order.campus} ${orderCampusName(order)} ${order.building} ${order.address} ${order.order_no} ${items.map((item) => `${item.barcode} ${item.product_name} ${item.spec}`).join(" ")}`);
+  }).map((task) => ({ task, order: task.orders || {} })).sort(comparePickupRecords);
+}
+
+function filteredCourierReturnRecords(tasks = courierReturnTaskRows) {
+  return tasks.filter((task) => {
+    const item = task.order_items || {};
+    const order = item.orders || {};
+    return matchSearch(`${item.barcode} ${item.spec} ${item.product_name} ${order.order_no} ${order.customer_name} ${order.phone} ${order.school} ${order.campus} ${orderCampusName(order)} ${order.building} ${order.address}`);
+  }).map((task) => ({ task, item: task.order_items || {}, order: task.order_items?.orders || {} }));
+}
+
+function buildCourierRouteAreas(pickupRecords = [], returnGroups = []) {
+  const areas = new Map();
+  const ensureArea = (order) => {
+    const route = orderRouteParts(order || {});
+    const key = orderRouteKey(order || {});
+    if (!areas.has(key)) areas.set(key, { key, ...route, pickups: [], returns: [] });
+    return areas.get(key);
+  };
+  pickupRecords.forEach((record) => ensureArea(record.order).pickups.push(record));
+  returnGroups.forEach((group) => ensureArea(group.order).returns.push(group));
+  return [...areas.values()]
+    .map((area) => {
+      area.pickups.sort(comparePickupRecords);
+      area.returns.sort((left, right) => compareOrderRoute(left.order, right.order)
+        || compareNaturalText(firstOrderBarcode({ order_items: left.records.map(({ item }) => item) }), firstOrderBarcode({ order_items: right.records.map(({ item }) => item) }))
+        || compareNaturalText(left.order?.customer_name, right.order?.customer_name));
+      return area;
+    })
+    .sort((left, right) => compareNaturalText(left.school, right.school)
+      || compareNaturalText(left.campus, right.campus)
+      || compareNaturalText(left.building, right.building));
+}
+
+function courierAreaTaskCount(area) {
+  return area.pickups.length + area.returns.length;
+}
+
+function courierRouteBuildingCounts(area, processed = false) {
+  const prefix = processed ? "" : "待";
+  return `${prefix}送回 ${area.returns.length}单｜${prefix}取件 ${area.pickups.length}单`;
+}
+
+function renderCourierRouteCockpit(pendingPickups, pendingReturns, processedPickups, processedReturns, areas, activeArea) {
+  const completed = processedPickups.length + processedReturns.length;
+  const pending = pendingPickups.length + pendingReturns.length;
+  const total = completed + pending;
+  const percent = total ? Math.round((completed / total) * 100) : 100;
+  const activeIndex = activeArea ? areas.findIndex((area) => area.key === activeArea.key) : -1;
+  const nextArea = activeIndex >= 0 ? areas[activeIndex + 1] : null;
+  return `<section class="pickup-cockpit courier-route-cockpit ${pending ? "" : "complete"}">
+    <div class="pickup-cockpit-head">
+      <div><span class="pickup-eyebrow">当前楼栋</span><strong>${activeArea ? escapeHtml(pickupAreaLabel(activeArea)) : "今日路线已完成"}</strong></div>
+      <span class="pickup-current-count">${activeArea ? escapeHtml(courierRouteBuildingCounts(activeArea)) : "全部完成"}</span>
+    </div>
+    <div class="courier-route-stats">
+      <div><strong>${pendingPickups.length}</strong><span>待取件</span></div>
+      <div><strong>${pendingReturns.length}</strong><span>待送回</span></div>
+      <div><strong>${completed}</strong><span>今日已完成</span></div>
+    </div>
+    <div class="pickup-progress-track"><i style="width:${percent}%"></i></div>
+    <p>${nextArea ? `下一楼栋：${escapeHtml(pickupAreaLabel(nextArea))}` : pending ? "当前是最后一个待处理楼栋" : "所有任务均已处理，可在下方查看已处理记录"}</p>
+  </section>`;
+}
+
+function renderCourierBatchPanel(pendingReturnGroups) {
+  if (!pendingReturnGroups.length) return "";
+  return `<details class="courier-batch-panel">
+    <summary><span>批量送回操作</span><strong id="courierSelectedReturnCount">已选 0 单 / 0 件</strong></summary>
+    <div class="courier-batch-body">
+      <p class="hint">出发前可按当前楼栋选择订单，统一标记配送中或复制通知。</p>
+      <div class="toolbar wrap">
+        <button class="ghost" type="button" data-courier-select-all>全选当前结果</button>
+        <button class="ghost" type="button" data-courier-clear-selection>清空选择</button>
+        <button type="button" data-courier-batch-status="配送中">整批标记配送中</button>
+        <button type="button" data-courier-batch-notify>复制批量送回通知</button>
+      </div>
+      <p id="courierBatchMessage" class="hint">物品送达后，在对应水洗标旁点击“确认送达”。</p>
+    </div>
+  </details>`;
+}
+
+function courierReturnItemMessage(order, item) {
+  const itemName = item.spec || item.product_name || "洗护物品";
+  return `【事事通】同学您好，您的洗护物品【${itemName}】已送达至${order.school || ""}${orderCampusName(order)}${order.building || ""}，请及时到约定位置领取并核对。如有问题请联系售后${AFTER_SALES_PHONE}。同一订单的其他物品将按实际洗护进度另行送回。`;
+}
+
+function renderCourierReturnCard(group, processed = false) {
+  const { order } = group;
+  const records = [...group.records].sort((left, right) => compareNaturalText(left.item?.barcode, right.item?.barcode));
+  const deliveredCount = records.filter(({ task }) => task.status === "已送达").length;
+  const pendingRecords = records.filter((record) => !courierReturnRecordFinished(record));
+  const selected = courierSelectedReturnOrders.has(group.key);
+  const allDelivered = deliveredCount === records.length;
+  const hasException = records.some(({ task }) => task.status === "异常");
+  const groupBusy = records.some(({ task }) => courierReturnBusyTaskId === task.id);
+  const cardStatus = allDelivered ? "已送达" : pendingRecords.length ? `已送达 ${deliveredCount}/${records.length}件` : hasException ? "异常" : group.status;
+  const images = [...new Set(records.flatMap(({ item }) => text(item.image_links).split(/[\n,，\s]+/).filter((url) => /^https?:\/\//i.test(url))))];
+  const imageBtn = previewButton(`return-order-${group.key}`, images);
+  return `<article class="task-card courier-order-card courier-route-card courier-return-card ${allDelivered ? "done" : ""} ${hasException && !pendingRecords.length ? "alert" : ""} ${selected ? "selected" : ""}" data-route-task-card="return-${escapeHtml(group.key)}" ${groupBusy ? 'aria-busy="true"' : ""}>
+    ${processed || !pendingRecords.length ? "" : `<label class="courier-order-select"><input type="checkbox" data-courier-return-order="${escapeHtml(group.key)}" ${selected ? "checked" : ""} /><span>选择本单待送物品</span></label>`}
+    <div class="card-head"><h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3><span>${escapeHtml(groupBusy ? "提交中…" : cardStatus)}</span></div>
+    <p class="courier-card-summary">本单 ${records.length} 件｜订单号：${escapeHtml(order.order_no || "")}</p>
+    <ul class="courier-item-list courier-return-item-list">${records.map(({ task, item }) => {
+      const itemBusy = courierReturnBusyTaskId === task.id;
+      const finished = COURIER_RETURN_FINISHED_STATUSES.has(task.status);
+      const sms = courierReturnItemMessage(order, item);
+      return `<li class="courier-return-item ${task.status === "已送达" ? "done" : task.status === "异常" ? "alert" : ""}">
+        <div class="courier-return-item-main"><strong>${escapeHtml(item.barcode || "无条码")}</strong><span>${escapeHtml(item.spec || item.product_name || "物品未填写")}</span><em>${escapeHtml(itemBusy ? "提交中…" : task.status || "待送回")}</em></div>
+        <div class="courier-return-item-actions">
+          <a class="button-link ghost" href="${smsComposeHref(order.phone || "", sms)}">编辑短信</a>
+          ${finished ? "" : `<button type="button" data-return="${escapeHtml(task.id)}" data-item="${escapeHtml(item.id)}" data-order="${escapeHtml(order.id)}" data-status="已送达" ${itemBusy || groupBusy ? "disabled" : ""}>确认送达</button><button class="ghost danger" type="button" data-return="${escapeHtml(task.id)}" data-item="${escapeHtml(item.id)}" data-order="${escapeHtml(order.id)}" data-status="异常" ${itemBusy || groupBusy ? "disabled" : ""}>异常</button>`}
+        </div>
+      </li>`;
+    }).join("")}</ul>
+    <details class="pickup-card-detail"><summary>查看送达位置与订单号</summary><p>${escapeHtml(`${order.school || ""}｜${orderCampusName(order)}｜${order.building || ""}`)}</p><p>${escapeHtml(order.address || "未填写完整地址")}</p><p>订单号：${escapeHtml(order.order_no || "")}</p></details>
+    <div class="actions courier-card-secondary-actions"><a class="button-link" href="tel:${escapeHtml(order.phone || "")}">打电话</a>${imageBtn}<button class="ghost" type="button" data-detail="${escapeHtml(order.id)}">详情</button></div>
+  </article>`;
+}
+
+function renderCourierRouteAreaContent(area, processed = false) {
+  if (!processed) {
+    courierReturnAreaMap.set(area.key, area.returns.filter(courierReturnGroupHasPending).map((group) => group.key));
+  }
+  const returnItemCount = area.returns.reduce((sum, group) => sum + group.records.filter((record) => processed || !courierReturnRecordFinished(record)).length, 0);
+  return `<div class="courier-route-area-content">
+    ${area.returns.length ? `<section class="courier-route-section courier-route-return-section">
+      <div class="courier-route-section-head"><div><strong>${processed ? "已处理送回" : "先送回"}</strong><span>${area.returns.length} 单 / ${returnItemCount} 件</span></div>${processed ? "" : `<button class="ghost small-btn" type="button" data-select-courier-building="${escapeHtml(area.key)}">本栋送回全选</button>`}</div>
+      <div class="card-list">${area.returns.map((group) => renderCourierReturnCard(group, processed)).join("")}</div>
+      ${!processed && area.key === courierActivePickupAreaKey ? renderCourierBatchPanel(area.returns) : ""}
+    </section>` : ""}
+    ${area.pickups.length ? `<section class="courier-route-section courier-route-pickup-section">
+      <div class="courier-route-section-head"><div><strong>${processed ? "已处理取件" : "再取件"}</strong><span>${area.pickups.length} 单</span></div></div>
+      <div class="card-list">${area.pickups.map((record) => renderPickupCard(record, processed)).join("")}</div>
+    </section>` : ""}
+  </div>`;
+}
+
+function renderCourierRouteTree(areas, processed = false) {
   const schools = new Map();
-  [...groups].sort((left, right) => {
-    const a = left.order || {};
-    const b = right.order || {};
-    return `${a.school || ""}|${orderCampusName(a)}|${a.building || ""}|${a.customer_name || ""}`.localeCompare(`${b.school || ""}|${orderCampusName(b)}|${b.building || ""}|${b.customer_name || ""}`, "zh-CN", { numeric: true });
-  }).forEach((group) => {
-    const order = group.order || {};
-    const school = areaLabel(order.school, "学校未识别");
-    const campus = areaLabel(orderCampusName(order), "校区未识别");
-    const building = areaLabel(order.building, "楼栋未识别");
-    if (!schools.has(school)) schools.set(school, new Map());
-    if (!schools.get(school).has(campus)) schools.get(school).set(campus, new Map());
-    if (!schools.get(school).get(campus).has(building)) schools.get(school).get(campus).set(building, []);
-    schools.get(school).get(campus).get(building).push(group);
+  areas.forEach((area) => {
+    if (!schools.has(area.school)) schools.set(area.school, { count: 0, campuses: new Map() });
+    const school = schools.get(area.school);
+    school.count += courierAreaTaskCount(area);
+    if (!school.campuses.has(area.campus)) school.campuses.set(area.campus, { count: 0, buildings: [] });
+    const campus = school.campuses.get(area.campus);
+    campus.count += courierAreaTaskCount(area);
+    campus.buildings.push(area);
   });
-
-  return [...schools.entries()].map(([school, campuses]) => {
-    const schoolGroups = [...campuses.values()].flatMap((buildings) => [...buildings.values()].flat());
-    return `<details class="delivery-group school-group" open>
-      <summary>${escapeHtml(school)} <span>${courierGroupCountLabel(schoolGroups)}</span></summary>
-      <div class="group-nest">${[...campuses.entries()].map(([campus, buildings]) => {
-        const campusGroups = [...buildings.values()].flat();
-        return `<details class="delivery-group campus-group" open>
-          <summary>${escapeHtml(campus)} <span>${courierGroupCountLabel(campusGroups)}</span></summary>
-          <div class="group-nest">${[...buildings.entries()].map(([building, buildingGroups]) => {
-            const areaKey = courierReturnAreaKey(buildingGroups[0].order || {});
-            courierReturnAreaMap.set(areaKey, buildingGroups.filter((group) => group.status !== "已送达").map((group) => group.key));
-            return `<details class="delivery-group building-group" open>
-              <summary>${escapeHtml(building)} <span>${courierGroupCountLabel(buildingGroups)}</span></summary>
-              <div class="courier-building-tools"><button class="ghost small-btn" type="button" data-select-courier-building="${escapeHtml(areaKey)}">整栋全选</button></div>
-              <div class="card-list">${buildingGroups.map(renderReturnOrderCard).join("")}</div>
+  return [...schools.entries()].map(([schoolName, school]) => {
+    const schoolActive = !processed && school.campuses.values() && [...school.campuses.values()].some((campus) => campus.buildings.some((area) => area.key === courierActivePickupAreaKey));
+    return `<details class="delivery-group school-group courier-route-school" ${schoolActive ? "open" : ""}>
+      <summary>${escapeHtml(schoolName)} <span>${school.count} 项任务</span></summary>
+      <div class="group-nest">${[...school.campuses.entries()].map(([campusName, campus]) => {
+        const campusActive = !processed && campus.buildings.some((area) => area.key === courierActivePickupAreaKey);
+        return `<details class="delivery-group campus-group courier-route-campus" ${campusActive ? "open" : ""}>
+          <summary>${escapeHtml(campusName)} <span>${campus.count} 项任务</span></summary>
+          <div class="group-nest">${campus.buildings.map((area) => {
+            const active = !processed && area.key === courierActivePickupAreaKey;
+            return `<details class="delivery-group building-group courier-route-area ${active ? "active" : ""}" ${active ? "open" : ""} data-route-area="${escapeHtml(area.key)}">
+              <summary ${processed ? "" : `data-select-pickup-area="${escapeHtml(area.key)}"`}><strong>${escapeHtml(area.building)}</strong><span>${escapeHtml(courierRouteBuildingCounts(area, processed))}</span></summary>
+              ${renderCourierRouteAreaContent(area, processed)}
             </details>`;
           }).join("")}</div>
         </details>`;
@@ -3429,62 +3484,50 @@ function groupCourierReturnsByArea(groups) {
   }).join("");
 }
 
-function renderReturnTasks(tasks) {
-  const records = tasks.filter((task) => {
-    const item = task.order_items || {};
-    const order = item.orders || {};
-    return matchSearch(`${item.barcode} ${item.spec} ${item.product_name} ${order.order_no} ${order.customer_name} ${order.phone} ${order.school} ${order.campus} ${orderCampusName(order)} ${order.building}`);
-  }).map((task) => ({ task, item: task.order_items || {}, order: task.order_items?.orders || {} }));
-  courierReturnOrderGroups = aggregateCourierReturnOrders(records);
-  const availableKeys = new Set(courierReturnOrderGroups.map((group) => group.key));
+function renderCourierRouteTasks() {
+  const target = $("courierRouteTaskList");
+  if (!target) return;
+  const pickupRecords = filteredCourierPickupRecords();
+  const pendingPickups = pickupRecords.filter((record) => record.task.status === "待取件");
+  const processedPickups = pickupRecords.filter((record) => record.task.status !== "待取件");
+  const returnRecords = filteredCourierReturnRecords();
+  courierReturnOrderGroups = aggregateCourierReturnOrders(returnRecords);
+  const pendingReturns = courierReturnOrderGroups.filter(courierReturnGroupHasPending);
+  const selectedDate = selectedCourierPickupDate();
+  const hasSearch = Boolean(text($("courierSearch")?.value));
+  const processedReturns = courierReturnOrderGroups.filter((group) => !courierReturnGroupHasPending(group) && (hasSearch || courierReturnGroupFinishedOnDate(group, selectedDate)));
+  const availableKeys = new Set(pendingReturns.map((group) => group.key));
   [...courierSelectedReturnOrders].forEach((key) => {
     if (!availableKeys.has(key)) courierSelectedReturnOrders.delete(key);
   });
-  const target = $("returnTaskList");
-  if (!target) return;
-  if (!courierReturnOrderGroups.length) {
-    target.innerHTML = '<p class="hint">暂无送回任务</p>';
+  courierReturnAreaMap.clear();
+  const pendingAreas = buildCourierRouteAreas(pendingPickups, pendingReturns);
+  const processedAreas = buildCourierRouteAreas(processedPickups, processedReturns);
+  const activeArea = ensureCourierActivePickupArea(pendingAreas);
+  const hasAnyTask = pickupRecords.length || pendingReturns.length || processedReturns.length;
+  if (!hasAnyTask) {
+    target.innerHTML = `<p class="hint">${escapeHtml(selectedDate)} 暂无取件或送回任务</p>`;
     return;
   }
+  const completed = processedPickups.length + processedReturns.length;
   target.innerHTML = `
-    <section class="courier-batch-panel">
-      <div><strong id="courierSelectedReturnCount">已选 0 单 / 0 件</strong><p class="hint">先整栋全选或勾选订单，再统一处理。</p></div>
-      <div class="toolbar wrap">
-        <button class="ghost" type="button" data-courier-select-all>全选当前结果</button>
-        <button class="ghost" type="button" data-courier-clear-selection>清空选择</button>
-        <button type="button" data-courier-batch-status="配送中">整批标记配送中</button>
-        <button type="button" data-courier-batch-notify>复制批量送回通知</button>
-      </div>
-      <div class="courier-delivery-scan">
-        <input id="courierReturnBarcodeInput" class="input" inputmode="numeric" placeholder="扫描或输入水洗标，确认该件已送达" />
-        <button type="button" data-courier-scan-delivered>扫码确认已送达</button>
-      </div>
-      <p id="courierBatchMessage" class="hint">每扫一件只确认该件；同一订单全部送达后，整单才会变为“已送达”。</p>
-    </section>
-    ${groupCourierReturnsByArea(courierReturnOrderGroups)}`;
+    ${renderCourierRouteCockpit(pendingPickups, pendingReturns, processedPickups, processedReturns, pendingAreas, activeArea)}
+    <div class="courier-route-list">${pendingAreas.length ? renderCourierRouteTree(pendingAreas) : '<p class="success-note">当前筛选范围内没有待处理任务。</p>'}</div>
+    ${completed ? `<details class="pickup-processed courier-route-processed" ${pendingAreas.length ? "" : "open"}>
+      <summary><strong>已处理</strong><span>${completed} 项任务</span></summary>
+      <div class="pickup-processed-body">${renderCourierRouteTree(processedAreas, true)}</div>
+    </details>` : ""}`;
   updateCourierReturnSelectionUi();
-}
-
-function renderReturnOrderCard(group) {
-  const { order, records, status } = group;
-  const sms = `【事事通】同学您好，您的事事洗护订单已出库，配送员将送回${order.school || ""}${orderCampusName(order)}${order.building || ""}，请保持电话畅通。`;
-  const images = [...new Set(records.flatMap(({ item }) => text(item.image_links).split(/[\n,，\s]+/).filter((url) => /^https?:\/\//i.test(url))))];
-  const imageBtn = previewButton(`return-order-${group.key}`, images);
-  const selected = courierSelectedReturnOrders.has(group.key);
-  const delivered = status === "已送达";
-  return `<article class="task-card courier-order-card ${delivered ? "done" : ""} ${selected ? "selected" : ""}">
-    <label class="courier-order-select"><input type="checkbox" data-courier-return-order="${escapeHtml(group.key)}" ${selected ? "checked" : ""} ${delivered ? "disabled" : ""} /><span>选择整单</span></label>
-    <div class="card-head"><h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3><span>${escapeHtml(status)}</span></div>
-    <p>${escapeHtml(`${records[0]?.task.outbound_date || ""}｜${order.school || ""}｜${orderCampusName(order)}｜${order.building || ""}`)}</p>
-    <p>订单号：${escapeHtml(order.order_no || "")}｜共 ${records.length} 件</p>
-    <ul class="courier-item-list">${records.map(({ task, item }) => `<li><strong>${escapeHtml(item.barcode || "无条码")}</strong><span>${escapeHtml(item.spec || item.product_name || "物品未填写")}</span><em>${escapeHtml(task.status || "待送回")}</em></li>`).join("")}</ul>
-    ${contactButtons(order.phone || "", sms)}
-    <div class="actions"><button type="button" data-return-group-status="异常" data-return-group="${escapeHtml(group.key)}">整单异常</button>${imageBtn}<button class="ghost" type="button" data-detail="${order.id}">详情</button></div>
-  </article>`;
+  if (courierPickupScrollToNext) {
+    courierPickupScrollToNext = false;
+    requestAnimationFrame(() => {
+      document.querySelector(".courier-route-area.active [data-route-task-card]")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }
 }
 
 function selectedCourierReturnGroups() {
-  return courierReturnOrderGroups.filter((group) => courierSelectedReturnOrders.has(group.key) && group.status !== "已送达");
+  return courierReturnOrderGroups.filter((group) => courierSelectedReturnOrders.has(group.key) && courierReturnGroupHasPending(group));
 }
 
 function updateCourierReturnSelectionUi() {
@@ -3506,7 +3549,7 @@ function selectCourierBuilding(areaKey) {
 }
 
 function selectAllCourierReturns() {
-  courierReturnOrderGroups.filter((group) => group.status !== "已送达").forEach((group) => courierSelectedReturnOrders.add(group.key));
+  courierReturnOrderGroups.filter(courierReturnGroupHasPending).forEach((group) => courierSelectedReturnOrders.add(group.key));
   updateCourierReturnSelectionUi();
 }
 
@@ -3525,7 +3568,7 @@ function setCourierBatchMessage(message, state = "hint") {
 async function batchUpdateCourierReturns(status = "配送中") {
   const groups = selectedCourierReturnGroups();
   if (!groups.length) return setCourierBatchMessage("请先选择需要处理的订单。", "warn");
-  const records = groups.flatMap((group) => group.records).filter((record) => record.task.status !== "已送达");
+  const records = groups.flatMap((group) => group.records).filter((record) => !courierReturnRecordFinished(record));
   const taskIds = records.map((record) => record.task.id).filter(Boolean);
   const itemIds = records.map((record) => record.item.id).filter(Boolean);
   const now = new Date().toISOString();
@@ -3567,43 +3610,12 @@ async function copyCourierBatchNotifications() {
   }
 }
 
-async function updateReturnGroup(groupKey, status) {
-  const group = courierReturnOrderGroups.find((candidate) => candidate.key === groupKey);
-  if (!group) return;
-  if (status !== "异常") return;
-  const note = prompt("请输入异常备注", "送回异常") || "送回异常";
-  const now = new Date().toISOString();
-  const taskIds = group.records.map(({ task }) => task.id).filter(Boolean);
-  const itemIds = group.records.map(({ item }) => item.id).filter(Boolean);
-  const results = await Promise.all([
-    sb.from("return_tasks").update({ status, exception_note: note, operator_id: currentProfile?.id || null, updated_at: now }).in("id", taskIds),
-    sb.from("order_items").update({ item_status: status, updated_at: now }).in("id", itemIds),
-    sb.from("orders").update({ exception_note: note, updated_at: now }).eq("id", group.order.id),
-  ]);
-  const failure = results.find((result) => result.error)?.error;
-  if (failure) return alert(failure.message);
-  await insertLog({ orderId: group.order.id, status, note });
-  await refreshAll();
-}
-
-async function confirmCourierDeliveredByBarcode() {
-  const input = $("courierReturnBarcodeInput");
-  const barcode = text(input?.value);
-  if (!barcode) return setCourierBatchMessage("请先扫描或输入水洗标。", "warn");
-  const record = courierReturnOrderGroups.flatMap((group) => group.records).find(({ item }) => text(item.barcode) === barcode);
-  if (!record) return setCourierBatchMessage(`${barcode} 不在当前送回清单中。`, "warn");
-  if (record.task.status === "已送达") return setCourierBatchMessage(`${barcode} 已经确认送达，无需重复操作。`, "warn");
-  if (input) input.value = "";
-  setCourierBatchMessage(`正在确认 ${barcode} 已送达……`);
-  await updateReturn(record.task.id, record.item.id, record.order.id, "已送达");
-}
-
 async function updatePickup(taskId, orderId, status) {
   if (courierPickupBusyTaskId) return;
   const note = status === "未找到" || status === "异常" ? prompt("请输入异常备注", status) || status : "";
   const now = new Date().toISOString();
   courierPickupBusyTaskId = taskId;
-  renderPickupTasks(courierPickupTaskRows);
+  renderCourierRouteTasks();
   const results = await Promise.all([
     sb.from("pickup_tasks").update({ status, exception_note: note, operator_id: currentProfile?.id || null, updated_at: now }).eq("id", taskId),
     sb.from("order_items").update({ item_status: status, updated_at: now }).eq("order_id", orderId),
@@ -3612,7 +3624,7 @@ async function updatePickup(taskId, orderId, status) {
   const failure = results.find((result) => result.error)?.error;
   if (failure) {
     courierPickupBusyTaskId = "";
-    renderPickupTasks(courierPickupTaskRows);
+    renderCourierRouteTasks();
     return alert(failure.message);
   }
   await insertLog({ orderId, status, note });
@@ -3622,17 +3634,29 @@ async function updatePickup(taskId, orderId, status) {
 }
 
 async function updateReturn(taskId, itemId, orderId, status) {
+  if (courierReturnBusyTaskId) return;
   const note = status === "异常" ? prompt("请输入异常备注", "送回异常") || "送回异常" : "";
   const now = new Date().toISOString();
+  const currentRecord = courierReturnOrderGroups.flatMap((group) => group.records).find(({ task }) => task.id === taskId);
+  courierReturnBusyTaskId = taskId;
+  renderCourierRouteTasks();
   const results = await Promise.all([
     sb.from("return_tasks").update({ status, exception_note: note, operator_id: currentProfile?.id || null, updated_at: now }).eq("id", taskId),
     sb.from("order_items").update({ item_status: status, updated_at: now }).eq("id", itemId),
     note ? sb.from("orders").update({ exception_note: note, updated_at: now }).eq("id", orderId) : Promise.resolve({ error: null }),
   ]);
   const failure = results.find((result) => result.error)?.error;
-  if (failure) return alert(failure.message);
-  await insertLog({ orderId, itemId, status, note });
-  await refreshAll();
+  if (failure) {
+    courierReturnBusyTaskId = "";
+    renderCourierRouteTasks();
+    return alert(failure.message);
+  }
+  const barcode = currentRecord?.item?.barcode || "";
+  const logNote = note || `配送员确认水洗标 ${barcode || itemId} 已送达`;
+  await insertLog({ orderId, itemId, barcode, status, note: logNote });
+  courierReturnBusyTaskId = "";
+  courierPickupScrollToNext = true;
+  await loadCourierTasks();
 }
 
 function renderFactoryPendingItems() {
@@ -5044,8 +5068,7 @@ function bindEvents() {
   on("factoryItemStatusFilter", "change", renderFactoryPendingItems);
   on("courierSearch", "input", () => {
     courierActivePickupAreaKey = "";
-    renderPickupTasks(courierPickupTaskRows);
-    renderReturnTasks(courierReturnTaskRows);
+    renderCourierRouteTasks();
   });
   on("courierPickupDate", "change", () => {
     courierDashboardFilter = "";
@@ -5096,8 +5119,6 @@ function bindEvents() {
     }
     const returnBtn = event.target.closest("[data-return]");
     if (returnBtn) updateReturn(returnBtn.dataset.return, returnBtn.dataset.item, returnBtn.dataset.order, returnBtn.dataset.status);
-    const returnGroupBtn = event.target.closest("[data-return-group-status]");
-    if (returnGroupBtn) updateReturnGroup(returnGroupBtn.dataset.returnGroup, returnGroupBtn.dataset.returnGroupStatus);
     const selectCourierBuildingBtn = event.target.closest("[data-select-courier-building]");
     if (selectCourierBuildingBtn) selectCourierBuilding(selectCourierBuildingBtn.dataset.selectCourierBuilding);
     if (event.target.closest("[data-courier-select-all]")) selectAllCourierReturns();
@@ -5105,7 +5126,6 @@ function bindEvents() {
     const courierBatchStatusBtn = event.target.closest("[data-courier-batch-status]");
     if (courierBatchStatusBtn) batchUpdateCourierReturns(courierBatchStatusBtn.dataset.courierBatchStatus);
     if (event.target.closest("[data-courier-batch-notify]")) copyCourierBatchNotifications();
-    if (event.target.closest("[data-courier-scan-delivered]")) confirmCourierDeliveredByBarcode();
     const previewBtn = event.target.closest("[data-preview-images]");
     if (previewBtn) showImagePreview(previewBtn.dataset.previewImages);
     const detailBtn = event.target.closest("[data-detail]");
@@ -5202,17 +5222,11 @@ function bindEvents() {
       if (entry) entry.settlementCostSnapshot = factoryOtherCost.value;
     }
   });
-  document.addEventListener("keydown", (event) => {
-    if (event.target.id === "courierReturnBarcodeInput" && event.key === "Enter") {
-      event.preventDefault();
-      confirmCourierDeliveredByBarcode();
-    }
-  });
 }
 
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker
-    .register("./sw.js?v=42", { updateViaCache: "none" })
+    .register("./sw.js?v=51", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
