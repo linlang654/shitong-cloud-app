@@ -3339,7 +3339,7 @@ function renderPickupCard(record, processed = false) {
   const processedClass = task.status === "已取件" ? "done" : task.status === "异常" || task.status === "未找到" ? "alert" : "";
   return `<article class="task-card pickup-task-card ${processedClass}" data-pickup-card="${escapeHtml(task.id)}" ${isBusy ? 'aria-busy="true"' : ""}>
     <div class="card-head"><h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3><span>${escapeHtml(isBusy ? "提交中…" : task.status)}</span></div>
-    <p class="pickup-card-route">${escapeHtml(`${order.school || ""}｜${orderCampusName(order)}｜${order.building || ""}`)} · ${items.length} 件</p>
+    <p class="pickup-card-route">本单 ${items.length} 件</p>
     <ul class="courier-item-list pickup-label-list">${items.map((item) => `<li><strong>${escapeHtml(item.barcode || "无条码")}</strong><span>${escapeHtml(item.spec || item.product_name || "物品未填写")}</span><em>${escapeHtml(item.item_status || task.status)}</em></li>`).join("") || "<li><span>该订单尚未生成水洗标</span></li>"}</ul>
     ${order.exception_note ? `<p class="warn">备注：${escapeHtml(order.exception_note)}</p>` : ""}
     <div class="pickup-primary-tools">

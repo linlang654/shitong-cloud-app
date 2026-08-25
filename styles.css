@@ -2712,16 +2712,175 @@ code {
 
   .pickup-cockpit {
     top: 4px;
+    gap: 6px;
+    margin-bottom: 6px;
+    padding: 8px 10px;
   }
 
   .pickup-cockpit-head {
-    align-items: flex-start;
-    flex-direction: column;
+    align-items: center;
+    flex-direction: row;
   }
 
-  .pickup-primary-tools,
-  .pickup-status-actions {
-    grid-template-columns: 1fr;
+  .pickup-cockpit-head strong {
+    font-size: 14px;
+  }
+
+  .pickup-current-count {
+    padding: 4px 7px;
+  }
+
+  .courier-page .topbar {
+    padding: 8px 10px;
+  }
+
+  .courier-page .single-layout {
+    gap: 6px;
+    padding: 6px 4px;
+  }
+
+  .courier-page .workspace {
+    gap: 6px;
+  }
+
+  .courier-page .hero-panel {
+    padding: 8px;
+  }
+
+  .courier-page .hero-panel > h2,
+  .courier-page .hero-panel > p {
+    display: none;
+  }
+
+  .courier-page .courier-filterbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 6px;
+  }
+
+  .courier-page .courier-filterbar > .input:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .courier-page .courier-filterbar .input,
+  .courier-page .courier-filterbar button {
+    min-height: 36px;
+    padding: 7px 8px;
+  }
+
+  .courier-page .split {
+    gap: 6px;
+  }
+
+  .courier-page .split > .panel {
+    padding: 6px;
+  }
+
+  .courier-page .split > .panel > h2 {
+    margin: 2px 2px 6px;
+    font-size: 15px;
+  }
+
+  #pickupTaskList .delivery-group + .delivery-group {
+    margin-top: 5px;
+  }
+
+  #pickupTaskList .delivery-group summary {
+    min-height: 36px;
+    padding: 6px 8px;
+    font-size: 14px;
+  }
+
+  #pickupTaskList .delivery-group summary span {
+    font-size: 12px;
+  }
+
+  #pickupTaskList .group-nest,
+  #pickupTaskList .building-group .card-list {
+    gap: 5px;
+    padding: 4px;
+  }
+
+  #pickupTaskList .pickup-task-card {
+    padding: 8px;
+  }
+
+  #pickupTaskList .pickup-task-card .card-head {
+    align-items: center;
+    flex-direction: row;
+    gap: 6px;
+  }
+
+  #pickupTaskList .pickup-task-card .card-head h3 {
+    font-size: 14px;
+  }
+
+  #pickupTaskList .pickup-task-card .card-head span {
+    padding: 3px 6px;
+    font-size: 11px;
+  }
+
+  #pickupTaskList .pickup-card-route {
+    margin-top: 3px;
+    font-size: 12px;
+  }
+
+  #pickupTaskList .pickup-label-list {
+    gap: 4px;
+    margin: 6px 0;
+  }
+
+  #pickupTaskList .pickup-label-list li {
+    grid-template-columns: minmax(82px, auto) minmax(0, 1fr) auto;
+    gap: 5px;
+    padding: 5px 7px;
+    font-size: 11px;
+  }
+
+  #pickupTaskList .pickup-label-list span {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  #pickupTaskList .pickup-primary-tools {
+    grid-template-columns: 1fr 1fr;
+    gap: 5px;
+    margin: 6px 0;
+  }
+
+  #pickupTaskList .pickup-primary-tools button,
+  #pickupTaskList .pickup-task-card > .actions button,
+  #pickupTaskList .pickup-task-card > .actions a {
+    min-height: 34px;
+    padding: 5px 6px;
+    font-size: 13px;
+  }
+
+  #pickupTaskList .pickup-card-detail {
+    margin: 5px 0;
+    padding: 6px 8px;
+  }
+
+  #pickupTaskList .pickup-card-detail summary {
+    font-size: 12px;
+  }
+
+  #pickupTaskList .pickup-task-card > .actions {
+    gap: 5px;
+    margin-top: 5px;
+  }
+
+  #pickupTaskList .pickup-status-actions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  #pickupTaskList .pickup-processed {
+    margin-top: 7px;
+  }
+
+  #pickupTaskList .pickup-processed > summary {
+    min-height: 38px;
+    padding: 6px 9px;
   }
 
   .courier-item-list li {
