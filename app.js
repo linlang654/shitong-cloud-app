@@ -26,6 +26,18 @@ const ORDER_STATUSES = ["待取件", "已取件", "未找到", "已入厂", "已
 const ITEM_STATUSES = ["待取件", "已取件", "未找到", "已入厂", "清洗中", "已出库", "配送中", "已送达", "异常"];
 const SETTLEMENT_UNCONFIRMED = "unconfirmed";
 const SETTLEMENT_OTHER = "other";
+const WASH_DECISION_NORMAL = "normal";
+const WASH_DECISION_SUPPLEMENT_PENDING = "supplement_pending";
+const WASH_DECISION_SUPPLEMENT_CONFIRMED = "supplement_confirmed";
+const WASH_DECISION_RETURN_PENDING = "return_pending";
+const WASH_DECISION_RETURNED = "returned";
+const WASH_DECISION_OPTIONS = [
+  { key: WASH_DECISION_NORMAL, label: "正常洗护（无需差价）", adjustmentType: "none" },
+  { key: WASH_DECISION_SUPPLEMENT_PENDING, label: "待补差，暂不清洗", adjustmentType: "supplement" },
+  { key: WASH_DECISION_SUPPLEMENT_CONFIRMED, label: "已补差，继续清洗", adjustmentType: "supplement" },
+  { key: WASH_DECISION_RETURN_PENDING, label: "不洗，待退回", adjustmentType: "refund" },
+  { key: WASH_DECISION_RETURNED, label: "已退洗并退回", adjustmentType: "refund" },
+];
 const DEFAULT_SETTLEMENT_CATEGORIES = [
   { key: "regular_shoe", label: "休闲鞋/运动鞋/帆布鞋/板鞋", shortLabel: "普通鞋", unit: "双", detail: "含网面普通鞋；特殊材质和靴类需另选" },
   { key: "suede_shoe", label: "绒面/鹿皮/翻毛皮", shortLabel: "绒面/鹿皮", unit: "双", detail: "绒面、鹿皮、麂皮、翻毛皮鞋" },
@@ -97,11 +109,17 @@ let reconciliationSummary = null;
 let reconciliationRecord = null;
 let settlementSchemaAvailable = null;
 let settlementSchemaError = "";
+let washAdjustmentSchemaAvailable = null;
+let washAdjustmentSchemaError = "";
 let settlementCatalogAvailable = null;
 let settlementCatalogError = "";
 const settlementCatalogDraft = new Map();
 let settlementCatalogSearch = "";
 let settlementCatalogActiveOnly = true;
+let labelReviewRows = [];
+let labelVisibleRows = [];
+const labelSelectedItems = new Set();
+let labelBulkSaveBusy = false;
 
 const $ = (id) => document.getElementById(id);
 const on = (id, eventName, handler) => $(id)?.addEventListener(eventName, handler);
@@ -193,6 +211,31 @@ async function detectSettlementSchemaAvailability(force = false) {
 
 function settlementMigrationMessage() {
   return "结算品类数据库字段尚未启用，请在 Supabase SQL Editor 执行最新版 supabase-admin-upgrade.sql 后刷新页面。";
+}
+
+async function detectWashAdjustmentSchemaAvailability(force = false) {
+  if (!sb) return false;
+  if (!force && washAdjustmentSchemaAvailable !== null) return washAdjustmentSchemaAvailable;
+  const { error } = await sb.from("order_items").select("wash_decision,price_adjustment_type,price_adjustment_amount,wash_decision_reason,wash_decision_note").limit(1);
+  washAdjustmentSchemaAvailable = !error;
+  washAdjustmentSchemaError = error?.message || "";
+  return washAdjustmentSchemaAvailable;
+}
+
+function washAdjustmentMigrationMessage() {
+  return "退洗数据库字段尚未启用，请在 Supabase SQL Editor 执行 supabase-return-wash-migration.sql 后刷新页面。";
+}
+
+function washDecisionDefinition(key) {
+  return WASH_DECISION_OPTIONS.find((option) => option.key === text(key)) || WASH_DECISION_OPTIONS[0];
+}
+
+function washDecisionLabel(item) {
+  return washDecisionDefinition(item?.wash_decision).label;
+}
+
+function washDecisionIsReturn(item) {
+  return [WASH_DECISION_RETURN_PENDING, WASH_DECISION_RETURNED].includes(text(item?.wash_decision));
 }
 
 function normalizeRecognitionText(value) {
@@ -1630,7 +1673,7 @@ async function insertLog({ orderId, itemId = null, barcode = "", status, note = 
 
 async function refreshAll() {
   if (!sb || APP_MODE === "student" || !currentUser || !canUseCurrentPage()) return;
-  await Promise.all([loadRecognitionRules(), detectSettlementSchemaAvailability(true), loadSettlementCatalog(true)]);
+  await Promise.all([loadRecognitionRules(), detectSettlementSchemaAvailability(true), detectWashAdjustmentSchemaAvailability(true), loadSettlementCatalog(true)]);
   const tasks = [];
   if (APP_MODE === "admin") tasks.push(loadStats(), loadAdmin(), loadCourierTasks(), loadFactoryItems(), loadFactoryDailyScans());
   if (APP_MODE === "courier") tasks.push(loadCourierTasks());
@@ -1735,13 +1778,29 @@ async function loadAdminOverview() {
 }
 
 async function loadReconciliationSummary(dateText) {
-  const ordersResult = await sb.from("orders")
-    .select("id,pay_time,order_time,created_at,order_items(*)")
-    .order("created_at", { ascending: false })
+  await detectWashAdjustmentSchemaAvailability();
+  const range = factoryTodayRange(dateText);
+  const scansResult = await sb.from("factory_scans")
+    .select("id,item_id,barcode,scan_type,created_at,order_items(*,orders(id))")
+    .eq("scan_type", "factory_in")
+    .gte("created_at", range.start)
+    .lt("created_at", range.end)
+    .order("created_at", { ascending: true })
     .limit(5000);
-  if (ordersResult.error) throw ordersResult.error;
-  const batchOrders = (ordersResult.data || []).filter((order) => businessBatchDateFromOrder(order) === dateText);
-  const items = batchOrders.flatMap((order) => order.order_items || []);
+  if (scansResult.error) throw scansResult.error;
+  const latestInboundByItem = new Map();
+  (scansResult.data || []).map(normalizeFactoryScanRecord).forEach((record) => {
+    latestInboundByItem.set(record.item_id, record);
+  });
+  const appliedInboundRecords = [...latestInboundByItem.values()].filter(factoryScanStillApplied);
+  const returnedWashCount = washAdjustmentSchemaAvailable
+    ? appliedInboundRecords.filter((record) => washDecisionIsReturn(record.item)).length
+    : 0;
+  const inboundRecords = washAdjustmentSchemaAvailable
+    ? appliedInboundRecords.filter((record) => !washDecisionIsReturn(record.item))
+    : appliedInboundRecords;
+  const items = inboundRecords.map((record) => record.item);
+  const inboundOrderIds = new Set(inboundRecords.map((record) => factoryDailyOrderKey(record)));
   const counts = Object.fromEntries(SETTLEMENT_CATEGORIES.map((category) => [category.key, 0]));
   const amounts = Object.fromEntries(SETTLEMENT_CATEGORIES.map((category) => [category.key, 0]));
   const otherDetailMap = new Map();
@@ -1776,7 +1835,7 @@ async function loadReconciliationSummary(dateText) {
 
   return {
     date: dateText,
-    orderCount: batchOrders.length,
+    orderCount: inboundOrderIds.size,
     itemCount: items.length,
     counts,
     amounts,
@@ -1784,6 +1843,7 @@ async function loadReconciliationSummary(dateText) {
     totalCost,
     unconfirmedCount,
     suggestedCount,
+    returnedWashCount,
   };
 }
 
@@ -1797,7 +1857,8 @@ function reconciliationMetricConfig() {
 
 function reconciliationBatchSummaryText() {
   const confirmedCount = Object.values(reconciliationSummary?.counts || {}).reduce((total, value) => total + numberValue(value), 0);
-  return `本批 ${reconciliationSummary?.orderCount || 0} 单，共 ${reconciliationSummary?.itemCount || 0} 个水洗标；已确认 ${confirmedCount} 件，待确认 ${reconciliationSummary?.unconfirmedCount || 0} 件。`;
+  const returnText = reconciliationSummary?.returnedWashCount ? `；另有 ${reconciliationSummary.returnedWashCount} 件退洗，不计入结算` : "";
+  return `本日实际扫码入库 ${reconciliationSummary?.orderCount || 0} 单，共 ${reconciliationSummary?.itemCount || 0} 个结算水洗标；已确认 ${confirmedCount} 件，待确认 ${reconciliationSummary?.unconfirmedCount || 0} 件${returnText}。`;
 }
 
 function reconciliationActualValue(categoryKey) {
@@ -1931,7 +1992,7 @@ async function loadReconciliation(dateText = "") {
     : `<p class="warn">${escapeHtml(settlementMigrationMessage())}</p>`;
   const unconfirmedWarning = reconciliationSummary.unconfirmedCount > 0
     ? `<div class="reconciliation-review-warning"><strong>有 ${reconciliationSummary.unconfirmedCount} 个水洗标待确认结算品类</strong><span>系统建议 ${reconciliationSummary.suggestedCount} 个；未确认项目不计入本日结算数量。</span><button type="button" class="ghost small" data-open-label-review="true">去水洗标管理确认</button></div>`
-    : '<p class="success">本批水洗标的结算品类已全部确认。</p>';
+    : '<p class="success">本日实际入库水洗标的结算品类已全部确认。</p>';
 
   $("adminReconciliation").innerHTML = `
     <section class="panel reconciliation-panel">
@@ -1945,7 +2006,7 @@ async function loadReconciliation(dateText = "") {
           <button id="refreshReconciliationBtn" class="ghost" type="button">重新读取系统数据</button>
         </div>
       </div>
-      <p class="hint">按 ${escapeHtml(businessBatchLabel(selectedDate))} 批次的水洗标统计清洗品类，每个水洗标计一双鞋或一件衣物。</p>
+      <p class="hint">按 ${escapeHtml(selectedDate)} 当天工厂实际扫码入库的水洗标统计；未入库物品不进入对账，每个水洗标计一双鞋或一件衣物。</p>
       <p class="reconciliation-batch-summary">${escapeHtml(reconciliationBatchSummaryText())}</p>
       <p class="reconciliation-total-cost">系统代工成本合计：<strong>¥${numberValue(reconciliationSummary.totalCost).toFixed(2)}</strong></p>
       ${migrationWarning}
@@ -2889,6 +2950,11 @@ async function loadWashLabelRows(limit = 1000, batchDate = "") {
       settlement_other_name: settlement.otherName,
       settlement_other_unit: settlement.otherUnit,
       settlement_cost_snapshot: settlement.costSnapshot,
+      wash_decision: text(item.wash_decision) || WASH_DECISION_NORMAL,
+      price_adjustment_type: text(item.price_adjustment_type) || "none",
+      price_adjustment_amount: numberValue(item.price_adjustment_amount),
+      wash_decision_reason: text(item.wash_decision_reason),
+      wash_decision_note: text(item.wash_decision_note),
       id: item.id,
       order_id: order.id,
       batch_date: itemBatchDate,
@@ -2902,7 +2968,7 @@ async function loadWashLabelRows(limit = 1000, batchDate = "") {
 }
 
 async function loadLabels() {
-  await detectSettlementSchemaAvailability();
+  await Promise.all([detectSettlementSchemaAvailability(), detectWashAdjustmentSchemaAvailability()]);
   const allResult = await loadWashLabelRows(5000);
   const rows = allResult.rows;
   const error = allResult.error;
@@ -2910,6 +2976,9 @@ async function loadLabels() {
   const batchDates = [...new Set(rows.map((row) => row.batch_date).filter(Boolean))].sort().reverse();
   const selectedBatch = $("washBatchSelect")?.value || batchDates[0] || currentBusinessBatchDate();
   const filteredRows = rows.filter((row) => row.batch_date === selectedBatch);
+  labelReviewRows = filteredRows;
+  labelVisibleRows = filteredRows;
+  labelSelectedItems.clear();
   const confirmedCount = filteredRows.filter((row) => row.settlement_confirmed).length;
   const suggestedRows = filteredRows.filter((row) => !row.settlement_confirmed
     && selectableSettlementCategoryKey(row.settlement_suggestion)
@@ -2927,11 +2996,26 @@ async function loadLabels() {
       </div>
       <p class="hint">批次规则：昨天 18:00 之后到当天 18:00 之前付款/下单的订单，归为当天批次。</p>
       <div class="settlement-summary"><strong>结算品类：</strong><span class="success">已确认 ${confirmedCount}</span><span class="warn">待确认 ${pendingCount}</span></div>
+      <div class="settlement-bulk-bar">
+        <div class="settlement-bulk-copy">
+          <strong>批量确认品类</strong>
+          <span id="labelSelectedCount">已选 0 个水洗标</span>
+          <small>不同物品可以分别修改，最后一次保存。</small>
+        </div>
+        <div class="settlement-bulk-actions">
+          <button class="ghost small" type="button" data-select-label-pending ${pendingCount ? "" : "disabled"}>全选当前待确认</button>
+          <button class="ghost small" type="button" data-clear-label-selection disabled>清空选择</button>
+          <select id="labelBulkCategory" class="input settlement-bulk-select" ${settlementSchemaAvailable ? "" : "disabled"}>${settlementCategoryOptions()}</select>
+          <button class="ghost small" type="button" data-apply-label-category disabled>应用到已选</button>
+          <button class="primary small" type="button" data-save-label-selection disabled>保存已选</button>
+        </div>
+      </div>
       ${settlementSchemaAvailable ? "" : `<p class="warn">${escapeHtml(settlementMigrationMessage())}</p>`}
+      ${washAdjustmentSchemaAvailable ? "" : `<p class="warn">${escapeHtml(washAdjustmentMigrationMessage())}</p>`}
       <div id="labelReviewMessage" aria-live="polite"></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>条形编码</th><th>所属商家</th><th>姓名</th><th>电话</th><th>校区</th><th>物品</th><th>结算品类</th><th>确认状态</th><th>实付款</th><th>流转状态</th><th>操作</th></tr></thead>
+          <thead><tr><th>选择</th><th>条形编码</th><th>所属商家</th><th>姓名</th><th>电话</th><th>校区</th><th>物品</th><th>结算品类</th><th>确认状态</th><th>实付款</th><th>流转状态</th><th>操作</th></tr></thead>
           <tbody id="labelRows">${renderLabelRows(filteredRows)}</tbody>
         </table>
       </div>
@@ -2940,13 +3024,17 @@ async function loadLabels() {
   $("confirmSuggestedSettlementBtn")?.addEventListener("click", () => confirmSuggestedSettlementCategories(suggestedRows));
   $("labelSearch")?.addEventListener("input", () => {
     const keyword = text($("labelSearch").value).toLowerCase();
-    $("labelRows").innerHTML = renderLabelRows(filteredRows.filter((row) => JSON.stringify(row).toLowerCase().includes(keyword)));
+    labelVisibleRows = filteredRows.filter((row) => JSON.stringify(row).toLowerCase().includes(keyword));
+    labelSelectedItems.clear();
+    $("labelRows").innerHTML = renderLabelRows(labelVisibleRows);
+    updateLabelSelectionUi();
   });
 }
 
 function renderLabelRows(rows) {
   return rows.map((row) => `
-    <tr>
+    <tr data-label-row="${escapeHtml(row.id)}" class="${labelSelectedItems.has(row.id) ? "selected" : ""}">
+      <td><label class="label-select-cell"><input type="checkbox" data-label-checkbox="${escapeHtml(row.id)}" ${labelSelectedItems.has(row.id) ? "checked" : ""} aria-label="选择水洗标 ${escapeHtml(row.条形编码)}" /></label></td>
       <td>${escapeHtml(row.条形编码)}</td><td>${escapeHtml(row.所属商家)}</td><td>${escapeHtml(row.姓名)}</td><td>${escapeHtml(row.电话)}</td><td>${escapeHtml(row.校区)}</td><td>${escapeHtml(row.物品)}</td>
       <td><div class="settlement-editor">
         <select class="input settlement-category-select" data-settlement-select="${escapeHtml(row.id)}" ${settlementSchemaAvailable ? "" : "disabled"}>${settlementCategoryOptions(row.settlement_selected_key)}</select>
@@ -2956,10 +3044,207 @@ function renderLabelRows(rows) {
           <input class="input compact-input" type="number" min="0" step="0.01" data-settlement-other-cost="${escapeHtml(row.id)}" value="${row.settlement_cost_snapshot ?? ""}" placeholder="代工价" />
         </div>
       </div></td>
-      <td><span class="settlement-status ${row.settlement_confirmed ? "confirmed" : validSettlementCategoryKey(row.settlement_suggestion) ? "suggested" : "pending"}" title="${escapeHtml(row.settlement_suggestion_reason || "")}">${row.settlement_confirmed ? "已确认" : validSettlementCategoryKey(row.settlement_suggestion) ? "系统建议，待确认" : "待人工选择"}</span></td>
+      <td><div class="settlement-status-stack"><span class="settlement-status ${row.settlement_confirmed ? "confirmed" : validSettlementCategoryKey(row.settlement_suggestion) ? "suggested" : "pending"}" title="${escapeHtml(row.settlement_suggestion_reason || "")}">${row.settlement_confirmed ? "已确认" : validSettlementCategoryKey(row.settlement_suggestion) ? "系统建议，待确认" : "待人工选择"}</span>${row.wash_decision !== WASH_DECISION_NORMAL ? `<span class="wash-decision-badge ${escapeHtml(row.wash_decision)}">${escapeHtml(washDecisionLabel(row))}${row.price_adjustment_amount > 0 ? ` ¥${escapeHtml(row.price_adjustment_amount)}` : ""}</span>` : ""}</div></td>
       <td>${escapeHtml(row.实付款)}</td><td>${escapeHtml(row.item_status)}</td>
-      <td><div class="actions compact"><button class="ghost small" type="button" data-save-settlement="${escapeHtml(row.id)}" ${settlementSchemaAvailable ? "" : "disabled"}>保存品类</button><button class="ghost small" type="button" data-detail="${row.order_id}">详情</button></div></td>
-    </tr>`).join("") || '<tr><td colspan="11">暂无水洗标</td></tr>';
+      <td><div class="actions compact"><button class="ghost small" type="button" data-select-label-order="${escapeHtml(row.order_id)}" ${settlementSchemaAvailable ? "" : "disabled"}>选择本单</button><button class="ghost small" type="button" data-save-settlement="${escapeHtml(row.id)}" ${settlementSchemaAvailable ? "" : "disabled"}>保存单项</button><button class="ghost small ${row.wash_decision === WASH_DECISION_RETURN_PENDING ? "danger" : ""}" type="button" data-wash-adjustment="${escapeHtml(row.id)}" ${washAdjustmentSchemaAvailable ? "" : "disabled"}>差价/退洗</button><button class="ghost small" type="button" data-detail="${row.order_id}">详情</button></div></td>
+    </tr>`).join("") || '<tr><td colspan="12">暂无水洗标</td></tr>';
+}
+
+function updateLabelSelectionUi() {
+  const selectedCount = labelSelectedItems.size;
+  const count = $("labelSelectedCount");
+  if (count) count.textContent = `已选 ${selectedCount} 个水洗标`;
+  document.querySelectorAll("[data-label-checkbox]").forEach((checkbox) => {
+    checkbox.checked = labelSelectedItems.has(checkbox.dataset.labelCheckbox);
+    checkbox.closest("[data-label-row]")?.classList.toggle("selected", checkbox.checked);
+  });
+  document.querySelectorAll("[data-clear-label-selection], [data-apply-label-category], [data-save-label-selection]").forEach((control) => {
+    control.disabled = !selectedCount || labelBulkSaveBusy || !settlementSchemaAvailable;
+  });
+}
+
+function selectLabelOrder(orderId) {
+  const pendingRows = labelVisibleRows.filter((row) => row.order_id === orderId && !row.settlement_confirmed);
+  const rows = pendingRows.length ? pendingRows : labelVisibleRows.filter((row) => row.order_id === orderId);
+  rows.forEach((row) => labelSelectedItems.add(row.id));
+  updateLabelSelectionUi();
+}
+
+function selectVisiblePendingLabels() {
+  labelVisibleRows.filter((row) => !row.settlement_confirmed).forEach((row) => labelSelectedItems.add(row.id));
+  updateLabelSelectionUi();
+}
+
+function clearLabelSelection() {
+  labelSelectedItems.clear();
+  updateLabelSelectionUi();
+}
+
+function applyCategoryToSelectedLabels() {
+  const categoryKey = $("labelBulkCategory")?.value || SETTLEMENT_UNCONFIRMED;
+  if (!validSettlementCategoryKey(categoryKey)) return alert("请先选择要批量应用的结算品类");
+  labelSelectedItems.forEach((itemId) => {
+    const select = document.querySelector(`[data-settlement-select="${itemId}"]`);
+    if (!select) return;
+    select.value = categoryKey;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  setMessage("labelReviewMessage", `已将 ${labelSelectedItems.size} 个水洗标设为“${settlementCategoryLabel(categoryKey)}”，确认内容后点击“保存已选”。`, "hint");
+}
+
+function settlementValuesFromRow(itemId) {
+  const categoryKey = document.querySelector(`[data-settlement-select="${itemId}"]`)?.value || SETTLEMENT_UNCONFIRMED;
+  return {
+    itemId,
+    categoryKey,
+    details: {
+      otherName: document.querySelector(`[data-settlement-other-name="${itemId}"]`)?.value || "",
+      otherUnit: document.querySelector(`[data-settlement-other-unit="${itemId}"]`)?.value || "件",
+      cost: document.querySelector(`[data-settlement-other-cost="${itemId}"]`)?.value ?? null,
+    },
+  };
+}
+
+async function saveSelectedSettlementCategories() {
+  if (labelBulkSaveBusy || !labelSelectedItems.size) return;
+  const entries = [...labelSelectedItems].map(settlementValuesFromRow);
+  const invalidEntry = entries.find((entry) => !validSettlementCategoryKey(entry.categoryKey)
+    || !settlementDetailsAreValid(entry.categoryKey, entry.details.otherName, entry.details.cost));
+  if (invalidEntry) {
+    const row = labelReviewRows.find((entry) => entry.id === invalidEntry.itemId);
+    return alert(`${row?.条形编码 || "所选水洗标"} 的结算品类信息不完整，请先补充后再保存`);
+  }
+  labelBulkSaveBusy = true;
+  updateLabelSelectionUi();
+  setMessage("labelReviewMessage", `正在保存 ${entries.length} 个水洗标的结算品类...`, "hint");
+  let succeeded = 0;
+  let failed = 0;
+  for (let index = 0; index < entries.length; index += 15) {
+    const group = entries.slice(index, index + 15);
+    const results = await Promise.all(group.map((entry) => persistSettlementCategory(entry.itemId, entry.categoryKey, entry.details)));
+    results.forEach((result) => {
+      if (result.error) failed += 1;
+      else succeeded += 1;
+    });
+  }
+  labelBulkSaveBusy = false;
+  await loadLabels();
+  setMessage("labelReviewMessage", failed ? `已保存 ${succeeded} 个，失败 ${failed} 个，请重新选择后重试。` : `已一次保存 ${succeeded} 个水洗标的结算品类。`, failed ? "warn" : "success");
+}
+
+function washAdjustmentOptionHtml(row) {
+  return WASH_DECISION_OPTIONS
+    .filter((option) => option.key !== WASH_DECISION_RETURNED || row.wash_decision === WASH_DECISION_RETURNED)
+    .map((option) => `<option value="${option.key}" ${row.wash_decision === option.key ? "selected" : ""}>${escapeHtml(option.label)}</option>`)
+    .join("");
+}
+
+function updateWashAdjustmentDialogUi() {
+  const decision = $("washAdjustmentDecision")?.value || WASH_DECISION_NORMAL;
+  const definition = washDecisionDefinition(decision);
+  const adjustmentFields = $("washAdjustmentFields");
+  adjustmentFields?.classList.toggle("hidden", definition.adjustmentType === "none");
+  if ($("washAdjustmentAmountLabel")) {
+    $("washAdjustmentAmountLabel").textContent = definition.adjustmentType === "refund" ? "应退金额（元）" : "应补金额（元）";
+  }
+  if ($("washAdjustmentReasonLabel")) {
+    $("washAdjustmentReasonLabel").textContent = definition.adjustmentType === "refund" ? "退洗原因" : "补差原因";
+  }
+  if ($("washAdjustmentHelp")) {
+    $("washAdjustmentHelp").textContent = decision === WASH_DECISION_RETURN_PENDING
+      ? "保存后该水洗标标记为不清洗；工厂出库后会作为单件退洗物品送回。"
+      : decision === WASH_DECISION_SUPPLEMENT_PENDING
+        ? "待客户确认并完成补差前，系统禁止该水洗标出库。"
+        : decision === WASH_DECISION_SUPPLEMENT_CONFIRMED
+          ? "补差已确认，可继续清洗和正常出库。"
+          : "该水洗标按当前结算品类正常清洗。";
+  }
+}
+
+function openWashAdjustmentDialog(itemId) {
+  if (!washAdjustmentSchemaAvailable) return alert(washAdjustmentMigrationMessage());
+  const row = labelReviewRows.find((entry) => entry.id === itemId);
+  if (!row) return alert("没有找到这个水洗标");
+  $("orderDialogTitle").textContent = "单个水洗标差价 / 退洗";
+  $("orderDialogBody").innerHTML = `
+    <div class="wash-adjustment-summary">
+      <strong>${escapeHtml(row.条形编码)}</strong>
+      <span>${escapeHtml(row.姓名)} · ${escapeHtml(row.电话)}</span>
+      <span>${escapeHtml(row.物品)} · ${escapeHtml(row.校区)}</span>
+    </div>
+    <label class="field-group" for="washAdjustmentDecision">
+      <span>处理方式</span>
+      <select id="washAdjustmentDecision" class="input">${washAdjustmentOptionHtml(row)}</select>
+    </label>
+    <div id="washAdjustmentFields" class="wash-adjustment-fields">
+      <label class="field-group" for="washAdjustmentAmount">
+        <span id="washAdjustmentAmountLabel">差价金额（元）</span>
+        <input id="washAdjustmentAmount" class="input" type="number" min="0.01" step="0.01" value="${row.price_adjustment_amount > 0 ? escapeHtml(row.price_adjustment_amount) : ""}" placeholder="请输入金额" />
+      </label>
+      <label class="field-group" for="washAdjustmentReason">
+        <span id="washAdjustmentReasonLabel">处理原因</span>
+        <input id="washAdjustmentReason" class="input" value="${escapeHtml(row.wash_decision_reason)}" maxlength="80" placeholder="例如：实际为绒面鞋，客户不同意补差" />
+      </label>
+    </div>
+    <label class="field-group" for="washAdjustmentNote">
+      <span>客服沟通备注</span>
+      <textarea id="washAdjustmentNote" class="input" rows="3" maxlength="300" placeholder="记录客户确认结果、退款方式等">${escapeHtml(row.wash_decision_note)}</textarea>
+    </label>
+    <p id="washAdjustmentHelp" class="hint"></p>
+    <div id="washAdjustmentMessage" aria-live="polite"></div>
+    <div class="actions wash-adjustment-actions"><button type="button" data-save-wash-adjustment="${escapeHtml(itemId)}">保存处理结果</button><button class="ghost" type="button" data-close-wash-adjustment>取消</button></div>`;
+  $("washAdjustmentDecision")?.addEventListener("change", updateWashAdjustmentDialogUi);
+  updateWashAdjustmentDialogUi();
+  $("orderDialog").showModal();
+}
+
+async function saveWashAdjustment(itemId) {
+  if (!washAdjustmentSchemaAvailable) return setMessage("washAdjustmentMessage", washAdjustmentMigrationMessage(), "warn");
+  const row = labelReviewRows.find((entry) => entry.id === itemId);
+  const decision = $("washAdjustmentDecision")?.value || WASH_DECISION_NORMAL;
+  const definition = washDecisionDefinition(decision);
+  const amount = definition.adjustmentType === "none" ? 0 : Number($("washAdjustmentAmount")?.value);
+  const reason = definition.adjustmentType === "none" ? "" : text($("washAdjustmentReason")?.value);
+  const note = text($("washAdjustmentNote")?.value);
+  if (definition.adjustmentType !== "none" && (!Number.isFinite(amount) || amount <= 0)) {
+    return setMessage("washAdjustmentMessage", "请填写正确的补差或退款金额。", "warn");
+  }
+  if (definition.adjustmentType !== "none" && !reason) {
+    return setMessage("washAdjustmentMessage", "请填写补差或退洗原因。", "warn");
+  }
+  if (decision === WASH_DECISION_RETURN_PENDING && ["已出库", "配送中", "已送达"].includes(row?.item_status)) {
+    return setMessage("washAdjustmentMessage", "该物品已经出库，不能再改为待退洗。", "warn");
+  }
+  setMessage("washAdjustmentMessage", "正在保存处理结果...", "hint");
+  const settlementValues = settlementValuesFromRow(itemId);
+  if (validSettlementCategoryKey(settlementValues.categoryKey)
+    && settlementDetailsAreValid(settlementValues.categoryKey, settlementValues.details.otherName, settlementValues.details.cost)) {
+    const settlementResult = await persistSettlementCategory(itemId, settlementValues.categoryKey, settlementValues.details);
+    if (settlementResult.error) return setMessage("washAdjustmentMessage", `结算品类保存失败：${settlementResult.error.message}`, "warn");
+  }
+  const updatedAt = new Date().toISOString();
+  const { error } = await sb.from("order_items").update({
+    wash_decision: decision,
+    price_adjustment_type: definition.adjustmentType,
+    price_adjustment_amount: amount,
+    wash_decision_reason: reason,
+    wash_decision_note: note,
+    wash_decision_updated_by: currentProfile?.id || null,
+    wash_decision_updated_at: updatedAt,
+    updated_at: updatedAt,
+  }).eq("id", itemId);
+  if (error) return setMessage("washAdjustmentMessage", `保存失败：${error.message}`, "warn");
+  const logStatus = definition.adjustmentType === "refund" ? "退洗" : definition.adjustmentType === "supplement" ? "补差" : "正常洗护";
+  await insertLog({
+    orderId: row?.order_id,
+    itemId,
+    barcode: row?.条形编码,
+    status: logStatus,
+    note: `${definition.label}${amount > 0 ? `，金额 ¥${amount.toFixed(2)}` : ""}${reason ? `，原因：${reason}` : ""}${note ? `，备注：${note}` : ""}`,
+  });
+  $("orderDialog").close();
+  await loadLabels();
+  setMessage("labelReviewMessage", `${row?.条形编码 || "水洗标"} 已标记为“${definition.label}”。`, "success");
 }
 
 async function persistSettlementCategory(itemId, categoryKey, details = {}) {
@@ -2988,14 +3273,8 @@ async function persistSettlementCategory(itemId, categoryKey, details = {}) {
 }
 
 async function saveSettlementCategoryFromRow(itemId) {
-  const select = document.querySelector(`[data-settlement-select="${itemId}"]`);
-  const categoryKey = select?.value || SETTLEMENT_UNCONFIRMED;
+  const { categoryKey, details } = settlementValuesFromRow(itemId);
   if (!validSettlementCategoryKey(categoryKey)) return alert("请先选择结算品类");
-  const details = {
-    otherName: document.querySelector(`[data-settlement-other-name="${itemId}"]`)?.value || "",
-    otherUnit: document.querySelector(`[data-settlement-other-unit="${itemId}"]`)?.value || "件",
-    cost: document.querySelector(`[data-settlement-other-cost="${itemId}"]`)?.value ?? null,
-  };
   if (!settlementDetailsAreValid(categoryKey, details.otherName, details.cost)) {
     return alert("选择“其他品类”后，请填写实际品类名称和代工价");
   }
@@ -3432,7 +3711,8 @@ function renderCourierBatchPanel(pendingReturnGroups) {
 
 function courierReturnItemMessage(order, item) {
   const itemName = item.spec || item.product_name || "洗护物品";
-  return `【事事通】同学您好，您的洗护物品【${itemName}】已送达至${order.school || ""}${orderCampusName(order)}${order.building || ""}，请及时到约定位置领取并核对。如有问题请联系售后${AFTER_SALES_PHONE}。同一订单的其他物品将按实际洗护进度另行送回。`;
+  const itemType = washDecisionIsReturn(item) ? "退洗物品" : "洗护物品";
+  return `【事事通】同学您好，您的${itemType}【${itemName}】已送达至${order.school || ""}${orderCampusName(order)}${order.building || ""}，请及时到约定位置领取并核对。如有问题请联系售后${AFTER_SALES_PHONE}。同一订单的其他物品将按实际洗护进度另行送回。`;
 }
 
 function renderCourierReturnCard(group, processed = false) {
@@ -3456,7 +3736,7 @@ function renderCourierReturnCard(group, processed = false) {
       const finished = COURIER_RETURN_FINISHED_STATUSES.has(task.status);
       const sms = courierReturnItemMessage(order, item);
       return `<li class="courier-return-item ${task.status === "已送达" ? "done" : task.status === "异常" ? "alert" : ""}">
-        <div class="courier-return-item-main"><strong>${escapeHtml(item.barcode || "无条码")}</strong><span>${escapeHtml(item.spec || item.product_name || "物品未填写")}</span><em>${escapeHtml(itemBusy ? "提交中…" : task.status || "待送回")}</em></div>
+        <div class="courier-return-item-main"><strong>${escapeHtml(item.barcode || "无条码")}</strong><span>${washDecisionIsReturn(item) ? '<b class="wash-return-tag">退洗</b>' : ""}${escapeHtml(item.spec || item.product_name || "物品未填写")}</span><em>${escapeHtml(itemBusy ? "提交中…" : task.status || "待送回")}</em></div>
         <div class="courier-return-item-actions">
           <a class="button-link ghost" href="${smsComposeHref(order.phone || "", sms)}">编辑短信</a>
           ${finished ? "" : `<button type="button" data-return="${escapeHtml(task.id)}" data-item="${escapeHtml(item.id)}" data-order="${escapeHtml(order.id)}" data-status="已送达" ${itemBusy || groupBusy ? "disabled" : ""}>确认送达</button><button class="ghost danger" type="button" data-return="${escapeHtml(task.id)}" data-item="${escapeHtml(item.id)}" data-order="${escapeHtml(order.id)}" data-status="异常" ${itemBusy || groupBusy ? "disabled" : ""}>异常</button>`}
@@ -3610,6 +3890,9 @@ async function batchUpdateCourierReturns(status = "配送中") {
   const results = await Promise.all([
     taskIds.length ? sb.from("return_tasks").update({ status, operator_id: currentProfile?.id || null, updated_at: now }).in("id", taskIds) : Promise.resolve({ error: null }),
     itemIds.length ? sb.from("order_items").update({ item_status: status, updated_at: now }).in("id", itemIds) : Promise.resolve({ error: null }),
+    status === "已送达" && itemIds.length && washAdjustmentSchemaAvailable
+      ? sb.from("order_items").update({ wash_decision: WASH_DECISION_RETURNED, wash_decision_updated_at: now, updated_at: now }).in("id", itemIds).eq("wash_decision", WASH_DECISION_RETURN_PENDING)
+      : Promise.resolve({ error: null }),
   ]);
   const failure = results.find((result) => result.error)?.error;
   if (failure) return setCourierBatchMessage(`整批处理失败：${failure.message}`, "warn");
@@ -3672,11 +3955,18 @@ async function updateReturn(taskId, itemId, orderId, status) {
   const note = status === "异常" ? prompt("请输入异常备注", "送回异常") || "送回异常" : "";
   const now = new Date().toISOString();
   const currentRecord = courierReturnOrderGroups.flatMap((group) => group.records).find(({ task }) => task.id === taskId);
+  const returningWithoutWash = washDecisionIsReturn(currentRecord?.item);
   courierReturnBusyTaskId = taskId;
   renderCourierRouteTasks();
   const results = await Promise.all([
     sb.from("return_tasks").update({ status, exception_note: note, operator_id: currentProfile?.id || null, updated_at: now }).eq("id", taskId),
-    sb.from("order_items").update({ item_status: status, updated_at: now }).eq("id", itemId),
+    sb.from("order_items").update({
+      item_status: status,
+      ...(status === "已送达" && returningWithoutWash && washAdjustmentSchemaAvailable
+        ? { wash_decision: WASH_DECISION_RETURNED, wash_decision_updated_at: now }
+        : {}),
+      updated_at: now,
+    }).eq("id", itemId),
     note ? sb.from("orders").update({ exception_note: note, updated_at: now }).eq("id", orderId) : Promise.resolve({ error: null }),
   ]);
   const failure = results.find((result) => result.error)?.error;
@@ -3686,7 +3976,7 @@ async function updateReturn(taskId, itemId, orderId, status) {
     return alert(failure.message);
   }
   const barcode = currentRecord?.item?.barcode || "";
-  const logNote = note || `配送员确认水洗标 ${barcode || itemId} 已送达`;
+  const logNote = note || `配送员确认水洗标 ${barcode || itemId}${returningWithoutWash ? "退洗物品" : ""}已送达`;
   await insertLog({ orderId, itemId, barcode, status, note: logNote });
   courierReturnBusyTaskId = "";
   courierPickupScrollToNext = true;
@@ -3711,7 +4001,10 @@ function renderFactoryPendingItems() {
   if (!$("factoryItemList")) return;
   $("factoryItemList").innerHTML = rows.map((item) => {
     const order = Array.isArray(item.orders) ? item.orders[0] || {} : item.orders || {};
-    return `<article class="task-card compact"><div class="card-head"><h3>${escapeHtml(item.barcode)}</h3><span>${escapeHtml(item.item_status)}</span></div><p>${escapeHtml(order.customer_name || "")} · ${escapeHtml(order.phone || "")}</p><p>${escapeHtml(`${order.school || ""}${orderCampusName(order)}${order.building || ""}`)}</p><p>${escapeHtml(item.spec || item.product_name || "")}</p></article>`;
+    const decisionTag = item.wash_decision && item.wash_decision !== WASH_DECISION_NORMAL
+      ? `<p class="factory-wash-decision ${escapeHtml(item.wash_decision)}">${escapeHtml(washDecisionLabel(item))}${numberValue(item.price_adjustment_amount) > 0 ? ` · ¥${escapeHtml(numberValue(item.price_adjustment_amount))}` : ""}</p>`
+      : "";
+    return `<article class="task-card compact"><div class="card-head"><h3>${escapeHtml(item.barcode)}</h3><span>${escapeHtml(item.item_status)}</span></div><p>${escapeHtml(order.customer_name || "")} · ${escapeHtml(order.phone || "")}</p><p>${escapeHtml(`${order.school || ""}${orderCampusName(order)}${order.building || ""}`)}</p><p>${escapeHtml(item.spec || item.product_name || "")}</p>${decisionTag}</article>`;
   }).join("") || '<p class="hint">当前筛选下暂无待处理物品</p>';
 }
 
@@ -3747,8 +4040,9 @@ async function loadFactoryItems() {
   renderFactoryPendingItems();
 }
 
-function factoryTodayRange() {
-  const now = new Date();
+function factoryTodayRange(dateText = todayDate()) {
+  const normalizedDate = /^\d{4}-\d{2}-\d{2}$/.test(text(dateText)) ? text(dateText) : todayDate();
+  const now = new Date(`${normalizedDate}T00:00:00`);
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const end = addDays(start, 1);
   return { start: start.toISOString(), end: end.toISOString() };
@@ -4791,6 +5085,11 @@ async function factoryScan(scanType, suppliedBarcode = "", options = {}) {
     const { data: item, error } = await sb.from("order_items").select("*, orders(*)").eq("barcode", barcode).maybeSingle();
     if (error) throw new Error(error.message);
     if (!item) throw new Error("没有找到这个水洗标");
+    const returningWithoutWash = washDecisionIsReturn(item);
+
+    if (scanType === "factory_out" && item.wash_decision === WASH_DECISION_SUPPLEMENT_PENDING) {
+      throw new Error("该水洗标正在等待客户补差，确认已补差后才能出库");
+    }
 
     const allowedStatuses = scanType === "factory_in" ? ["已取件"] : ["已入厂", "清洗中"];
     if (!allowedStatuses.includes(item.item_status)) {
@@ -4857,12 +5156,12 @@ async function factoryScan(scanType, suppliedBarcode = "", options = {}) {
       itemId: item.id,
       barcode,
       status,
-      note: scanType === "factory_in" ? "工厂批量扫码入库" : "工厂批量扫码出库，生成送回任务",
+      note: scanType === "factory_in" ? "工厂批量扫码入库" : returningWithoutWash ? "退洗物品批量扫码出库，生成送回任务" : "工厂批量扫码出库，生成送回任务",
     });
 
     if ($("barcodeInput")) $("barcodeInput").value = "";
     setFactoryScanFeedback(
-      `成功：${barcode} 已${scanType === "factory_in" ? "入库" : "出库并进入今日出库清单"}。`,
+      `成功：${barcode} 已${scanType === "factory_in" ? "入库" : returningWithoutWash ? "作为退洗物品出库并进入送回清单" : "出库并进入今日出库清单"}。`,
       "success",
     );
     addFactoryScanHistory(`${barcode} 已${scanType === "factory_in" ? "入库" : "出库"}`, "success");
@@ -5168,6 +5467,17 @@ function bindEvents() {
     if (factoryDailyTab) switchFactoryDailyTab(factoryDailyTab.dataset.factoryDailyTab);
     const settlementSaveBtn = event.target.closest("[data-save-settlement]");
     if (settlementSaveBtn) saveSettlementCategoryFromRow(settlementSaveBtn.dataset.saveSettlement);
+    const selectLabelOrderBtn = event.target.closest("[data-select-label-order]");
+    if (selectLabelOrderBtn) selectLabelOrder(selectLabelOrderBtn.dataset.selectLabelOrder);
+    if (event.target.closest("[data-select-label-pending]")) selectVisiblePendingLabels();
+    if (event.target.closest("[data-clear-label-selection]")) clearLabelSelection();
+    if (event.target.closest("[data-apply-label-category]")) applyCategoryToSelectedLabels();
+    if (event.target.closest("[data-save-label-selection]")) saveSelectedSettlementCategories();
+    const washAdjustmentBtn = event.target.closest("[data-wash-adjustment]");
+    if (washAdjustmentBtn) openWashAdjustmentDialog(washAdjustmentBtn.dataset.washAdjustment);
+    const saveWashAdjustmentBtn = event.target.closest("[data-save-wash-adjustment]");
+    if (saveWashAdjustmentBtn) saveWashAdjustment(saveWashAdjustmentBtn.dataset.saveWashAdjustment);
+    if (event.target.closest("[data-close-wash-adjustment]")) $("orderDialog")?.close();
     if (event.target.closest("[data-open-label-review]")) switchAdminSection("labels");
     const confirmDormBtn = event.target.closest("[data-confirm-dorm]");
     if (confirmDormBtn) saveDorm(confirmDormBtn.dataset.confirmDorm, { confirm: true, next: true });
@@ -5187,6 +5497,12 @@ function bindEvents() {
     if (image) window.open(image.dataset.fullImage, "_blank", "noopener,noreferrer");
   });
   document.addEventListener("change", (event) => {
+    const labelCheckbox = event.target.closest("[data-label-checkbox]");
+    if (labelCheckbox) {
+      if (labelCheckbox.checked) labelSelectedItems.add(labelCheckbox.dataset.labelCheckbox);
+      else labelSelectedItems.delete(labelCheckbox.dataset.labelCheckbox);
+      updateLabelSelectionUi();
+    }
     const settlementSelect = event.target.closest("[data-settlement-select]");
     if (settlementSelect) {
       document.querySelector(`[data-settlement-other-fields="${settlementSelect.dataset.settlementSelect}"]`)

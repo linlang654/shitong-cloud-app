@@ -26,6 +26,15 @@ alter table order_items add column if not exists settlement_other_name text not 
 alter table order_items add column if not exists settlement_other_unit text not null default '件';
 alter table order_items add column if not exists settlement_cost_snapshot numeric(10,2);
 
+-- 单个水洗标的补差、退洗与退款记录；同一订单的其他物品继续独立流转。
+alter table order_items add column if not exists wash_decision text not null default 'normal';
+alter table order_items add column if not exists price_adjustment_type text not null default 'none';
+alter table order_items add column if not exists price_adjustment_amount numeric(10,2) not null default 0;
+alter table order_items add column if not exists wash_decision_reason text not null default '';
+alter table order_items add column if not exists wash_decision_note text not null default '';
+alter table order_items add column if not exists wash_decision_updated_by uuid references profiles(id);
+alter table order_items add column if not exists wash_decision_updated_at timestamptz;
+
 create table if not exists settlement_catalog (
   key text primary key,
   group_name text not null default '',

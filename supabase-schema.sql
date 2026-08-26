@@ -93,6 +93,13 @@ create table if not exists order_items (
   settlement_other_name text not null default '',
   settlement_other_unit text not null default '件',
   settlement_cost_snapshot numeric(10,2),
+  wash_decision text not null default 'normal',
+  price_adjustment_type text not null default 'none',
+  price_adjustment_amount numeric(10,2) not null default 0,
+  wash_decision_reason text not null default '',
+  wash_decision_note text not null default '',
+  wash_decision_updated_by uuid references profiles(id),
+  wash_decision_updated_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -105,6 +112,13 @@ alter table order_items add column if not exists settlement_category_updated_at 
 alter table order_items add column if not exists settlement_other_name text not null default '';
 alter table order_items add column if not exists settlement_other_unit text not null default '件';
 alter table order_items add column if not exists settlement_cost_snapshot numeric(10,2);
+alter table order_items add column if not exists wash_decision text not null default 'normal';
+alter table order_items add column if not exists price_adjustment_type text not null default 'none';
+alter table order_items add column if not exists price_adjustment_amount numeric(10,2) not null default 0;
+alter table order_items add column if not exists wash_decision_reason text not null default '';
+alter table order_items add column if not exists wash_decision_note text not null default '';
+alter table order_items add column if not exists wash_decision_updated_by uuid references profiles(id);
+alter table order_items add column if not exists wash_decision_updated_at timestamptz;
 create unique index if not exists order_items_source_key_idx
 on order_items(source_key)
 where source_key is not null;
