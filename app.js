@@ -831,7 +831,7 @@ function buildingNumberValue(building) {
 
 function inferMinzuCampusFromBuilding(school, campus, building) {
   if (school !== "民大" || campus !== "校区未识别") return campus;
-  if (text(building) === "西门公租房") return "百川校区";
+  if (/^西门公租房/.test(text(building))) return "百川校区";
   const buildingNumber = buildingNumberValue(building);
   return buildingNumber >= 9 && buildingNumber <= 17 ? "贵山校区" : campus;
 }
@@ -1057,12 +1057,17 @@ function explicitBuildingEvidence(source, school = "") {
     if (dormCodeEvidence) return dormCodeEvidence;
   }
   if (school === "民大" && /(?:百川校区|北校区)[\s\S]{0,20}?西门公租房|西门公租房/.test(value)) {
-    const match = value.match(/(?:百川校区|北校区)?[\s\S]{0,12}?西门公租房/)?.[0] || "西门公租房";
+    const housingBuilding = value.match(/西门公租房\s*([0-9一二三四五六七八九十]+)\s*(?:栋|号楼)/);
+    const match = housingBuilding?.[0]
+      || value.match(/(?:百川校区|北校区)?[\s\S]{0,12}?西门公租房/)?.[0]
+      || "西门公租房";
     return {
-      building: "西门公租房",
+      building: housingBuilding ? `西门公租房${formatExplicitBuildingNumber(housingBuilding[1])}栋` : "西门公租房",
       match,
       confidence: 98,
-      reason: "地址明确写出贵州民族大学百川校区西门公租房；公租房内部的几栋、几楼不作为校园宿舍楼栋",
+      reason: housingBuilding
+        ? "地址明确写出贵州民族大学百川校区西门公租房及公租房内部楼栋；楼层仅保留在完整地址中"
+        : "地址明确写出贵州民族大学百川校区西门公租房",
     };
   }
   const namedCampus = value.match(/(玉兰苑|丹桂苑|樱花苑|翠竹苑|文心苑|桂园|橘园|杏园|李园)\s*([0-9一二三四五六七八九十]+)\s*(?:栋|号楼)?/);
@@ -5649,7 +5654,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=56", { updateViaCache: "none" })
+    .register("./sw.js?v=57", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
