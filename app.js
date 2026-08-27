@@ -831,6 +831,7 @@ function buildingNumberValue(building) {
 
 function inferMinzuCampusFromBuilding(school, campus, building) {
   if (school !== "民大" || campus !== "校区未识别") return campus;
+  if (text(building) === "西门公租房") return "百川校区";
   const buildingNumber = buildingNumberValue(building);
   return buildingNumber >= 9 && buildingNumber <= 17 ? "贵山校区" : campus;
 }
@@ -1054,6 +1055,15 @@ function explicitBuildingEvidence(source, school = "") {
   if (isTcmSchool(school)) {
     const dormCodeEvidence = guizhouTcmDormCodeEvidence(value);
     if (dormCodeEvidence) return dormCodeEvidence;
+  }
+  if (school === "民大" && /(?:百川校区|北校区)[\s\S]{0,20}?西门公租房|西门公租房/.test(value)) {
+    const match = value.match(/(?:百川校区|北校区)?[\s\S]{0,12}?西门公租房/)?.[0] || "西门公租房";
+    return {
+      building: "西门公租房",
+      match,
+      confidence: 98,
+      reason: "地址明确写出贵州民族大学百川校区西门公租房；公租房内部的几栋、几楼不作为校园宿舍楼栋",
+    };
   }
   const namedCampus = value.match(/(玉兰苑|丹桂苑|樱花苑|翠竹苑|文心苑|桂园|橘园|杏园|李园)\s*([0-9一二三四五六七八九十]+)\s*(?:栋|号楼)?/);
   if (namedCampus) {
@@ -3343,6 +3353,7 @@ async function showOrderDetail(orderId) {
   if (orderResult.error || !orderResult.data) return alert(orderResult.error?.message || "订单不存在");
   const order = orderResult.data;
   const canEditItemStatus = APP_MODE === "admin" && currentProfile?.role === "admin";
+  const canEditAddress = canEditItemStatus;
   $("orderDialogTitle").textContent = `订单详情：${order.order_no}`;
   $("orderDialogBody").innerHTML = `
     <section class="panel">
@@ -3351,6 +3362,17 @@ async function showOrderDetail(orderId) {
       <p>宿舍：${escapeHtml(`${order.school || ""}${orderCampusName(order)}${order.building || ""}`)}</p>
       <p>状态：${escapeHtml(order.order_status || "")}　金额：${escapeHtml(order.paid_amount ?? "")}</p>
       ${order.exception_note ? `<p class="warn">异常：${escapeHtml(order.exception_note)}</p>` : ""}
+      ${canEditAddress ? `<details class="order-address-editor">
+        <summary>编辑订单地址</summary>
+        <div class="edit-grid order-address-grid">
+          <label class="field-group order-address-full"><span>完整地址</span><input class="input" data-detail-address="${escapeHtml(order.id)}" value="${escapeHtml(order.address || "")}" placeholder="完整收货地址" /></label>
+          <label class="field-group"><span>学校</span><input class="input" data-detail-school="${escapeHtml(order.id)}" value="${escapeHtml(order.school || "")}" placeholder="学校" /></label>
+          <label class="field-group"><span>校区</span><input class="input" data-detail-campus="${escapeHtml(order.id)}" value="${escapeHtml(orderCampusName(order))}" placeholder="校区" /></label>
+          <label class="field-group"><span>楼栋 / 地点</span><input class="input" data-detail-building="${escapeHtml(order.id)}" value="${escapeHtml(order.building || "")}" placeholder="楼栋或固定取件地点" /></label>
+        </div>
+        <div class="actions"><button type="button" data-save-order-address="${escapeHtml(order.id)}">保存地址</button></div>
+        <div data-order-address-message="${escapeHtml(order.id)}" aria-live="polite"></div>
+      </details>` : ""}
     </section>
     <section class="panel table-panel">
       <h3>物品 / 水洗标</h3>
@@ -3362,6 +3384,55 @@ async function showOrderDetail(orderId) {
       <ul class="timeline">${(logResult.data || []).map((log) => `<li><strong>${escapeHtml(log.status)}</strong><span>${escapeHtml(formatDateTime(log.created_at, true))}</span><p>${escapeHtml(log.note || "")}</p></li>`).join("") || "<li>暂无记录</li>"}</ul>
     </section>`;
   if (!$("orderDialog").open) $("orderDialog").showModal();
+}
+
+async function saveOrderAddressFromDialog(orderId) {
+  if (APP_MODE !== "admin" || currentProfile?.role !== "admin") return;
+  const address = text(document.querySelector(`[data-detail-address="${orderId}"]`)?.value);
+  const school = text(document.querySelector(`[data-detail-school="${orderId}"]`)?.value);
+  const campus = canonicalCampusName(document.querySelector(`[data-detail-campus="${orderId}"]`)?.value, school);
+  const building = text(document.querySelector(`[data-detail-building="${orderId}"]`)?.value);
+  const messageTarget = document.querySelector(`[data-order-address-message="${orderId}"]`);
+  if (!address || !school || !campus || !building || /未识别/.test(`${school}${campus}${building}`)) {
+    if (messageTarget) messageTarget.innerHTML = '<p class="warn">请填写完整地址、学校、校区和楼栋 / 地点。</p>';
+    return;
+  }
+  const saveButton = document.querySelector(`[data-save-order-address="${orderId}"]`);
+  if (saveButton) {
+    saveButton.disabled = true;
+    saveButton.textContent = "保存中…";
+  }
+  const { data: currentOrder, error: readError } = await sb.from("orders").select("exception_note").eq("id", orderId).maybeSingle();
+  if (readError) {
+    if (messageTarget) messageTarget.innerHTML = `<p class="warn">读取订单失败：${escapeHtml(readError.message)}</p>`;
+    if (saveButton) {
+      saveButton.disabled = false;
+      saveButton.textContent = "保存地址";
+    }
+    return;
+  }
+  const now = new Date().toISOString();
+  const { error } = await sb.from("orders").update({
+    address,
+    school,
+    campus,
+    building,
+    exception_note: cleanRecognitionNote(currentOrder?.exception_note || ""),
+    updated_at: now,
+  }).eq("id", orderId);
+  if (error) {
+    if (messageTarget) messageTarget.innerHTML = `<p class="warn">保存失败：${escapeHtml(error.message)}</p>`;
+    if (saveButton) {
+      saveButton.disabled = false;
+      saveButton.textContent = "保存地址";
+    }
+    return;
+  }
+  await insertLog({ orderId, status: "后台编辑地址", note: `${school}/${campus}/${building}；${address}` });
+  await refreshAll();
+  await showOrderDetail(orderId);
+  const refreshedMessage = document.querySelector(`[data-order-address-message="${orderId}"]`);
+  if (refreshedMessage) refreshedMessage.innerHTML = '<p class="success">地址已保存，并同步到取件、配送和水洗标显示。</p>';
 }
 
 function matchSearch(content) {
@@ -5463,6 +5534,8 @@ function bindEvents() {
     if (previewBtn) showImagePreview(previewBtn.dataset.previewImages);
     const detailBtn = event.target.closest("[data-detail]");
     if (detailBtn) showOrderDetail(detailBtn.dataset.detail);
+    const saveOrderAddressBtn = event.target.closest("[data-save-order-address]");
+    if (saveOrderAddressBtn) saveOrderAddressFromDialog(saveOrderAddressBtn.dataset.saveOrderAddress);
     const factoryDailyTab = event.target.closest("[data-factory-daily-tab]");
     if (factoryDailyTab) switchFactoryDailyTab(factoryDailyTab.dataset.factoryDailyTab);
     const settlementSaveBtn = event.target.closest("[data-save-settlement]");
@@ -5575,8 +5648,8 @@ function bindEvents() {
 }
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker
-    .register("./sw.js?v=53", { updateViaCache: "none" })
+navigator.serviceWorker
+    .register("./sw.js?v=56", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }

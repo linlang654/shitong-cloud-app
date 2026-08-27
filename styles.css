@@ -2010,6 +2010,28 @@ button.danger,
   margin-top: 10px;
 }
 
+.order-address-editor {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #fffaf3;
+}
+
+.order-address-editor summary {
+  color: var(--orange-deep);
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.order-address-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.order-address-full {
+  grid-column: 1 / -1;
+}
+
 .rule-form {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
@@ -3393,8 +3415,13 @@ code {
   }
 
   .edit-grid,
-  .rule-form {
+  .rule-form,
+  .order-address-grid {
     grid-template-columns: 1fr;
+  }
+
+  .order-address-full {
+    grid-column: auto;
   }
 
   .exception-heading {
