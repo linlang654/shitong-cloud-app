@@ -1148,6 +1148,7 @@ body.has-access .layout {
 }
 
 .subtab {
+  position: relative;
   min-height: 38px;
   background: #fff;
   color: var(--ink);
@@ -1191,6 +1192,28 @@ body.has-access .layout {
 
 .courier-filterbar {
   align-items: stretch;
+}
+
+.nav-alert-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 19px;
+  height: 19px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 2px solid #fff;
+  border-radius: 999px;
+  color: #fff;
+  background: #dc2626;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+  box-shadow: 0 2px 6px rgba(185, 28, 28, 0.28);
+}
+
+.subtab.active .nav-alert-badge {
+  border-color: var(--ink);
 }
 
 .pickup-cockpit {
@@ -1518,8 +1541,31 @@ body.has-access .layout {
 
 .courier-route-stats {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
+}
+
+.pickup-retry-tag {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 8px;
+  background: #fff0e5;
+  color: #b64b0a;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.courier-future-pickups .pickup-processed-body {
+  display: grid;
+  gap: 6px;
+}
+
+.courier-future-pickups .pickup-processed-body p {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #f7f7f7;
 }
 
 .courier-route-stats div {
@@ -1880,8 +1926,217 @@ button.danger,
 }
 
 .exception-stats {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   margin: 14px 0;
+}
+
+.exception-stats .danger-stat {
+  border-color: rgba(220, 38, 38, 0.28);
+  background: #fff1f2;
+}
+
+.exception-stats .danger-stat strong {
+  color: #dc2626;
+}
+
+.exception-worklist {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.exception-worklist .section-heading {
+  margin-bottom: 10px;
+}
+
+.exception-ticket-card {
+  border-left-color: #dc2626;
+}
+
+.exception-ticket-card.urgent {
+  border-color: #fca5a5;
+  border-left-color: #b91c1c;
+  background: #fffafa;
+}
+
+.exception-ticket-card h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.urgent-label,
+.ticket-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.urgent-label,
+.ticket-status.danger {
+  color: #b91c1c;
+  background: #fee2e2;
+}
+
+.ticket-status.warning {
+  color: #9a5700;
+  background: var(--yellow-soft);
+}
+
+.ticket-status.processing {
+  color: #075985;
+  background: #e0f2fe;
+}
+
+.ticket-status.done {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.exception-ticket-description {
+  margin: 10px 0;
+  color: var(--ink) !important;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.exception-ticket-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.exception-ticket-meta span {
+  padding: 4px 8px;
+  border-radius: 6px;
+  color: var(--muted);
+  background: #f5f5f4;
+  font-size: 12px;
+}
+
+.exception-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(92px, 120px));
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.exception-evidence-grid button {
+  min-height: 92px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f5f5f4;
+}
+
+.exception-evidence-grid img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-height: 120px;
+  object-fit: cover;
+}
+
+.exception-legacy-section {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fff;
+}
+
+.exception-legacy-section > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.exception-legacy-section > summary span {
+  display: grid;
+  gap: 2px;
+}
+
+.exception-legacy-section > summary small {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.exception-legacy-section > summary b {
+  min-width: 28px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: #9a3412;
+  background: #ffedd5;
+  text-align: center;
+}
+
+.exception-legacy-section > .card-list,
+.exception-legacy-section > .mini-stats {
+  margin: 0 12px 12px;
+}
+
+.legacy-stats {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.exception-migration-note {
+  padding: 10px 12px;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fff1f2;
+}
+
+.exception-ticket-dialog {
+  width: min(620px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.22);
+}
+
+.exception-ticket-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.36);
+}
+
+.exception-ticket-form {
+  display: grid;
+  gap: 13px;
+  padding: 16px;
+}
+
+.dialog-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dialog-heading h2,
+.dialog-heading p {
+  margin: 0;
+}
+
+.exception-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.factory-item-actions {
+  margin-top: 8px;
 }
 
 .success-note {
@@ -3491,6 +3746,7 @@ code {
   }
 
   .courier-route-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 4px;
   }
 
@@ -3581,5 +3837,26 @@ code {
     min-height: 34px;
     padding: 5px;
     font-size: 12px;
+  }
+}
+
+@media (max-width: 680px) {
+  .exception-stats,
+  .legacy-stats,
+  .exception-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .exception-ticket-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .exception-ticket-dialog {
+    width: calc(100vw - 12px);
+    max-height: calc(100vh - 12px);
+  }
+
+  .exception-evidence-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }

@@ -22,8 +22,10 @@ const ROLE_ACCESS = {
   courier: ["admin", "courier"],
   factory: ["admin", "factory"],
 };
-const ORDER_STATUSES = ["待取件", "已取件", "未找到", "已入厂", "已出库", "配送中", "已送达", "异常"];
-const ITEM_STATUSES = ["待取件", "已取件", "未找到", "已入厂", "清洗中", "已出库", "配送中", "已送达", "异常"];
+const ORDER_STATUSES = ["待取件", "待补取", "已取件", "未找到", "已入厂", "已出库", "配送中", "已送达", "异常"];
+const ITEM_STATUSES = ["待取件", "待补取", "已取件", "未找到", "已入厂", "清洗中", "已出库", "配送中", "已送达", "异常"];
+const ORDER_EDITABLE_STATUSES = ORDER_STATUSES.filter((status) => status !== "待补取");
+const ITEM_EDITABLE_STATUSES = ITEM_STATUSES.filter((status) => status !== "待补取");
 const SETTLEMENT_UNCONFIRMED = "unconfirmed";
 const SETTLEMENT_OTHER = "other";
 const WASH_DECISION_NORMAL = "normal";
@@ -31,6 +33,10 @@ const WASH_DECISION_SUPPLEMENT_PENDING = "supplement_pending";
 const WASH_DECISION_SUPPLEMENT_CONFIRMED = "supplement_confirmed";
 const WASH_DECISION_RETURN_PENDING = "return_pending";
 const WASH_DECISION_RETURNED = "returned";
+const EXCEPTION_OPEN_STATUSES = ["待客服", "待客户", "处理中"];
+const EXCEPTION_TICKET_TYPES = ["原有破损", "材质风险", "受潮", "漏取/补取", "返洗", "退洗", "补差", "少件/串单", "清洗效果", "配送异常", "其他异常"];
+const PICKUP_OPEN_STATUSES = new Set(["待取件", "未找到"]);
+const RETRY_PICKUP_OPEN_STATUSES = new Set(["待补取", "未找到"]);
 const WASH_DECISION_OPTIONS = [
   { key: WASH_DECISION_NORMAL, label: "正常洗护（无需差价）", adjustmentType: "none" },
   { key: WASH_DECISION_SUPPLEMENT_PENDING, label: "待补差，暂不清洗", adjustmentType: "supplement" },
@@ -94,6 +100,7 @@ let orderDashboardFilter = "";
 let courierDashboardFilter = "";
 let factoryDashboardFilter = "";
 let courierPickupTaskRows = [];
+let courierRetryTaskRows = [];
 let courierReturnTaskRows = [];
 let courierActivePickupAreaKey = "";
 let courierPickupDateInitialized = false;
@@ -104,7 +111,14 @@ let courierReturnBusyTaskId = "";
 const courierSelectedReturnOrders = new Set();
 const courierReturnAreaMap = new Map();
 let currentExceptionRows = [];
+let currentExceptionTickets = [];
 let exceptionActionMessage = "";
+let exceptionTicketSchemaAvailable = null;
+let exceptionTicketSchemaError = "";
+let exceptionTicketBusy = false;
+let exceptionTicketContext = null;
+let retryPickupSchemaAvailable = null;
+let retryPickupSchemaError = "";
 let reconciliationSummary = null;
 let reconciliationRecord = null;
 let settlementSchemaAvailable = null;
@@ -224,6 +238,32 @@ async function detectWashAdjustmentSchemaAvailability(force = false) {
 
 function washAdjustmentMigrationMessage() {
   return "退洗数据库字段尚未启用，请在 Supabase SQL Editor 执行 supabase-return-wash-migration.sql 后刷新页面。";
+}
+
+async function detectExceptionTicketSchemaAvailability(force = false) {
+  if (!sb) return false;
+  if (!force && exceptionTicketSchemaAvailable !== null) return exceptionTicketSchemaAvailable;
+  const { error } = await sb.from("exception_tickets").select("id,status,evidence_paths").limit(1);
+  exceptionTicketSchemaAvailable = !error;
+  exceptionTicketSchemaError = error?.message || "";
+  return exceptionTicketSchemaAvailable;
+}
+
+function exceptionTicketMigrationMessage() {
+  return "异常工单数据库尚未启用，请在 Supabase SQL Editor 执行 supabase-exception-tickets-migration.sql 后刷新页面。地址修正功能仍可继续使用。";
+}
+
+async function detectRetryPickupSchemaAvailability(force = false) {
+  if (!sb) return false;
+  if (!force && retryPickupSchemaAvailable !== null) return retryPickupSchemaAvailable;
+  const { error } = await sb.from("pickup_retry_tasks").select("id,status,pickup_date").limit(1);
+  retryPickupSchemaAvailable = !error;
+  retryPickupSchemaError = error?.message || "";
+  return retryPickupSchemaAvailable;
+}
+
+function retryPickupMigrationMessage() {
+  return "补取任务数据库尚未启用，请先执行 supabase-repickup-migration.sql。普通取件仍可继续使用。";
 }
 
 function washDecisionDefinition(key) {
@@ -590,7 +630,7 @@ function openDashboardTarget(target) {
 
   if (target === "pickup-today") {
     courierDashboardFilter = "pickup-today";
-    if ($("courierPickupDate")) $("courierPickupDate").value = todayDate();
+    if ($("courierPickupDate")) $("courierPickupDate").value = "";
     switchView("courier");
     return;
   }
@@ -729,6 +769,15 @@ function normalizeSchool(source) {
   if (/人文/.test(source)) return "人文";
   if (/城市学院|职业学院/.test(source)) return "城市学院";
   return "学校未识别";
+}
+
+function updateExceptionBadge(count) {
+  const badge = $("exceptionTabBadge");
+  if (!badge) return;
+  const total = Math.max(0, Number(count) || 0);
+  badge.textContent = total > 99 ? "99+" : String(total);
+  badge.classList.toggle("hidden", total === 0);
+  badge.setAttribute("aria-label", `${total} 个待处理异常`);
 }
 
 function isTcmSchool(school) {
@@ -1688,7 +1737,7 @@ async function insertLog({ orderId, itemId = null, barcode = "", status, note = 
 
 async function refreshAll() {
   if (!sb || APP_MODE === "student" || !currentUser || !canUseCurrentPage()) return;
-  await Promise.all([loadRecognitionRules(), detectSettlementSchemaAvailability(true), detectWashAdjustmentSchemaAvailability(true), loadSettlementCatalog(true)]);
+  await Promise.all([loadRecognitionRules(), detectSettlementSchemaAvailability(true), detectWashAdjustmentSchemaAvailability(true), detectExceptionTicketSchemaAvailability(true), detectRetryPickupSchemaAvailability(true), loadSettlementCatalog(true)]);
   const tasks = [];
   if (APP_MODE === "admin") tasks.push(loadStats(), loadAdmin(), loadCourierTasks(), loadFactoryItems(), loadFactoryDailyScans());
   if (APP_MODE === "courier") tasks.push(loadCourierTasks());
@@ -1698,26 +1747,37 @@ async function refreshAll() {
 }
 
 async function loadStats() {
-  const today = todayDate();
   const overdueBefore = new Date(Date.now() - OVERDUE_HOURS * 60 * 60 * 1000).toISOString();
-  const [pickupToday, pendingIn, pendingOut, pendingReturn, exceptions, overdue] = await Promise.all([
-    sb.from("pickup_tasks").select("id", { count: "exact", head: true }).eq("pickup_date", today).eq("status", "待取件"),
+  const allPendingPickupsQuery = Promise.all([
+    sb.from("pickup_tasks").select("id", { count: "exact", head: true }).in("status", [...PICKUP_OPEN_STATUSES]),
+    retryPickupSchemaAvailable
+      ? sb.from("pickup_retry_tasks").select("id", { count: "exact", head: true }).in("status", [...RETRY_PICKUP_OPEN_STATUSES])
+      : Promise.resolve({ count: 0, error: null }),
+  ]).then(([normal, retry]) => ({ count: (normal.count || 0) + (retry.count || 0), error: normal.error || retry.error }));
+  const exceptionTicketsQuery = exceptionTicketSchemaAvailable
+    ? sb.from("exception_tickets").select("id", { count: "exact", head: true }).in("status", EXCEPTION_OPEN_STATUSES)
+    : Promise.resolve({ count: 0, error: null });
+  const [pickupToday, pendingIn, pendingOut, pendingReturn, exceptions, exceptionTickets, overdue] = await Promise.all([
+    allPendingPickupsQuery,
     sb.from("order_items").select("id", { count: "exact", head: true }).eq("item_status", "已取件"),
     sb.from("order_items").select("id", { count: "exact", head: true }).in("item_status", ["已入厂", "清洗中"]),
     sb.from("return_tasks").select("id", { count: "exact", head: true }).eq("status", "待送回"),
     sb.from("orders").select("id", { count: "exact", head: true }).or("exception_note.neq.,school.eq.学校未识别,campus.eq.校区未识别,building.eq.楼栋未识别,order_status.eq.异常,order_status.eq.未找到"),
+    exceptionTicketsQuery,
     sb.from("orders").select("id,order_status,updated_at").neq("order_status", "已送达").lt("updated_at", overdueBefore),
   ]);
+  const exceptionTotal = (exceptions.error ? 0 : exceptions.count || 0) + (exceptionTickets.error ? 0 : exceptionTickets.count || 0);
   const dashboardValues = [
     ["dashPickupToday", pickupToday],
     ["dashPendingIn", pendingIn],
     ["dashPendingOut", pendingOut],
     ["dashPendingReturn", pendingReturn],
-    ["dashExceptions", exceptions],
+    ["dashExceptions", { count: exceptionTotal, error: exceptions.error || exceptionTickets.error }],
   ];
   dashboardValues.forEach(([targetId, result]) => {
     if ($(targetId)) $(targetId).textContent = result.error ? "—" : String(result.count || 0);
   });
+  updateExceptionBadge(exceptionTotal);
   const overdueRows = overdue.error ? [] : overdue.data || [];
   if ($("dashOverdue")) $("dashOverdue").textContent = overdue.error ? "—" : String(overdueRows.length);
   const overdueBuckets = [
@@ -2294,7 +2354,8 @@ function renderOrderRows(rows) {
       <td>${escapeHtml(`${order.school || ""}${orderCampusName(order)}${order.building || ""}`)}</td>
       <td>
         <select class="input compact-input" data-order-status="${order.id}">
-          ${ORDER_STATUSES.map((status) => `<option value="${escapeHtml(status)}" ${status === order.order_status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}
+          ${order.order_status === "待补取" ? '<option value="待补取" selected disabled>待补取（按水洗标处理）</option>' : ""}
+          ${ORDER_EDITABLE_STATUSES.map((status) => `<option value="${escapeHtml(status)}" ${status === order.order_status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}
         </select>
       </td>
       <td>${escapeHtml(formatOverdueAge(order))}</td>
@@ -2323,6 +2384,7 @@ function bindOrderManagementFilters() {
 }
 
 async function updateOrderStatus(orderId, status) {
+  if (status === "待补取") return alert("待补取必须在订单详情中按单个水洗标安排，不能整单修改。");
   const now = new Date().toISOString();
   const { data: itemRows, error: itemReadError } = await sb.from("order_items").select("id").eq("order_id", orderId);
   if (itemReadError) return alert(`状态同步失败：${itemReadError.message}`);
@@ -2350,6 +2412,7 @@ async function updateOrderStatus(orderId, status) {
 
 async function updateOrderItemStatus(itemId, orderId, barcode, status, selectElement) {
   if (!itemId || !orderId || !ITEM_STATUSES.includes(status)) return;
+  if (status === "待补取") return alert("请使用右侧“安排补取”，系统会同时生成补取路线。");
   if (selectElement) selectElement.disabled = true;
   const { error } = await sb.from("order_items").update({
     item_status: status,
@@ -2371,9 +2434,17 @@ async function updateOrderItemStatus(itemId, orderId, barcode, status, selectEle
 }
 
 async function loadExceptions() {
-  const { data, error } = await sb.from("orders").select("*").or("exception_note.neq.,school.eq.学校未识别,campus.eq.校区未识别,building.eq.楼栋未识别,order_status.eq.异常,order_status.eq.未找到").order("created_at", { ascending: false }).limit(300);
-  if (error) return setMessage("adminExceptions", error.message, "warn");
-  currentExceptionRows = data || [];
+  await detectExceptionTicketSchemaAvailability();
+  const [legacyResult, ticketResult] = await Promise.all([
+    sb.from("orders").select("*").or("exception_note.neq.,school.eq.学校未识别,campus.eq.校区未识别,building.eq.楼栋未识别,order_status.eq.异常,order_status.eq.未找到").order("created_at", { ascending: false }).limit(300),
+    exceptionTicketSchemaAvailable
+      ? sb.from("exception_tickets").select("*, orders(id,order_no,customer_name,phone,school,campus,building,address), order_items(id,barcode,product_name,spec,item_status)").order("created_at", { ascending: false }).limit(300)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+  if (legacyResult.error) return setMessage("adminExceptions", legacyResult.error.message, "warn");
+  if (ticketResult.error) return setMessage("adminExceptions", ticketResult.error.message, "warn");
+  currentExceptionRows = legacyResult.data || [];
+  currentExceptionTickets = await hydrateExceptionTicketEvidence(ticketResult.data || []);
   const quickConfirmCount = currentExceptionRows.filter((order) => {
     const audit = recognitionAuditForOrder(order);
     return isDormComplete(audit) && audit.confidence >= 90 && !audit.currentMismatch && isRecognitionReviewNote(order.exception_note);
@@ -2383,25 +2454,374 @@ async function loadExceptions() {
     return !isDormComplete(audit) || audit.confidence < 70;
   }).length;
   const operationalCount = currentExceptionRows.length - quickConfirmCount - incompleteCount;
+  const openTickets = currentExceptionTickets
+    .filter((ticket) => EXCEPTION_OPEN_STATUSES.includes(ticket.status))
+    .sort((left, right) => Number(right.priority === "紧急") - Number(left.priority === "紧急")
+      || new Date(left.created_at || 0) - new Date(right.created_at || 0));
+  const closedTickets = currentExceptionTickets
+    .filter((ticket) => !EXCEPTION_OPEN_STATUSES.includes(ticket.status))
+    .sort((left, right) => new Date(right.resolved_at || right.updated_at || 0) - new Date(left.resolved_at || left.updated_at || 0));
+  const pendingCustomerCount = openTickets.filter((ticket) => ticket.status === "待客户").length;
+  const processingCount = openTickets.filter((ticket) => ticket.status === "处理中").length;
+  const totalPending = openTickets.length + currentExceptionRows.length;
+  updateExceptionBadge(totalPending);
   $("adminExceptions").innerHTML = `
-    <section class="panel">
+    <section class="panel exception-center">
       <div class="exception-heading">
         <div>
-          <h2>地址确认与异常处理</h2>
-          <p class="hint">先确认系统推测结果；遇到重复写法时保存为规则，系统会立即处理同类历史订单，并用于以后导入。</p>
+          <p class="eyebrow">统一处理入口</p>
+          <h2>异常工单中心</h2>
+          <p class="hint">工厂上报、客服沟通、处理结论和原地址修正都集中在这里；微信只作为通知渠道。</p>
         </div>
-        <button class="ghost" type="button" data-reprocess-orders>用现有规则重新识别</button>
+        <div class="toolbar wrap">
+          <button type="button" data-new-exception-ticket ${exceptionTicketSchemaAvailable ? "" : "disabled"}>新建异常工单</button>
+          <button class="ghost" type="button" data-reprocess-orders>重新识别地址</button>
+        </div>
       </div>
       <div class="mini-stats exception-stats">
-        <div><strong>${quickConfirmCount}</strong><span>快速确认</span></div>
-        <div><strong>${incompleteCount}</strong><span>信息不完整</span></div>
-        <div><strong>${operationalCount}</strong><span>其他异常</span></div>
-        <div><strong>${currentExceptionRows.length}</strong><span>本页待处理</span></div>
+        <div class="danger-stat"><strong>${totalPending}</strong><span>全部待处理</span></div>
+        <div><strong>${openTickets.filter((ticket) => ticket.status === "待客服").length}</strong><span>待客服</span></div>
+        <div><strong>${pendingCustomerCount}</strong><span>待客户</span></div>
+        <div><strong>${processingCount}</strong><span>处理中</span></div>
+        <div><strong>${currentExceptionRows.length}</strong><span>地址/历史异常</span></div>
       </div>
+      ${exceptionTicketSchemaAvailable ? "" : `<p class="warn exception-migration-note">${escapeHtml(exceptionTicketMigrationMessage())}</p>`}
       ${exceptionActionMessage ? `<p class="success-note">${escapeHtml(exceptionActionMessage)}</p>` : ""}
-      <div class="card-list">${currentExceptionRows.map(renderExceptionCard).join("") || '<p class="hint">暂无待确认或异常订单</p>'}</div>
+      <section class="exception-worklist" aria-labelledby="openExceptionTicketsTitle">
+        <div class="section-heading compact-heading"><div><h3 id="openExceptionTicketsTitle">处理中工单</h3><p class="hint">按提交时间排列，红色“紧急”优先处理。</p></div><strong>${openTickets.length} 单</strong></div>
+        <div class="card-list">${openTickets.map(renderExceptionTicketCard).join("") || '<p class="hint empty-state">暂无处理中工单</p>'}</div>
+      </section>
+      <details class="exception-legacy-section" ${currentExceptionRows.length ? "open" : ""}>
+        <summary><span><strong>地址确认与历史异常</strong><small>保留原“异常修正”全部能力</small></span><b>${currentExceptionRows.length}</b></summary>
+        <div class="mini-stats exception-stats legacy-stats">
+          <div><strong>${quickConfirmCount}</strong><span>快速确认</span></div>
+          <div><strong>${incompleteCount}</strong><span>信息不完整</span></div>
+          <div><strong>${operationalCount}</strong><span>其他异常</span></div>
+        </div>
+        <div class="card-list">${currentExceptionRows.map(renderExceptionCard).join("") || '<p class="hint">暂无地址或历史异常</p>'}</div>
+      </details>
+      ${closedTickets.length ? `<details class="exception-legacy-section"><summary><span><strong>已结案工单</strong><small>仅供查询，不计入红色提醒</small></span><b>${closedTickets.length}</b></summary><div class="card-list">${closedTickets.map(renderExceptionTicketCard).join("")}</div></details>` : ""}
     </section>`;
   exceptionActionMessage = "";
+}
+
+function relationOne(value) {
+  return Array.isArray(value) ? value[0] || {} : value || {};
+}
+
+async function hydrateExceptionTicketEvidence(tickets) {
+  if (!tickets.length) return tickets;
+  return Promise.all(tickets.map(async (ticket) => {
+    const paths = Array.isArray(ticket.evidence_paths) ? ticket.evidence_paths.filter(Boolean) : [];
+    if (!paths.length) return { ...ticket, evidenceUrls: [] };
+    const { data } = await sb.storage.from("exception-evidence").createSignedUrls(paths, 60 * 60);
+    return { ...ticket, evidenceUrls: (data || []).map((entry) => entry.signedUrl).filter(Boolean) };
+  }));
+}
+
+function exceptionStatusClass(status) {
+  if (status === "待客服") return "danger";
+  if (status === "待客户") return "warning";
+  if (status === "处理中") return "processing";
+  return "done";
+}
+
+function renderExceptionTicketCard(ticket) {
+  const order = relationOne(ticket.orders);
+  const item = relationOne(ticket.order_items);
+  const barcode = ticket.barcode || item.barcode || "未绑定水洗标";
+  const resolved = !EXCEPTION_OPEN_STATUSES.includes(ticket.status);
+  return `
+    <article class="task-card exception-ticket-card ${ticket.priority === "紧急" ? "urgent" : ""}" data-exception-ticket="${ticket.id}">
+      <div class="card-head">
+        <div><h3>${escapeHtml(ticket.ticket_type)}${ticket.priority === "紧急" ? '<span class="urgent-label">紧急</span>' : ""}</h3><p class="hint">${escapeHtml(order.customer_name || "未知客户")} · ${escapeHtml(order.phone || "")} · ${escapeHtml(barcode)}</p></div>
+        <span class="ticket-status ${exceptionStatusClass(ticket.status)}">${escapeHtml(ticket.status)}</span>
+      </div>
+      <p class="exception-ticket-description">${escapeHtml(ticket.description || "未填写问题说明")}</p>
+      <div class="exception-ticket-meta"><span>订单 ${escapeHtml(order.order_no || "—")}</span><span>${escapeHtml(item.spec || item.product_name || "物品待核对")}</span><span>${escapeHtml(ticket.source || "后台")}</span><span>${escapeHtml(formatDateTime(ticket.created_at, true))}</span></div>
+      ${ticket.evidenceUrls?.length ? `<div class="exception-evidence-grid">${ticket.evidenceUrls.map((url, index) => `<button type="button" data-full-image="${escapeHtml(url)}" aria-label="查看异常照片 ${index + 1}"><img src="${escapeHtml(url)}" alt="异常证据 ${index + 1}" /></button>`).join("")}</div>` : '<p class="hint">暂无异常照片</p>'}
+      ${ticket.proposed_solution ? `<p><strong>建议方案：</strong>${escapeHtml(ticket.proposed_solution)}</p>` : ""}
+      ${ticket.customer_reply ? `<p><strong>客户回复：</strong>${escapeHtml(ticket.customer_reply)}</p>` : ""}
+      ${ticket.resolution ? `<p><strong>处理结果：</strong>${escapeHtml(ticket.resolution)}</p>` : ""}
+      <div class="actions exception-ticket-actions">
+        <button class="ghost" type="button" data-copy-exception-message="${ticket.id}">复制客户沟通内容</button>
+        ${item.id && order.id && !resolved ? `<button class="ghost" type="button" data-schedule-retry-item="${escapeHtml(item.id)}" data-retry-order="${escapeHtml(order.id)}" data-retry-ticket="${escapeHtml(ticket.id)}">安排补取</button>` : ""}
+        ${resolved ? "" : `<button class="ghost" type="button" data-exception-status="${ticket.id}" data-status="待客户">标记待客户</button><button class="ghost" type="button" data-exception-status="${ticket.id}" data-status="处理中">开始处理</button><button type="button" data-exception-status="${ticket.id}" data-status="已解决">处理完成</button>`}
+      </div>
+    </article>`;
+}
+
+function ensureExceptionTicketDialog() {
+  if ($("exceptionTicketDialog")) return $("exceptionTicketDialog");
+  document.body.insertAdjacentHTML("beforeend", `
+    <dialog id="exceptionTicketDialog" class="exception-ticket-dialog">
+      <form method="dialog" class="exception-ticket-form" onsubmit="return false">
+        <div class="dialog-heading"><div><p class="eyebrow">绑定到单个水洗标</p><h2>上报异常工单</h2></div><button class="ghost small-btn" type="button" data-close-exception-ticket>关闭</button></div>
+        <input id="exceptionTicketItemId" type="hidden" />
+        <label id="exceptionTicketItemChoice" class="field-group hidden"><span>选择异常物品</span><select id="exceptionTicketItemSelect" class="input"></select></label>
+        <label class="field-group"><span>水洗标</span><input id="exceptionTicketBarcode" class="input" placeholder="扫码或输入水洗标" autocomplete="off" /></label>
+        <div class="exception-form-grid">
+          <label class="field-group"><span>异常类型</span><select id="exceptionTicketType" class="input">${EXCEPTION_TICKET_TYPES.map((type) => `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`).join("")}</select></label>
+          <label class="field-group"><span>优先级</span><select id="exceptionTicketPriority" class="input"><option value="普通">普通</option><option value="紧急">紧急</option></select></label>
+        </div>
+        <label id="exceptionTicketRetryDateField" class="field-group hidden"><span>补取日期</span><input id="exceptionTicketRetryDate" class="input" type="date" /><small>选中的水洗标会单独进入补取路线，订单内其他物品不受影响。</small></label>
+        <label class="field-group"><span>问题说明</span><textarea id="exceptionTicketDescription" class="input" rows="3" placeholder="例如：前后logo存在脱落风险，建议先联系客户确认"></textarea></label>
+        <label class="field-group"><span>建议处理方案</span><input id="exceptionTicketSolution" class="input" placeholder="例如：客户确认后继续清洗 / 返洗 / 退洗" /></label>
+        <label class="field-group"><span>异常照片（可多选）</span><input id="exceptionTicketFiles" class="input" type="file" accept="image/*" multiple /></label>
+        <p id="exceptionTicketMessage" class="hint" role="status" aria-live="polite"></p>
+        <div class="actions"><button type="button" data-submit-exception-ticket>提交工单</button><button class="ghost" type="button" data-close-exception-ticket>取消</button></div>
+      </form>
+    </dialog>`);
+  return $("exceptionTicketDialog");
+}
+
+function openExceptionTicketDialog(item = null, context = null) {
+  if (!exceptionTicketSchemaAvailable) return alert(exceptionTicketMigrationMessage());
+  const dialog = ensureExceptionTicketDialog();
+  const items = (context?.items?.length ? context.items : item ? [item] : []).filter(Boolean);
+  const selectedItem = item || items[0] || null;
+  exceptionTicketContext = context ? { ...context, items } : null;
+  $("exceptionTicketItemId").value = selectedItem?.id || "";
+  $("exceptionTicketBarcode").value = selectedItem?.barcode || "";
+  $("exceptionTicketBarcode").readOnly = Boolean(selectedItem?.barcode);
+  const itemChoice = $("exceptionTicketItemChoice");
+  const itemSelect = $("exceptionTicketItemSelect");
+  if (itemChoice && itemSelect) {
+    itemChoice.classList.toggle("hidden", items.length <= 1);
+    itemSelect.innerHTML = items.map((row) => `<option value="${escapeHtml(row.id || "")}" data-barcode="${escapeHtml(row.barcode || "")}">${escapeHtml(`${row.barcode || "无条码"}｜${row.spec || row.product_name || "物品未填写"}`)}</option>`).join("");
+    itemSelect.value = selectedItem?.id || items[0]?.id || "";
+  }
+  $("exceptionTicketType").value = "原有破损";
+  if (context?.type === "courier-pickup") $("exceptionTicketType").value = "漏取/补取";
+  if (context?.type === "courier-return") $("exceptionTicketType").value = "配送异常";
+  $("exceptionTicketRetryDateField")?.classList.toggle("hidden", context?.type !== "courier-pickup");
+  if ($("exceptionTicketRetryDate")) $("exceptionTicketRetryDate").value = todayDate();
+  $("exceptionTicketPriority").value = "普通";
+  $("exceptionTicketDescription").value = "";
+  $("exceptionTicketSolution").value = "";
+  $("exceptionTicketFiles").value = "";
+  setMessage("exceptionTicketMessage", item?.barcode ? `水洗标 ${item.barcode}` : "输入水洗标后提交", "hint");
+  dialog.showModal();
+  requestAnimationFrame(() => (selectedItem?.barcode ? $("exceptionTicketDescription") : $("exceptionTicketBarcode"))?.focus());
+}
+
+function openCourierPickupException(taskId) {
+  const retryTask = courierRetryTaskRows.find((row) => row.id === taskId);
+  const task = retryTask || courierPickupTaskRows.find((row) => row.id === taskId);
+  const retryItem = retryTask ? relationOne(retryTask.order_items) : null;
+  const order = retryTask ? relationOne(retryItem?.orders) : task?.orders || {};
+  const items = retryItem ? [retryItem] : sortedOrderItems(order).filter((row) => PICKUP_OPEN_STATUSES.has(text(row.item_status)));
+  if (!task || !items.length) return alert("这单还没有水洗标，暂时无法上报异常工单");
+  openExceptionTicketDialog(items[0], { type: "courier-pickup", taskId, orderId: order.id, items, isRetry: Boolean(retryTask) });
+}
+
+function openCourierReturnException(taskId, itemId, orderId) {
+  const record = courierReturnOrderGroups.flatMap((group) => group.records).find(({ task }) => task.id === taskId);
+  const item = record?.item || { id: itemId, order_id: orderId };
+  if (!item?.id) return alert("没有找到对应的水洗标");
+  openExceptionTicketDialog(item, { type: "courier-return", taskId, orderId, items: [item] });
+}
+
+function safeEvidenceFileName(name) {
+  return text(name).replace(/[^a-zA-Z0-9._-]+/g, "-").slice(-80) || "photo.jpg";
+}
+
+async function scheduleRetryPickup({ itemId, orderId, pickupDate, reason, parentTaskId = null, exceptionTicketId = null }) {
+  if (!retryPickupSchemaAvailable) throw new Error(retryPickupMigrationMessage());
+  const dueDate = /^\d{4}-\d{2}-\d{2}$/.test(text(pickupDate)) ? text(pickupDate) : todayDate();
+  const now = new Date().toISOString();
+  const { data: existing, error: existingError } = await sb
+    .from("pickup_retry_tasks")
+    .select("id,attempt_no")
+    .eq("item_id", itemId)
+    .in("status", [...RETRY_PICKUP_OPEN_STATUSES])
+    .limit(1)
+    .maybeSingle();
+  if (existingError) throw existingError;
+  let retryId = existing?.id || "";
+  if (existing) {
+    const { error } = await sb.from("pickup_retry_tasks").update({
+      pickup_date: dueDate,
+      status: "待补取",
+      reason: text(reason) || "漏取补取",
+      parent_pickup_task_id: parentTaskId || null,
+      exception_ticket_id: exceptionTicketId || null,
+      operator_id: currentProfile?.id || null,
+      updated_at: now,
+    }).eq("id", existing.id);
+    if (error) throw error;
+  } else {
+    const { data: priorRows, error: priorError } = await sb.from("pickup_retry_tasks").select("attempt_no").eq("item_id", itemId).order("attempt_no", { ascending: false }).limit(1);
+    if (priorError) throw priorError;
+    const attemptNo = numberValue(priorRows?.[0]?.attempt_no) + 1 || 1;
+    const { data, error } = await sb.from("pickup_retry_tasks").insert({
+      order_id: orderId,
+      item_id: itemId,
+      parent_pickup_task_id: parentTaskId || null,
+      exception_ticket_id: exceptionTicketId || null,
+      pickup_date: dueDate,
+      status: "待补取",
+      reason: text(reason) || "漏取补取",
+      attempt_no: attemptNo,
+      operator_id: currentProfile?.id || null,
+      updated_at: now,
+    }).select("id").single();
+    if (error) throw error;
+    retryId = data.id;
+  }
+  const { error: itemError } = await sb.from("order_items").update({ item_status: "待补取", updated_at: now }).eq("id", itemId);
+  if (itemError) throw itemError;
+  const { data: remainingItems, error: remainingError } = await sb.from("order_items").select("id").eq("order_id", orderId).in("item_status", [...PICKUP_OPEN_STATUSES]);
+  if (remainingError) throw remainingError;
+  if (parentTaskId && !(remainingItems || []).length) {
+    const { error: parentError } = await sb.from("pickup_tasks").update({ status: "已取件", operator_id: currentProfile?.id || null, updated_at: now }).eq("id", parentTaskId);
+    if (parentError) throw parentError;
+  }
+  await insertLog({ orderId, itemId, status: "安排补取", note: `${dueDate}；${text(reason) || "漏取补取"}` });
+  return retryId;
+}
+
+async function scheduleRetryPickupFromUi(itemId, orderId, ticketId = null) {
+  if (!retryPickupSchemaAvailable) return alert(retryPickupMigrationMessage());
+  const pickupDate = prompt("补取日期（YYYY-MM-DD）", todayDate());
+  if (pickupDate === null) return;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text(pickupDate))) return alert("补取日期格式不正确");
+  const reason = prompt("补取原因", "漏取，安排单个水洗标补取");
+  if (reason === null) return;
+  try {
+    await scheduleRetryPickup({ itemId, orderId, pickupDate, reason, exceptionTicketId: ticketId });
+    exceptionActionMessage = "已安排单个水洗标补取";
+    await Promise.all([loadExceptions(), loadStats(), loadCourierTasks()]);
+    if ($("orderDialog")?.open) await showOrderDetail(orderId);
+  } catch (error) {
+    alert(error?.message || "安排补取失败");
+  }
+}
+
+async function submitExceptionTicket() {
+  if (exceptionTicketBusy) return;
+  if (!exceptionTicketSchemaAvailable) return alert(exceptionTicketMigrationMessage());
+  const itemId = text($("exceptionTicketItemId")?.value);
+  const barcode = text($("exceptionTicketBarcode")?.value);
+  const description = text($("exceptionTicketDescription")?.value);
+  if (!barcode) return setMessage("exceptionTicketMessage", "请先输入水洗标", "warn");
+  if (!description) return setMessage("exceptionTicketMessage", "请填写问题说明", "warn");
+  exceptionTicketBusy = true;
+  document.querySelector("[data-submit-exception-ticket]")?.setAttribute("disabled", "disabled");
+  setMessage("exceptionTicketMessage", "正在保存异常工单和照片...", "hint");
+  try {
+    let itemQuery = sb.from("order_items").select("id,order_id,barcode,product_name,spec,orders(id,order_no)");
+    itemQuery = itemId ? itemQuery.eq("id", itemId) : itemQuery.eq("barcode", barcode);
+    const { data: item, error: itemError } = await itemQuery.maybeSingle();
+    if (itemError) throw itemError;
+    if (!item) throw new Error("没有找到这个水洗标");
+    const ticketType = text($("exceptionTicketType")?.value) || "其他异常";
+    const createsRetry = exceptionTicketContext?.type === "courier-pickup" && ticketType === "漏取/补取";
+    if (createsRetry && !retryPickupSchemaAvailable) throw new Error(retryPickupMigrationMessage());
+    const { data: existingTicket, error: existingError } = await sb
+      .from("exception_tickets")
+      .select("id")
+      .eq("item_id", item.id)
+      .eq("ticket_type", ticketType)
+      .in("status", EXCEPTION_OPEN_STATUSES)
+      .limit(1)
+      .maybeSingle();
+    if (existingError) throw existingError;
+    if (existingTicket) throw new Error("这个水洗标已有同类型待处理工单，请勿重复上报");
+    const files = [...($("exceptionTicketFiles")?.files || [])];
+    const evidencePaths = [];
+    for (const file of files) {
+      const path = `${item.order_id}/${crypto.randomUUID()}-${safeEvidenceFileName(file.name)}`;
+      const { error: uploadError } = await sb.storage.from("exception-evidence").upload(path, file, { contentType: file.type || "image/jpeg", upsert: false });
+      if (uploadError) throw uploadError;
+      evidencePaths.push(path);
+    }
+    const payload = {
+      order_id: item.order_id,
+      item_id: item.id,
+      barcode: item.barcode,
+      ticket_type: ticketType,
+      description,
+      proposed_solution: text($("exceptionTicketSolution")?.value),
+      evidence_paths: evidencePaths,
+      priority: text($("exceptionTicketPriority")?.value) === "紧急" ? "紧急" : "普通",
+      status: "待客服",
+      source: exceptionTicketContext?.type === "courier-pickup"
+        ? "配送员端-取件"
+        : exceptionTicketContext?.type === "courier-return"
+          ? "配送员端-送回"
+          : APP_MODE === "factory"
+            ? "工厂端"
+            : "后台",
+      reporter_id: currentProfile?.id || null,
+      updated_at: new Date().toISOString(),
+    };
+    let retryId = "";
+    if (createsRetry) {
+      retryId = await scheduleRetryPickup({
+        itemId: item.id,
+        orderId: item.order_id,
+        pickupDate: text($("exceptionTicketRetryDate")?.value) || todayDate(),
+        reason: description,
+        parentTaskId: exceptionTicketContext?.isRetry ? null : exceptionTicketContext?.taskId || null,
+      });
+    }
+    const { data: createdTicket, error } = await sb.from("exception_tickets").insert(payload).select("id").single();
+    if (error) throw error;
+    if (retryId) {
+      const { error: linkError } = await sb.from("pickup_retry_tasks").update({ exception_ticket_id: createdTicket.id, updated_at: new Date().toISOString() }).eq("id", retryId);
+      if (linkError) throw linkError;
+    }
+    await insertLog({ orderId: item.order_id, itemId: item.id, barcode: item.barcode, status: "异常工单待处理", note: `${payload.ticket_type}：${description}` });
+    $("exceptionTicketDialog")?.close();
+    exceptionActionMessage = `异常工单已提交：${item.barcode}`;
+    await Promise.all([loadStats(), APP_MODE === "admin" ? loadExceptions() : Promise.resolve(), APP_MODE === "factory" ? loadFactoryItems() : Promise.resolve(), APP_MODE === "courier" ? loadCourierTasks() : Promise.resolve()]);
+    if (APP_MODE === "courier") alert(createsRetry ? `已上报异常并生成补取任务：${item.barcode}\n其他正常物品仍可点击“已取到”。` : `异常工单已提交：${item.barcode}\n原任务仍保留，请再按实际结果完成。`);
+    exceptionTicketContext = null;
+  } catch (error) {
+    setMessage("exceptionTicketMessage", error?.message || "异常工单提交失败", "warn");
+  } finally {
+    exceptionTicketBusy = false;
+    document.querySelector("[data-submit-exception-ticket]")?.removeAttribute("disabled");
+  }
+}
+
+async function updateExceptionTicketStatus(ticketId, status) {
+  if (exceptionTicketBusy || !EXCEPTION_OPEN_STATUSES.concat(["已解决", "已关闭"]).includes(status)) return;
+  const ticket = currentExceptionTickets.find((row) => row.id === ticketId);
+  if (!ticket) return;
+  const update = { status, updated_at: new Date().toISOString() };
+  if (status === "处理中") {
+    const reply = prompt("填写客户回复或已确认方案", ticket.customer_reply || "");
+    if (reply === null) return;
+    update.customer_reply = text(reply);
+    update.assignee_id = currentProfile?.id || ticket.assignee_id || null;
+  }
+  if (status === "已解决" || status === "已关闭") {
+    const resolution = prompt("填写最终处理结果", ticket.resolution || "");
+    if (resolution === null || !text(resolution)) return;
+    update.resolution = text(resolution);
+    update.resolved_at = new Date().toISOString();
+    update.assignee_id = currentProfile?.id || ticket.assignee_id || null;
+  }
+  exceptionTicketBusy = true;
+  const { error } = await sb.from("exception_tickets").update(update).eq("id", ticketId);
+  exceptionTicketBusy = false;
+  if (error) return alert(error.message);
+  await insertLog({ orderId: ticket.order_id, itemId: ticket.item_id, barcode: ticket.barcode, status: `异常工单${status}`, note: update.resolution || update.customer_reply || ticket.description });
+  exceptionActionMessage = `工单已更新为“${status}”`;
+  await Promise.all([loadExceptions(), loadStats()]);
+}
+
+async function copyExceptionCustomerMessage(ticketId) {
+  const ticket = currentExceptionTickets.find((row) => row.id === ticketId);
+  if (!ticket) return;
+  const order = relationOne(ticket.orders);
+  const customerName = order.customer_name ? `${order.customer_name}同学，您好。` : "您好。";
+  const content = `${customerName}您的洗护物品（水洗标：${ticket.barcode || "待核对"}）发现“${ticket.ticket_type}”：${ticket.description}${ticket.proposed_solution ? `。建议处理：${ticket.proposed_solution}` : ""}。请回复确认处理方式，谢谢。`;
+  await copyText(content);
+  exceptionActionMessage = "客户沟通内容已复制，可直接粘贴到微信";
+  await loadExceptions();
 }
 
 function renderExceptionCard(order) {
@@ -3382,7 +3802,7 @@ async function showOrderDetail(orderId) {
     <section class="panel table-panel">
       <h3>物品 / 水洗标</h3>
       ${canEditItemStatus ? '<p class="hint">这里修改只影响当前水洗标；整单状态会按该订单下所有水洗标的最慢进度自动汇总。</p>' : ""}
-      <div class="table-wrap"><table><thead><tr><th>水洗标</th><th>商品</th><th>规格</th><th>结算品类</th><th>状态</th><th>图片</th></tr></thead><tbody>${(itemResult.data || []).map((item) => `<tr><td>${escapeHtml(item.barcode)}</td><td>${escapeHtml(item.product_name)}</td><td>${escapeHtml(item.spec)}</td><td>${escapeHtml(settlementDisplayLabel(item))}${resolvedSettlementCategory(item).confirmed ? "" : "（待确认）"}</td><td>${canEditItemStatus ? `<select class="input compact-input" data-order-item-status="${escapeHtml(item.id)}" data-order-id="${escapeHtml(order.id)}" data-item-barcode="${escapeHtml(item.barcode)}">${ITEM_STATUSES.map((status) => `<option value="${escapeHtml(status)}" ${status === item.item_status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}</select>` : escapeHtml(item.item_status)}</td><td>${item.image_links ? `<a href="${escapeHtml(item.image_links.split("\n")[0])}" target="_blank">查看</a>` : ""}</td></tr>`).join("")}</tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>水洗标</th><th>商品</th><th>规格</th><th>结算品类</th><th>状态</th><th>图片</th>${canEditItemStatus ? "<th>操作</th>" : ""}</tr></thead><tbody>${(itemResult.data || []).map((item) => `<tr><td>${escapeHtml(item.barcode)}</td><td>${escapeHtml(item.product_name)}</td><td>${escapeHtml(item.spec)}</td><td>${escapeHtml(settlementDisplayLabel(item))}${resolvedSettlementCategory(item).confirmed ? "" : "（待确认）"}</td><td>${canEditItemStatus ? `<select class="input compact-input" data-order-item-status="${escapeHtml(item.id)}" data-order-id="${escapeHtml(order.id)}" data-item-barcode="${escapeHtml(item.barcode)}">${item.item_status === "待补取" ? '<option value="待补取" selected disabled>待补取（由补取任务控制）</option>' : ""}${ITEM_EDITABLE_STATUSES.map((status) => `<option value="${escapeHtml(status)}" ${status === item.item_status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}</select>` : escapeHtml(item.item_status)}</td><td>${item.image_links ? `<a href="${escapeHtml(item.image_links.split("\n")[0])}" target="_blank">查看</a>` : ""}</td>${canEditItemStatus ? `<td>${["待取件", "未找到", "待补取", "已取件"].includes(item.item_status) ? `<button class="ghost small-btn" type="button" data-schedule-retry-item="${escapeHtml(item.id)}" data-retry-order="${escapeHtml(order.id)}">安排补取</button>` : "—"}</td>` : ""}</tr>`).join("")}</tbody></table></div>
     </section>
     <section class="panel">
       <h3>状态时间线</h3>
@@ -3496,7 +3916,9 @@ function comparePickupRecords(left, right) {
   const leftOrder = left.order || {};
   const rightOrder = right.order || {};
   return compareOrderRoute(leftOrder, rightOrder)
-    || compareNaturalText(firstOrderBarcode(leftOrder), firstOrderBarcode(rightOrder))
+    || Number(Boolean(right.isRetry)) - Number(Boolean(left.isRetry))
+    || compareNaturalText(left.task?.pickup_date, right.task?.pickup_date)
+    || compareNaturalText(left.items?.[0]?.barcode || firstOrderBarcode(leftOrder), right.items?.[0]?.barcode || firstOrderBarcode(rightOrder))
     || compareNaturalText(leftOrder.order_no, rightOrder.order_no)
     || compareNaturalText(leftOrder.customer_name, rightOrder.customer_name);
 }
@@ -3576,65 +3998,63 @@ function showImagePreview(key) {
 }
 
 function selectedCourierPickupDate() {
-  const input = $("courierPickupDate");
-  if (input && (!courierPickupDateInitialized || !input.value)) {
-    input.value = todayDate();
-    courierPickupDateInitialized = true;
-  }
-  return input?.value || todayDate();
+  return $("courierPickupDate")?.value || "";
 }
 
 function resetCourierPickupDate() {
   courierDashboardFilter = "";
   courierActivePickupAreaKey = "";
   const input = $("courierPickupDate");
-  if (input) {
-    input.value = todayDate();
-    courierPickupDateInitialized = true;
-  }
+  if (input) input.value = "";
   loadCourierTasks();
 }
 
 async function loadCourierTasks() {
-  const pickupDate = selectedCourierPickupDate();
-  const [pickup, returns] = await Promise.all([
+  const [pickup, retries, returns] = await Promise.all([
     sb
       .from("pickup_tasks")
       .select("*, orders(*, order_items(id,barcode,image_links,product_name,spec,item_status))")
-      .eq("pickup_date", pickupDate)
-      .order("pickup_date", { ascending: true }),
+      .order("pickup_date", { ascending: true })
+      .limit(800),
+    retryPickupSchemaAvailable
+      ? sb.from("pickup_retry_tasks").select("*, order_items(id,order_id,barcode,image_links,product_name,spec,item_status,orders(*))").order("pickup_date", { ascending: true }).limit(800)
+      : Promise.resolve({ data: [], error: null }),
     sb.from("return_tasks").select("*, order_items(*, orders(*))").order("outbound_date", { ascending: false }),
   ]);
   let pickupRows = pickup.data || [];
+  let retryRows = retries.data || [];
   let returnRows = returns.data || [];
   let activeLabel = "";
   if (courierDashboardFilter === "pickup-today") {
-    pickupRows = pickupRows.filter((task) => task.status === "待取件");
+    pickupRows = pickupRows.filter((task) => PICKUP_OPEN_STATUSES.has(text(task.status)));
+    retryRows = retryRows.filter((task) => RETRY_PICKUP_OPEN_STATUSES.has(text(task.status)));
     returnRows = [];
-    activeLabel = "驾驶舱筛选：今日待取件";
+    activeLabel = "驾驶舱筛选：全部未完成取件";
   } else if (courierDashboardFilter === "pending-return") {
     pickupRows = [];
+    retryRows = [];
     returnRows = returnRows.filter((task) => task.status === "待送回");
     activeLabel = "驾驶舱筛选：待送回";
   }
   renderActiveFilter("courierActiveFilter", activeLabel, "courier");
   courierPickupTaskRows = pickup.error ? [] : pickupRows;
+  courierRetryTaskRows = retries.error ? [] : retryRows;
   courierReturnTaskRows = returns.error ? [] : returnRows;
   renderCourierRouteTasks();
 }
 
 function renderPickupCard(record, processed = false) {
-  const { task, order } = record;
+  const { task, order, isRetry } = record;
   const sms = `【事事通】同学您好，事事洗护今晚将到${order.school || ""}${orderCampusName(order)}${order.building || ""}取件，请把衣物/鞋子装袋并放好姓名电话纸条。`;
   const images = collectOrderImages(order);
   const previewKey = `pickup-${task.id}`;
   if (images.length) imagePreviewMap.set(previewKey, images);
-  const items = sortedOrderItems(order);
+  const items = record.items || sortedOrderItems(order);
   const isBusy = courierPickupBusyTaskId === task.id;
   const processedClass = task.status === "已取件" ? "done" : task.status === "异常" || task.status === "未找到" ? "alert" : "";
   return `<article class="task-card pickup-task-card courier-route-card courier-pickup-card ${processedClass}" data-pickup-card="${escapeHtml(task.id)}" data-route-task-card="pickup-${escapeHtml(task.id)}" ${isBusy ? 'aria-busy="true"' : ""}>
     <div class="card-head"><h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3><span>${escapeHtml(isBusy ? "提交中…" : task.status)}</span></div>
-    <p class="pickup-card-route">本单 ${items.length} 件</p>
+    <p class="pickup-card-route">${isRetry ? `<b class="pickup-retry-tag">补取第 ${escapeHtml(task.attempt_no || 1)} 次</b>　${escapeHtml(task.pickup_date || "")}` : `本单 ${items.length} 件`}</p>
     <ul class="courier-item-list pickup-label-list">${items.map((item) => `<li><strong>${escapeHtml(item.barcode || "无条码")}</strong><span>${escapeHtml(item.spec || item.product_name || "物品未填写")}</span><em>${escapeHtml(item.item_status || task.status)}</em></li>`).join("") || "<li><span>该订单尚未生成水洗标</span></li>"}</ul>
     ${order.exception_note ? `<p class="warn">备注：${escapeHtml(order.exception_note)}</p>` : ""}
     <div class="pickup-primary-tools">
@@ -3643,7 +4063,9 @@ function renderPickupCard(record, processed = false) {
     </div>
     <details class="pickup-card-detail"><summary>查看完整地址与订单号</summary><p>${escapeHtml(order.address || "未填写完整地址")}</p><p>订单号：${escapeHtml(order.order_no || "")}</p></details>
     ${contactButtons(order.phone || "", sms)}
-    ${processed ? "" : `<div class="actions pickup-status-actions"><button type="button" data-pickup="${escapeHtml(task.id)}" data-order="${escapeHtml(order.id)}" data-status="已取件" ${isBusy ? "disabled" : ""}>已取到</button><button class="ghost" type="button" data-pickup="${escapeHtml(task.id)}" data-order="${escapeHtml(order.id)}" data-status="未找到" ${isBusy ? "disabled" : ""}>未找到</button><button class="ghost danger" type="button" data-pickup="${escapeHtml(task.id)}" data-order="${escapeHtml(order.id)}" data-status="异常" ${isBusy ? "disabled" : ""}>异常</button></div>`}
+    ${processed ? "" : isRetry
+      ? `<div class="actions pickup-status-actions"><button type="button" data-retry-pickup="${escapeHtml(task.id)}" data-item="${escapeHtml(items[0]?.id || "")}" data-order="${escapeHtml(order.id)}" data-status="已补取" ${isBusy ? "disabled" : ""}>补取完成</button><button class="ghost" type="button" data-retry-pickup="${escapeHtml(task.id)}" data-item="${escapeHtml(items[0]?.id || "")}" data-order="${escapeHtml(order.id)}" data-status="未找到" ${isBusy ? "disabled" : ""}>未找到</button><button class="ghost" type="button" data-reschedule-retry="${escapeHtml(task.id)}" ${isBusy ? "disabled" : ""}>改约</button><button class="ghost danger" type="button" data-report-pickup-exception="${escapeHtml(task.id)}" ${isBusy ? "disabled" : ""}>上报异常</button></div>`
+      : `<div class="actions pickup-status-actions"><button type="button" data-pickup="${escapeHtml(task.id)}" data-order="${escapeHtml(order.id)}" data-status="已取件" ${isBusy ? "disabled" : ""}>已取到</button><button class="ghost" type="button" data-pickup="${escapeHtml(task.id)}" data-order="${escapeHtml(order.id)}" data-status="未找到" ${isBusy ? "disabled" : ""}>未找到</button><button class="ghost danger" type="button" data-report-pickup-exception="${escapeHtml(task.id)}" ${isBusy ? "disabled" : ""}>上报异常</button></div>`}
   </article>`;
 }
 
@@ -3698,12 +4120,33 @@ function courierReturnGroupFinishedOnDate(group, dateText) {
   return group.records.some(({ task }) => task.outbound_date === dateText || courierLocalDate(task.updated_at) === dateText);
 }
 
-function filteredCourierPickupRecords(tasks = courierPickupTaskRows) {
-  return tasks.filter((task) => {
+function courierPickupRecordOpen(record) {
+  return record.isRetry
+    ? RETRY_PICKUP_OPEN_STATUSES.has(text(record.task?.status))
+    : PICKUP_OPEN_STATUSES.has(text(record.task?.status));
+}
+
+function courierPickupRecordDue(record) {
+  const dueDate = text(record.task?.pickup_date);
+  return !dueDate || dueDate <= todayDate();
+}
+
+function courierPickupRecordFinishedOnDate(record, dateText) {
+  return record.task?.pickup_date === dateText || courierLocalDate(record.task?.updated_at) === dateText;
+}
+
+function filteredCourierPickupRecords(tasks = courierPickupTaskRows, retryTasks = courierRetryTaskRows) {
+  const normalRecords = tasks.filter((task) => {
     const order = task.orders || {};
     const items = sortedOrderItems(order);
     return matchSearch(`${order.customer_name} ${order.phone} ${order.school} ${order.campus} ${orderCampusName(order)} ${order.building} ${order.address} ${order.order_no} ${items.map((item) => `${item.barcode} ${item.product_name} ${item.spec}`).join(" ")}`);
-  }).map((task) => ({ task, order: task.orders || {} })).sort(comparePickupRecords);
+  }).map((task) => ({ task, order: task.orders || {}, items: sortedOrderItems(task.orders || {}), isRetry: false }));
+  const retryRecords = retryTasks.map((task) => {
+    const item = relationOne(task.order_items);
+    const order = relationOne(item.orders);
+    return { task, order, item, items: [item], isRetry: true };
+  }).filter(({ task, item, order }) => matchSearch(`${task.reason || ""} ${item.barcode || ""} ${item.product_name || ""} ${item.spec || ""} ${order.order_no || ""} ${order.customer_name || ""} ${order.phone || ""} ${order.school || ""} ${orderCampusName(order)} ${order.building || ""} ${order.address || ""}`));
+  return normalRecords.concat(retryRecords).sort(comparePickupRecords);
 }
 
 function filteredCourierReturnRecords(tasks = courierReturnTaskRows) {
@@ -3753,13 +4196,15 @@ function renderCourierRouteCockpit(pendingPickups, pendingReturns, processedPick
   const percent = total ? Math.round((completed / total) * 100) : 100;
   const activeIndex = activeArea ? areas.findIndex((area) => area.key === activeArea.key) : -1;
   const nextArea = activeIndex >= 0 ? areas[activeIndex + 1] : null;
+  const retryCount = pendingPickups.filter((record) => record.isRetry).length;
   return `<section class="pickup-cockpit courier-route-cockpit ${pending ? "" : "complete"}">
     <div class="pickup-cockpit-head">
       <div><span class="pickup-eyebrow">当前楼栋</span><strong>${activeArea ? escapeHtml(pickupAreaLabel(activeArea)) : "今日路线已完成"}</strong></div>
       <span class="pickup-current-count">${activeArea ? escapeHtml(courierRouteBuildingCounts(activeArea)) : "全部完成"}</span>
     </div>
     <div class="courier-route-stats">
-      <div><strong>${pendingPickups.length}</strong><span>待取件</span></div>
+      <div><strong>${pendingPickups.length}</strong><span>全部待取</span></div>
+      <div><strong>${retryCount}</strong><span>其中补取</span></div>
       <div><strong>${pendingReturns.length}</strong><span>待送回</span></div>
       <div><strong>${completed}</strong><span>今日已完成</span></div>
     </div>
@@ -3815,7 +4260,7 @@ function renderCourierReturnCard(group, processed = false) {
         <div class="courier-return-item-main"><strong>${escapeHtml(item.barcode || "无条码")}</strong><span>${washDecisionIsReturn(item) ? '<b class="wash-return-tag">退洗</b>' : ""}${escapeHtml(item.spec || item.product_name || "物品未填写")}</span><em>${escapeHtml(itemBusy ? "提交中…" : task.status || "待送回")}</em></div>
         <div class="courier-return-item-actions">
           <a class="button-link ghost" href="${smsComposeHref(order.phone || "", sms)}">编辑短信</a>
-          ${finished ? "" : `<button type="button" data-return="${escapeHtml(task.id)}" data-item="${escapeHtml(item.id)}" data-order="${escapeHtml(order.id)}" data-status="已送达" ${itemBusy || groupBusy ? "disabled" : ""}>确认送达</button><button class="ghost danger" type="button" data-return="${escapeHtml(task.id)}" data-item="${escapeHtml(item.id)}" data-order="${escapeHtml(order.id)}" data-status="异常" ${itemBusy || groupBusy ? "disabled" : ""}>异常</button>`}
+          ${finished ? "" : `<button type="button" data-return="${escapeHtml(task.id)}" data-item="${escapeHtml(item.id)}" data-order="${escapeHtml(order.id)}" data-status="已送达" ${itemBusy || groupBusy ? "disabled" : ""}>确认送达</button><button class="ghost danger" type="button" data-report-return-exception="${escapeHtml(task.id)}" data-item="${escapeHtml(item.id)}" data-order="${escapeHtml(order.id)}" ${itemBusy || groupBusy ? "disabled" : ""}>上报异常</button>`}
         </div>
       </li>`;
     }).join("")}</ul>
@@ -3878,14 +4323,16 @@ function renderCourierRouteTasks() {
   const target = $("courierRouteTaskList");
   if (!target) return;
   const pickupRecords = filteredCourierPickupRecords();
-  const pendingPickups = pickupRecords.filter((record) => record.task.status === "待取件");
-  const processedPickups = pickupRecords.filter((record) => record.task.status !== "待取件");
+  const pendingPickups = pickupRecords.filter((record) => courierPickupRecordOpen(record) && courierPickupRecordDue(record));
+  const futurePickups = pickupRecords.filter((record) => courierPickupRecordOpen(record) && !courierPickupRecordDue(record));
+  const selectedDate = selectedCourierPickupDate();
+  const activityDate = selectedDate || todayDate();
+  const hasSearch = Boolean(text($("courierSearch")?.value));
+  const processedPickups = pickupRecords.filter((record) => !courierPickupRecordOpen(record) && (hasSearch || courierPickupRecordFinishedOnDate(record, activityDate)));
   const returnRecords = filteredCourierReturnRecords();
   courierReturnOrderGroups = aggregateCourierReturnOrders(returnRecords);
   const pendingReturns = courierReturnOrderGroups.filter(courierReturnGroupHasPending);
-  const selectedDate = selectedCourierPickupDate();
-  const hasSearch = Boolean(text($("courierSearch")?.value));
-  const processedReturns = courierReturnOrderGroups.filter((group) => !courierReturnGroupHasPending(group) && (hasSearch || courierReturnGroupFinishedOnDate(group, selectedDate)));
+  const processedReturns = courierReturnOrderGroups.filter((group) => !courierReturnGroupHasPending(group) && (hasSearch || courierReturnGroupFinishedOnDate(group, activityDate)));
   const availableKeys = new Set(pendingReturns.map((group) => group.key));
   [...courierSelectedReturnOrders].forEach((key) => {
     if (!availableKeys.has(key)) courierSelectedReturnOrders.delete(key);
@@ -3894,15 +4341,16 @@ function renderCourierRouteTasks() {
   const pendingAreas = buildCourierRouteAreas(pendingPickups, pendingReturns);
   const processedAreas = buildCourierRouteAreas(processedPickups, processedReturns);
   const activeArea = ensureCourierActivePickupArea(pendingAreas);
-  const hasAnyTask = pickupRecords.length || pendingReturns.length || processedReturns.length;
+  const hasAnyTask = pendingPickups.length || futurePickups.length || processedPickups.length || pendingReturns.length || processedReturns.length;
   if (!hasAnyTask) {
-    target.innerHTML = `<p class="hint">${escapeHtml(selectedDate)} 暂无取件或送回任务</p>`;
+    target.innerHTML = `<p class="hint">当前没有未完成取件或送回任务${selectedDate ? `，${escapeHtml(selectedDate)} 也没有处理记录` : ""}。</p>`;
     return;
   }
   const completed = processedPickups.length + processedReturns.length;
   target.innerHTML = `
     ${renderCourierRouteCockpit(pendingPickups, pendingReturns, processedPickups, processedReturns, pendingAreas, activeArea)}
-    <div class="courier-route-list">${pendingAreas.length ? renderCourierRouteTree(pendingAreas) : '<p class="success-note">当前筛选范围内没有待处理任务。</p>'}</div>
+    <div class="courier-route-list">${pendingAreas.length ? renderCourierRouteTree(pendingAreas) : '<p class="success-note">当前没有到期的未完成任务。</p>'}</div>
+    ${futurePickups.length ? `<details class="pickup-processed courier-future-pickups"><summary><strong>未来预约</strong><span>${futurePickups.length} 项</span></summary><div class="pickup-processed-body">${buildCourierRouteAreas(futurePickups, []).map((area) => `<p><strong>${escapeHtml(pickupAreaLabel(area))}</strong> · ${area.pickups.length} 项</p>`).join("")}</div></details>` : ""}
     ${completed ? `<details class="pickup-processed courier-route-processed" ${pendingAreas.length ? "" : "open"}>
       <summary><strong>已处理</strong><span>${completed} 项任务</span></summary>
       <div class="pickup-processed-body">${renderCourierRouteTree(processedAreas, true)}</div>
@@ -4011,7 +4459,7 @@ async function updatePickup(taskId, orderId, status) {
   renderCourierRouteTasks();
   const results = await Promise.all([
     sb.from("pickup_tasks").update({ status, exception_note: note, operator_id: currentProfile?.id || null, updated_at: now }).eq("id", taskId),
-    sb.from("order_items").update({ item_status: status, updated_at: now }).eq("order_id", orderId),
+    sb.from("order_items").update({ item_status: status, updated_at: now }).eq("order_id", orderId).in("item_status", [...PICKUP_OPEN_STATUSES]),
     note ? sb.from("orders").update({ exception_note: note, updated_at: now }).eq("id", orderId) : Promise.resolve({ error: null }),
   ]);
   const failure = results.find((result) => result.error)?.error;
@@ -4023,6 +4471,54 @@ async function updatePickup(taskId, orderId, status) {
   await insertLog({ orderId, status, note });
   courierPickupBusyTaskId = "";
   courierPickupScrollToNext = true;
+  await loadCourierTasks();
+}
+
+async function updateRetryPickup(taskId, itemId, orderId, status) {
+  if (courierPickupBusyTaskId) return;
+  const note = status === "未找到" ? prompt("请输入未找到原因", "补取未找到") : "";
+  if (status === "未找到" && note === null) return;
+  const now = new Date().toISOString();
+  courierPickupBusyTaskId = taskId;
+  renderCourierRouteTasks();
+  const itemStatus = status === "已补取" ? "已取件" : "待补取";
+  const retryUpdate = { status, operator_id: currentProfile?.id || null, updated_at: now };
+  if (text(note)) retryUpdate.reason = text(note);
+  const results = await Promise.all([
+    sb.from("pickup_retry_tasks").update(retryUpdate).eq("id", taskId),
+    sb.from("order_items").update({ item_status: itemStatus, updated_at: now }).eq("id", itemId),
+  ]);
+  const failure = results.find((result) => result.error)?.error;
+  if (failure) {
+    courierPickupBusyTaskId = "";
+    renderCourierRouteTasks();
+    return alert(failure.message);
+  }
+  await insertLog({ orderId, itemId, status, note: text(note) || "单个水洗标补取完成" });
+  courierPickupBusyTaskId = "";
+  courierPickupScrollToNext = true;
+  await loadCourierTasks();
+}
+
+async function rescheduleRetryPickup(taskId) {
+  const task = courierRetryTaskRows.find((row) => row.id === taskId);
+  if (!task || courierPickupBusyTaskId) return;
+  const pickupDate = prompt("新的补取日期（YYYY-MM-DD）", task.pickup_date || todayDate());
+  if (pickupDate === null) return;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text(pickupDate))) return alert("补取日期格式不正确");
+  const reason = prompt("改约备注", task.reason || "客户改约补取");
+  if (reason === null) return;
+  courierPickupBusyTaskId = taskId;
+  renderCourierRouteTasks();
+  const { error } = await sb.from("pickup_retry_tasks").update({ pickup_date: pickupDate, status: "待补取", reason: text(reason), operator_id: currentProfile?.id || null, updated_at: new Date().toISOString() }).eq("id", taskId);
+  courierPickupBusyTaskId = "";
+  if (error) {
+    renderCourierRouteTasks();
+    return alert(error.message);
+  }
+  const item = relationOne(task.order_items);
+  const order = relationOne(item.orders);
+  await insertLog({ orderId: order.id, itemId: item.id, barcode: item.barcode, status: "补取改约", note: `${pickupDate}；${text(reason)}` });
   await loadCourierTasks();
 }
 
@@ -4080,7 +4576,7 @@ function renderFactoryPendingItems() {
     const decisionTag = item.wash_decision && item.wash_decision !== WASH_DECISION_NORMAL
       ? `<p class="factory-wash-decision ${escapeHtml(item.wash_decision)}">${escapeHtml(washDecisionLabel(item))}${numberValue(item.price_adjustment_amount) > 0 ? ` · ¥${escapeHtml(numberValue(item.price_adjustment_amount))}` : ""}</p>`
       : "";
-    return `<article class="task-card compact"><div class="card-head"><h3>${escapeHtml(item.barcode)}</h3><span>${escapeHtml(item.item_status)}</span></div><p>${escapeHtml(order.customer_name || "")} · ${escapeHtml(order.phone || "")}</p><p>${escapeHtml(`${order.school || ""}${orderCampusName(order)}${order.building || ""}`)}</p><p>${escapeHtml(item.spec || item.product_name || "")}</p>${decisionTag}</article>`;
+    return `<article class="task-card compact"><div class="card-head"><h3>${escapeHtml(item.barcode)}</h3><span>${escapeHtml(item.item_status)}</span></div><p>${escapeHtml(order.customer_name || "")} · ${escapeHtml(order.phone || "")}</p><p>${escapeHtml(`${order.school || ""}${orderCampusName(order)}${order.building || ""}`)}</p><p>${escapeHtml(item.spec || item.product_name || "")}</p>${decisionTag}<div class="actions factory-item-actions"><button class="ghost danger" type="button" data-report-exception="${escapeHtml(item.id)}">上报异常</button></div></article>`;
   }).join("") || '<p class="hint">当前筛选下暂无待处理物品</p>';
 }
 
@@ -5515,12 +6011,37 @@ function bindEvents() {
   document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => switchView(tab.dataset.view)));
   document.querySelectorAll(".subtab").forEach((tab) => tab.addEventListener("click", () => switchAdminSection(tab.dataset.adminSection)));
   document.addEventListener("click", (event) => {
+    const newExceptionTicketBtn = event.target.closest("[data-new-exception-ticket]");
+    if (newExceptionTicketBtn) openExceptionTicketDialog();
+    const reportExceptionBtn = event.target.closest("[data-report-exception]");
+    if (reportExceptionBtn) openExceptionTicketDialog(factoryItemRows.find((item) => item.id === reportExceptionBtn.dataset.reportException) || null);
+    const pickupExceptionBtn = event.target.closest("[data-report-pickup-exception]");
+    if (pickupExceptionBtn) openCourierPickupException(pickupExceptionBtn.dataset.reportPickupException);
+    const returnExceptionBtn = event.target.closest("[data-report-return-exception]");
+    if (returnExceptionBtn) openCourierReturnException(returnExceptionBtn.dataset.reportReturnException, returnExceptionBtn.dataset.item, returnExceptionBtn.dataset.order);
+    if (event.target.closest("[data-submit-exception-ticket]")) submitExceptionTicket();
+    if (event.target.closest("[data-close-exception-ticket]")) {
+      exceptionTicketContext = null;
+      $("exceptionTicketDialog")?.close();
+    }
+    const exceptionStatusBtn = event.target.closest("[data-exception-status]");
+    if (exceptionStatusBtn) updateExceptionTicketStatus(exceptionStatusBtn.dataset.exceptionStatus, exceptionStatusBtn.dataset.status);
+    const copyExceptionBtn = event.target.closest("[data-copy-exception-message]");
+    if (copyExceptionBtn) copyExceptionCustomerMessage(copyExceptionBtn.dataset.copyExceptionMessage);
+    const scheduleRetryBtn = event.target.closest("[data-schedule-retry-item]");
+    if (scheduleRetryBtn) scheduleRetryPickupFromUi(scheduleRetryBtn.dataset.scheduleRetryItem, scheduleRetryBtn.dataset.retryOrder, scheduleRetryBtn.dataset.retryTicket || null);
+    const exceptionEvidenceBtn = event.target.closest("[data-full-image]");
+    if (exceptionEvidenceBtn) window.open(exceptionEvidenceBtn.dataset.fullImage, "_blank", "noopener,noreferrer");
     const dashboardTarget = event.target.closest("[data-dashboard-target]");
     if (dashboardTarget) openDashboardTarget(dashboardTarget.dataset.dashboardTarget);
     const clearDashboardBtn = event.target.closest("[data-clear-dashboard-filter]");
     if (clearDashboardBtn) clearDashboardFilter(clearDashboardBtn.dataset.clearDashboardFilter);
     const pickupBtn = event.target.closest("[data-pickup]");
     if (pickupBtn) updatePickup(pickupBtn.dataset.pickup, pickupBtn.dataset.order, pickupBtn.dataset.status);
+    const retryPickupBtn = event.target.closest("[data-retry-pickup]");
+    if (retryPickupBtn) updateRetryPickup(retryPickupBtn.dataset.retryPickup, retryPickupBtn.dataset.item, retryPickupBtn.dataset.order, retryPickupBtn.dataset.status);
+    const rescheduleRetryBtn = event.target.closest("[data-reschedule-retry]");
+    if (rescheduleRetryBtn) rescheduleRetryPickup(rescheduleRetryBtn.dataset.rescheduleRetry);
     const pickupAreaBtn = event.target.closest("[data-select-pickup-area]");
     if (pickupAreaBtn) {
       event.preventDefault();
@@ -5575,6 +6096,14 @@ function bindEvents() {
     if (image) window.open(image.dataset.fullImage, "_blank", "noopener,noreferrer");
   });
   document.addEventListener("change", (event) => {
+    if (event.target.matches("#exceptionTicketItemSelect")) {
+      const option = event.target.selectedOptions?.[0];
+      if ($("exceptionTicketItemId")) $("exceptionTicketItemId").value = event.target.value || "";
+      if ($("exceptionTicketBarcode")) $("exceptionTicketBarcode").value = option?.dataset.barcode || "";
+    }
+    if (event.target.matches("#exceptionTicketType") && exceptionTicketContext?.type === "courier-pickup") {
+      $("exceptionTicketRetryDateField")?.classList.toggle("hidden", event.target.value !== "漏取/补取");
+    }
     const labelCheckbox = event.target.closest("[data-label-checkbox]");
     if (labelCheckbox) {
       if (labelCheckbox.checked) labelSelectedItems.add(labelCheckbox.dataset.labelCheckbox);

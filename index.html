@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#f26a1b" />
     <title>事事通校园配送系统</title>
     <link rel="manifest" href="./manifest.webmanifest" />
-    <link rel="stylesheet" href="./styles.css?v=57" />
+    <link rel="stylesheet" href="./styles.css?v=59" />
     <script src="./vendor/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   </head>
@@ -16,7 +16,7 @@
         <div class="brand-mark">事</div>
         <div>
           <h1>事事通校园配送系统</h1>
-          <p>后台导入、异常修正、水洗标、取送履约</p>
+          <p>后台导入、异常工单、水洗标、取送履约</p>
         </div>
       </div>
       <div class="session-actions">
@@ -67,7 +67,7 @@
           <nav class="subtabs" aria-label="后台功能">
             <button class="subtab active" data-admin-section="overview" type="button">概览</button>
             <button class="subtab" data-admin-section="orders" type="button">订单管理</button>
-            <button class="subtab" data-admin-section="exceptions" type="button">异常修正</button>
+            <button class="subtab" data-admin-section="exceptions" type="button">异常工单<span id="exceptionTabBadge" class="nav-alert-badge hidden" aria-label="0 个待处理异常">0</span></button>
             <button class="subtab" data-admin-section="batches" type="button">批次管理</button>
             <button class="subtab" data-admin-section="rules" type="button">规则维护</button>
             <button class="subtab" data-admin-section="labels" type="button">水洗标</button>
@@ -85,9 +85,9 @@
             </div>
             <div class="dashboard-grid" aria-label="待办驾驶舱">
               <button class="dashboard-card" type="button" data-dashboard-target="pickup-today">
-                <span>今日待取件</span>
+                <span>全部未完成取件</span>
                 <strong id="dashPickupToday">0</strong>
-                <small>查看今天尚未完成的取件任务</small>
+                <small>包含逾期取件和单个水洗标补取</small>
               </button>
               <button class="dashboard-card" type="button" data-dashboard-target="pending-in">
                 <span>待入库</span>
@@ -105,9 +105,9 @@
                 <small>已出库、等待配送员送回</small>
               </button>
               <button class="dashboard-card alert-card" type="button" data-dashboard-target="exceptions">
-                <span>异常订单</span>
+                <span>待处理异常</span>
                 <strong id="dashExceptions">0</strong>
-                <small>地址未识别、未找到或状态异常</small>
+                <small>异常工单、地址待确认或未找到</small>
               </button>
               <button class="dashboard-card alert-card" type="button" data-dashboard-target="overdue">
                 <span>超时订单</span>
@@ -386,6 +386,6 @@
       <div id="orderDialogBody" class="stack"></div>
     </dialog>
 
-    <script src="./app.js?v=57"></script>
+    <script src="./app.js?v=59"></script>
   </body>
 </html>
