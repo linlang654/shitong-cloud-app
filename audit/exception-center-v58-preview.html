@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>异常工单中心预览</title>
+    <link rel="stylesheet" href="../styles.css?v=58" />
+  </head>
+  <body class="has-access">
+    <header class="topbar"><div class="brand"><div class="brand-mark">事</div><div><h1>事事通校园配送系统</h1><p>后台导入、异常工单、水洗标、取送履约</p></div></div><span>管理员</span></header>
+    <main class="layout"><section class="workspace">
+      <nav class="subtabs" aria-label="后台功能">
+        <button class="subtab" type="button">概览</button><button class="subtab" type="button">订单管理</button>
+        <button class="subtab active" type="button">异常工单<span class="nav-alert-badge">3</span></button>
+        <button class="subtab" type="button">批次管理</button><button class="subtab" type="button">规则维护</button><button class="subtab" type="button">水洗标</button><button class="subtab" type="button">每日对账</button><button class="subtab" type="button">系统设置</button>
+      </nav>
+      <section class="panel exception-center">
+        <div class="exception-heading"><div><p class="eyebrow">统一处理入口</p><h2>异常工单中心</h2><p class="hint">工厂上报、客服沟通、处理结论和原地址修正都集中在这里；微信只作为通知渠道。</p></div><div class="toolbar wrap"><button type="button" id="previewNewTicket">新建异常工单</button><button class="ghost" type="button">重新识别地址</button></div></div>
+        <div class="mini-stats exception-stats"><div class="danger-stat"><strong>3</strong><span>全部待处理</span></div><div><strong>1</strong><span>待客服</span></div><div><strong>1</strong><span>待客户</span></div><div><strong>1</strong><span>处理中</span></div><div><strong>0</strong><span>地址/历史异常</span></div></div>
+        <section class="exception-worklist"><div class="section-heading compact-heading"><div><h3>处理中工单</h3><p class="hint">按提交时间排列，红色“紧急”优先处理。</p></div><strong>3 单</strong></div>
+          <div class="card-list">
+            <article class="task-card exception-ticket-card urgent"><div class="card-head"><div><h3>材质风险<span class="urgent-label">紧急</span></h3><p class="hint">张同学 · 155****7072 · 260829001</p></div><span class="ticket-status danger">待客服</span></div><p class="exception-ticket-description">前后 logo 存在脱落风险，需要清洗前联系客户确认。</p><div class="exception-ticket-meta"><span>订单 26082910001</span><span>薄款外套1件</span><span>08-29 09:22</span></div><p><strong>建议方案：</strong>客户确认风险后继续清洗</p><div class="actions exception-ticket-actions"><button class="ghost">复制客户沟通内容</button><button class="ghost">标记待客户</button><button class="ghost">开始处理</button><button>处理完成</button></div></article>
+            <article class="task-card exception-ticket-card"><div class="card-head"><div><h3>返洗</h3><p class="hint">李同学 · 188****2209 · 260829002</p></div><span class="ticket-status warning">待客户</span></div><p class="exception-ticket-description">绒面鞋清洗后局部仍有明显污渍，工厂建议返洗。</p><div class="exception-ticket-meta"><span>订单 26082910002</span><span>绒面鞋1双</span><span>08-29 09:40</span></div><div class="actions exception-ticket-actions"><button class="ghost">复制客户沟通内容</button><button class="ghost">标记待客户</button><button class="ghost">开始处理</button><button>处理完成</button></div></article>
+            <article class="task-card exception-ticket-card"><div class="card-head"><div><h3>受潮</h3><p class="hint">王同学 · 136****3120 · 260829003</p></div><span class="ticket-status processing">处理中</span></div><p class="exception-ticket-description">物品送厂时仍然潮湿，已经单独隔离，等待负责人处理。</p><div class="exception-ticket-meta"><span>订单 26082910003</span><span>普通鞋1双</span><span>08-29 10:06</span></div><div class="actions exception-ticket-actions"><button class="ghost">复制客户沟通内容</button><button class="ghost">标记待客户</button><button class="ghost">开始处理</button><button>处理完成</button></div></article>
+          </div>
+        </section>
+        <details class="exception-legacy-section"><summary><span><strong>地址确认与历史异常</strong><small>保留原“异常修正”全部能力</small></span><b>0</b></summary></details>
+      </section>
+    </section></main>
+    <dialog id="previewDialog" class="exception-ticket-dialog"><form method="dialog" class="exception-ticket-form"><div class="dialog-heading"><div><p class="eyebrow">绑定到单个水洗标</p><h2>上报异常工单</h2></div><button class="ghost small-btn">关闭</button></div><label class="field-group"><span>水洗标</span><input class="input" value="260829001" /></label><div class="exception-form-grid"><label class="field-group"><span>异常类型</span><select class="input"><option>原有破损</option></select></label><label class="field-group"><span>优先级</span><select class="input"><option>普通</option><option>紧急</option></select></label></div><label class="field-group"><span>问题说明</span><textarea class="input" rows="3" placeholder="填写问题说明"></textarea></label><label class="field-group"><span>建议处理方案</span><input class="input" placeholder="填写建议方案" /></label><label class="field-group"><span>异常照片（可多选）</span><input class="input" type="file" multiple /></label><div class="actions"><button>提交工单</button><button class="ghost">取消</button></div></form></dialog>
+    <script>document.getElementById('previewNewTicket').addEventListener('click',()=>document.getElementById('previewDialog').showModal());</script>
+  </body>
+</html>

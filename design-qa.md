@@ -49,6 +49,123 @@ final result: passed
 
 ---
 
+# 配送员地址常显 v62 设计 QA
+
+- Source visual truth: `C:\Users\111\AppData\Local\Temp\codex-clipboard-2d683523-0f14-415f-81f9-38c29958eb77.png`
+- Implementation screenshot: `C:\Users\111\Documents\New project\shitong-cloud-app\design-qa-courier-address-v62.png`
+- Comparison board: `C:\Users\111\Documents\New project\shitong-cloud-app\design-qa-courier-address-v62-comparison.png`
+- Viewport / CSS size: 430 × 900 px；deviceScaleFactor 1。
+- Source pixels: 552 × 554 px；implementation pixels: 430 × 900 px；对照板聚焦同一送回订单卡片并按可读宽度归一。
+- State: 同一订单含 2 个待送回水洗标，完整送达地址常显，订单操作按钮保持可见。
+
+## Full-view comparison evidence
+
+- 原卡片把完整地址放在“查看送达位置与订单号”的折叠区域；新版在客户信息和订单号下方直接显示“送达地址”。
+- 地址采用浅绿色信息条，与送回任务语义一致；长地址自动换行，没有挤压水洗标操作按钮。
+- 取件卡片同步使用橙色“取件地址”信息条，取送两种任务的核对位置一致。
+
+## Focused region comparison evidence
+
+- 对照板并排展示调整前后的同一订单卡片，可直接确认地址是否无需点击即可阅读。
+- 地址区域、两个水洗标的编辑短信/确认送达/上报异常，以及底部电话、图片、详情操作均在同一视区内可读。
+
+## Required fidelity surfaces
+
+- Fonts and typography: 沿用现有中文字体；地址标签 11 px 加粗，正文 12 px、1.45 行高，长地址完整换行。
+- Spacing and layout rhythm: 地址条与订单摘要、水洗标列表保持 5–6 px 紧凑间距，没有增加多余卡片层级。
+- Colors and visual tokens: 送回地址使用现有绿色语义，取件地址使用现有橙色语义，正文对比度清晰。
+- Image quality and asset fidelity: 本次不涉及图片或图标资产。
+- Copy and content: “送达地址 / 取件地址”直接说明用途；订单号保留在摘要或折叠详情中。
+
+## Findings
+
+- 无 P0/P1/P2 问题。
+- P3：极长地址会增加一到两行卡片高度，但保留完整信息比省略号更适合现场核对。
+
+## Primary interactions tested
+
+- 430 × 900 手机视口下地址常显并完整换行。
+- 两件水洗标的单件确认送达、编辑短信和异常入口未被遮挡。
+- 浏览器控制台无错误；JavaScript 语法检查与 Git 差异格式检查通过。
+
+final result: passed
+
+---
+
+# 工厂手机端紧凑作业台与订单查询 v60 设计 QA
+
+- Source visual truth: `C:\Users\111\.codex\generated_images\019f835a-addc-70d2-b292-e172812a6fc5\exec-8673540d-1d1f-451b-91bd-43218bea2d6c.png`
+- Implementation screenshot: `C:\Users\111\Documents\New project\shitong-cloud-app\design-qa-factory-mobile-v60.png`
+- Comparison board: `C:\Users\111\Documents\New project\shitong-cloud-app\design-qa-factory-mobile-v60-comparison.png`
+- Viewport / CSS size: 430 × 900 px；deviceScaleFactor 1。
+- Source pixels: 852 × 1846 px，按宽度归一为 430 × 932 px；implementation pixels: 430 × 900 px。
+- State: 已选择批量入库，本轮有 2 个待提交水洗标；订单查询底部面板打开并显示一个 3 件订单。
+
+## Full-view comparison evidence
+
+- 首屏沿用源图的“入库 / 出库—扫码输入—处理—当前批次”作业顺序，同时把状态统计压缩成一行，手机 430 px 宽度无横向溢出。
+- 订单查询使用底部面板，保留源图中的订单号/手机号/水洗标搜索、订单状态、物品状态、订单详情、查看图片和上报异常。
+- 实现保留正式业务需要的结算品类审核，但把批次明细限制在滚动区域内；今日清单和待处理物品均在首屏下方压缩为可展开摘要。
+
+## Focused region comparison evidence
+
+- 对比板将源图与同宽实现并排放置，可直接核对顶部作业模式、主输入、橙色处理按钮、底部查询面板、结果卡片与三个核心动作。
+- 订单查询结果使用真实多件订单状态，三个水洗标均完整显示；手机号在列表中脱敏，详情页仍按现有权限展示完整业务信息。
+
+## Required fidelity surfaces
+
+- Fonts and typography: 沿用现有系统中文字体；标题、条码、状态和辅助文字层级与源图一致，窄屏无异常换行。
+- Spacing and layout rhythm: 扫码首屏显著收紧，主按钮和输入仍满足手机触控；查询面板的卡片间距、圆角和底部安全区完整。
+- Colors and visual tokens: 入库绿色、出库蓝色、处理橙色、异常红色与现有项目语义一致。
+- Image quality and asset fidelity: 本次无新增图片资产；功能图标统一使用 Remix Icon，订单图片沿用正式上传资源。
+- Copy and content: 明确区分扫码枪、手动输入与按需开启手机摄像头；查询结果展示订单、路线、水洗标、物品和状态。
+
+## Findings
+
+- 无 P0/P1/P2 问题。
+- P3：源图把单条扫码成功做成独立大卡片；实现用现有反馈条和批次滚动列表承载，信息更紧凑，属于用户要求的有意取舍。
+
+## Primary interactions tested
+
+- 选择入库模式不会自动占用摄像头；“打开手机摄像头扫码”按需出现。
+- 两个水洗标可连续加入当前批次，未点击“确认整批入库”，未修改正式订单状态。
+- 订单号、水洗标和手机号查询链路可用；多件订单按条码显示全部物品状态。
+- 订单详情、查看图片、上报异常均可从查询结果进入；异常表单可选择单个水洗标，未提交真实工单。
+- 今日清单默认折叠并可展开；待处理物品继续使用原有折叠区。
+- 手机端和 1365 px 桌面端均无横向溢出；浏览器控制台无错误。
+- JavaScript 语法检查与 Git 差异格式检查通过。
+
+final result: passed
+
+---
+
+# 统一异常工单中心 v58 设计 QA
+
+- Source visual truth: `C:\Users\111\AppData\Local\Temp\codex-clipboard-66094c48-91f8-4923-b848-be5a3261a96c.png`
+- Courier entry screenshot: `C:\Users\111\Documents\New project\shitong-cloud-app\audit\01-courier-exception-entry.png`
+- Courier form screenshot: `C:\Users\111\Documents\New project\shitong-cloud-app\audit\02-courier-exception-form-viewport.png`
+- Admin center screenshot: `C:\Users\111\Documents\New project\shitong-cloud-app\audit\03-admin-exception-center.png`
+- Viewports: courier 390 × 844 px；admin 1440 × 900 px。
+
+## Full-flow evidence
+
+- 原“异常修正”已更名为“异常工单”，保持原导航样式并增加红色待处理数量气泡。
+- 配送员取件和送回均使用“上报异常”，上报对象绑定到单个水洗标；多件订单可先选择具体物品。
+- 上报异常不再覆盖取件或送回的正常流转状态，避免异常处理状态与物理履约状态互相污染。
+- 工厂端、配送员端和后台创建的工单集中在同一页面，显示来源、问题、照片、建议方案、客户沟通和处理结果。
+- 紧急工单优先排列；待客服、待客户、处理中和已结案分层，地址确认和历史异常保留在折叠区。
+
+## Findings
+
+- 无 P0/P1/P2 视觉或交互问题。
+- 手机端异常表单在 390 px 宽度完整显示，无横向溢出；主要按钮满足触控尺寸。
+- 控制台无错误；JavaScript 语法检查和现有自动测试通过。
+- 数据库迁移未执行前，统一工单会显示明确启用提示，原地址修正仍可使用。
+
+final result: passed
+
+---
+
 # 单个水洗标补差 / 退洗 v55 设计 QA
 
 - Source visual truth: `C:\Users\111\AppData\Local\Temp\codex-clipboard-b0acd930-835a-43e2-bb61-f93ee7ad006a.png`
@@ -128,5 +245,50 @@ final result: passed
 - 未点击“保存已选”，避免修改正式订单数据。
 - 每日对账已改为读取所选日期实际工厂扫码入库记录，页面显示当天实际入库单数与水洗标数。
 - JavaScript 语法检查、Git 差异格式检查通过；浏览器控制台无错误。
+
+final result: passed
+
+---
+
+# 工厂待处理概览 v61 设计 QA
+
+- Source visual truth: `C:\Users\111\AppData\Local\Temp\codex-clipboard-8ba0dcb8-5deb-47b0-8358-e9ea30782979.png`
+- Implementation screenshot: `C:\Users\111\Documents\New project\shitong-cloud-app\design-qa-factory-pending-v61.png`
+- Comparison board: `C:\Users\111\Documents\New project\shitong-cloud-app\design-qa-factory-pending-v61-comparison.png`
+- Viewport / CSS size: 430 × 900 px；comparison focused crop 430 × 300 px；deviceScaleFactor 1。
+- Source pixels: 527 × 428 px，按宽度归一为 430 × 349 px；implementation focused crop: 430 × 300 px。
+- State: 待处理区域展开，待入库 30 件、待出库 63 件，尚未选择作业类型。
+
+## Full-view comparison evidence
+
+- 旧版展开后立即显示搜索框、状态下拉和全部 93 件卡片；新版先显示待入库、待出库两个作业入口，不再加载整页明细。
+- 查询具体订单和刷新数量保留为独立操作；只有选择待入库或待出库后，才显示对应物品列表。
+- 区域高度由持续滚动的长列表压缩为单屏概览，工厂人员可先判断当前工作量再进入明细。
+
+## Focused region comparison evidence
+
+- 对比板在同宽手机画布中并排展示旧版与新版，可直接核对数量、入口层级、按钮尺寸和空状态。
+- 新版待入库使用绿色、待出库使用蓝色，与扫码作业模式保持一致；查询继续使用系统橙色主按钮。
+
+## Required fidelity surfaces
+
+- Fonts and typography: 数量、作业类型和辅助说明形成清晰三级层级，窄屏无文字溢出。
+- Spacing and layout rhythm: 两个作业入口等宽排列，查询与刷新同排；默认空状态替代长卡片列表。
+- Colors and visual tokens: 沿用现有绿色、蓝色、橙色业务语义和圆角边框。
+- Image quality and asset fidelity: 本次不涉及图片资产；搜索和刷新使用 Remix Icon。
+- Copy and content: 明确说明“选择作业后再显示明细”，并把单件查找统一引导到订单查询。
+
+## Findings
+
+- 无 P0/P1/P2 问题。
+- P3：极窄屏下“查询具体订单 / 水洗标”文字较长，但 430 px 常用手机宽度完整显示。
+
+## Primary interactions tested
+
+- 默认不渲染全部待处理卡片。
+- 点击待入库只筛选“已取件”；点击待出库筛选“已入厂、清洗中”。
+- 再次点击当前作业入口可收起明细。
+- 查询具体订单复用顶部订单查询面板。
+- JavaScript 语法检查与 Git 差异格式检查通过。
 
 final result: passed

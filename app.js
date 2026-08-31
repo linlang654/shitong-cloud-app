@@ -26,6 +26,8 @@ const ORDER_STATUSES = ["待取件", "待补取", "已取件", "未找到", "已
 const ITEM_STATUSES = ["待取件", "待补取", "已取件", "未找到", "已入厂", "清洗中", "已出库", "配送中", "已送达", "异常"];
 const ORDER_EDITABLE_STATUSES = ORDER_STATUSES.filter((status) => status !== "待补取");
 const ITEM_EDITABLE_STATUSES = ITEM_STATUSES.filter((status) => status !== "待补取");
+const FACTORY_IN_OVERRIDE_STATUSES = new Set(["待取件", "待补取", "已取件", "未找到", "异常"]);
+const FACTORY_OUT_OVERRIDE_STATUSES = new Set(["待取件", "待补取", "已取件", "未找到", "异常", "已入厂", "清洗中"]);
 const SETTLEMENT_UNCONFIRMED = "unconfirmed";
 const SETTLEMENT_OTHER = "other";
 const WASH_DECISION_NORMAL = "normal";
@@ -79,6 +81,7 @@ let torchEnabled = false;
 let scannerIsActive = false;
 let factoryScanMode = "";
 let factoryScanBusy = false;
+let factoryCameraExpanded = false;
 let factoryScanSuccessCount = 0;
 let factoryScanFailureCount = 0;
 let factoryLastSeenBarcode = "";
@@ -90,6 +93,9 @@ let factoryDailyOutboundGroups = [];
 let factoryDailyActiveTab = "out";
 let factoryItemRows = [];
 let factoryItemTotalCount = 0;
+let factoryPendingView = "";
+let factoryOrderSearchRows = [];
+let factoryOrderSearchBusy = false;
 const factorySelectedOutboundOrders = new Set();
 const factoryProcessedBarcodes = new Set();
 const factoryScanHistory = [];
@@ -4055,13 +4061,14 @@ function renderPickupCard(record, processed = false) {
   return `<article class="task-card pickup-task-card courier-route-card courier-pickup-card ${processedClass}" data-pickup-card="${escapeHtml(task.id)}" data-route-task-card="pickup-${escapeHtml(task.id)}" ${isBusy ? 'aria-busy="true"' : ""}>
     <div class="card-head"><h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3><span>${escapeHtml(isBusy ? "提交中…" : task.status)}</span></div>
     <p class="pickup-card-route">${isRetry ? `<b class="pickup-retry-tag">补取第 ${escapeHtml(task.attempt_no || 1)} 次</b>　${escapeHtml(task.pickup_date || "")}` : `本单 ${items.length} 件`}</p>
+    <div class="courier-card-address courier-pickup-address"><span>取件地址</span><p>${escapeHtml(order.address || "未填写完整地址")}</p></div>
     <ul class="courier-item-list pickup-label-list">${items.map((item) => `<li><strong>${escapeHtml(item.barcode || "无条码")}</strong><span>${escapeHtml(item.spec || item.product_name || "物品未填写")}</span><em>${escapeHtml(item.item_status || task.status)}</em></li>`).join("") || "<li><span>该订单尚未生成水洗标</span></li>"}</ul>
     ${order.exception_note ? `<p class="warn">备注：${escapeHtml(order.exception_note)}</p>` : ""}
     <div class="pickup-primary-tools">
       ${images.length ? `<button class="pickup-photo-button" type="button" data-preview-images="${escapeHtml(previewKey)}">看图片（${images.length}）</button>` : '<button class="ghost pickup-photo-button" type="button" disabled>暂无图片</button>'}
       <button class="ghost" type="button" data-detail="${escapeHtml(order.id)}">订单详情</button>
     </div>
-    <details class="pickup-card-detail"><summary>查看完整地址与订单号</summary><p>${escapeHtml(order.address || "未填写完整地址")}</p><p>订单号：${escapeHtml(order.order_no || "")}</p></details>
+    <details class="pickup-card-detail"><summary>查看订单号</summary><p>订单号：${escapeHtml(order.order_no || "")}</p></details>
     ${contactButtons(order.phone || "", sms)}
     ${processed ? "" : isRetry
       ? `<div class="actions pickup-status-actions"><button type="button" data-retry-pickup="${escapeHtml(task.id)}" data-item="${escapeHtml(items[0]?.id || "")}" data-order="${escapeHtml(order.id)}" data-status="已补取" ${isBusy ? "disabled" : ""}>补取完成</button><button class="ghost" type="button" data-retry-pickup="${escapeHtml(task.id)}" data-item="${escapeHtml(items[0]?.id || "")}" data-order="${escapeHtml(order.id)}" data-status="未找到" ${isBusy ? "disabled" : ""}>未找到</button><button class="ghost" type="button" data-reschedule-retry="${escapeHtml(task.id)}" ${isBusy ? "disabled" : ""}>改约</button><button class="ghost danger" type="button" data-report-pickup-exception="${escapeHtml(task.id)}" ${isBusy ? "disabled" : ""}>上报异常</button></div>`
@@ -4252,6 +4259,7 @@ function renderCourierReturnCard(group, processed = false) {
     ${processed || !pendingRecords.length ? "" : `<label class="courier-order-select"><input type="checkbox" data-courier-return-order="${escapeHtml(group.key)}" ${selected ? "checked" : ""} /><span>选择本单待送物品</span></label>`}
     <div class="card-head"><h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3><span>${escapeHtml(groupBusy ? "提交中…" : cardStatus)}</span></div>
     <p class="courier-card-summary">本单 ${records.length} 件｜订单号：${escapeHtml(order.order_no || "")}</p>
+    <div class="courier-card-address courier-return-address"><span>送达地址</span><p>${escapeHtml(order.address || "未填写完整地址")}</p></div>
     <ul class="courier-item-list courier-return-item-list">${records.map(({ task, item }) => {
       const itemBusy = courierReturnBusyTaskId === task.id;
       const finished = COURIER_RETURN_FINISHED_STATUSES.has(task.status);
@@ -4264,7 +4272,6 @@ function renderCourierReturnCard(group, processed = false) {
         </div>
       </li>`;
     }).join("")}</ul>
-    <details class="pickup-card-detail"><summary>查看送达位置与订单号</summary><p>${escapeHtml(`${order.school || ""}｜${orderCampusName(order)}｜${order.building || ""}`)}</p><p>${escapeHtml(order.address || "未填写完整地址")}</p><p>订单号：${escapeHtml(order.order_no || "")}</p></details>
     <div class="actions courier-card-secondary-actions"><a class="button-link" href="tel:${escapeHtml(order.phone || "")}">打电话</a>${imageBtn}<button class="ghost" type="button" data-detail="${escapeHtml(order.id)}">详情</button></div>
   </article>`;
 }
@@ -4556,19 +4563,26 @@ async function updateReturn(taskId, itemId, orderId, status) {
 }
 
 function renderFactoryPendingItems() {
-  const keyword = text($("factoryItemSearch")?.value).toLowerCase();
-  const statusFilter = text($("factoryItemStatusFilter")?.value);
+  const pendingIn = factoryItemRows.filter((item) => item.item_status === "已取件").length;
+  const pendingOut = factoryItemRows.filter((item) => ["已入厂", "清洗中"].includes(item.item_status)).length;
   const rows = factoryItemRows.filter((item) => {
-    if (statusFilter && item.item_status !== statusFilter) return false;
-    const order = Array.isArray(item.orders) ? item.orders[0] || {} : item.orders || {};
-    const searchable = `${item.barcode || ""} ${item.product_name || ""} ${item.spec || ""} ${order.order_no || ""} ${order.customer_name || ""} ${order.phone || ""} ${order.school || ""} ${orderCampusName(order)} ${order.building || ""}`.toLowerCase();
-    return !keyword || searchable.includes(keyword);
+    if (factoryPendingView === "pending-in") return item.item_status === "已取件";
+    if (factoryPendingView === "pending-out") return ["已入厂", "清洗中"].includes(item.item_status);
+    return false;
   });
+  document.querySelectorAll("[data-factory-pending-view]").forEach((button) => {
+    const active = button.dataset.factoryPendingView === factoryPendingView;
+    button.setAttribute("aria-pressed", String(active));
+    button.classList.toggle("active", active);
+  });
+  if ($("factoryPendingInQuickCount")) $("factoryPendingInQuickCount").textContent = `${pendingIn} 件`;
+  if ($("factoryPendingOutQuickCount")) $("factoryPendingOutQuickCount").textContent = `${pendingOut} 件`;
+  if ($("factoryPendingOverviewCount")) $("factoryPendingOverviewCount").textContent = `入 ${pendingIn} / 出 ${pendingOut}`;
   if ($("factoryPendingOverviewHint")) {
-    const pendingIn = factoryItemRows.filter((item) => item.item_status === "已取件").length;
-    const pendingOut = factoryItemRows.filter((item) => ["已入厂", "清洗中"].includes(item.item_status)).length;
     const loadedNote = factoryItemTotalCount > factoryItemRows.length ? `，当前加载最近 ${factoryItemRows.length} 件` : "";
-    $("factoryPendingOverviewHint").textContent = `待入库 ${pendingIn} 件 · 待出库 ${pendingOut} 件；当前筛选显示 ${rows.length} 件${loadedNote}`;
+    $("factoryPendingOverviewHint").textContent = factoryPendingView
+      ? `${factoryPendingView === "pending-in" ? "待入库" : "待出库"}共 ${rows.length} 件${loadedNote}`
+      : "选择上方“待入库”或“待出库”后再显示明细；查单请使用订单查询。";
   }
   if (!$("factoryItemList")) return;
   $("factoryItemList").innerHTML = rows.map((item) => {
@@ -4577,7 +4591,14 @@ function renderFactoryPendingItems() {
       ? `<p class="factory-wash-decision ${escapeHtml(item.wash_decision)}">${escapeHtml(washDecisionLabel(item))}${numberValue(item.price_adjustment_amount) > 0 ? ` · ¥${escapeHtml(numberValue(item.price_adjustment_amount))}` : ""}</p>`
       : "";
     return `<article class="task-card compact"><div class="card-head"><h3>${escapeHtml(item.barcode)}</h3><span>${escapeHtml(item.item_status)}</span></div><p>${escapeHtml(order.customer_name || "")} · ${escapeHtml(order.phone || "")}</p><p>${escapeHtml(`${order.school || ""}${orderCampusName(order)}${order.building || ""}`)}</p><p>${escapeHtml(item.spec || item.product_name || "")}</p>${decisionTag}<div class="actions factory-item-actions"><button class="ghost danger" type="button" data-report-exception="${escapeHtml(item.id)}">上报异常</button></div></article>`;
-  }).join("") || '<p class="hint">当前筛选下暂无待处理物品</p>';
+  }).join("") || `<p class="factory-pending-empty">${factoryPendingView ? "当前作业类型暂无待处理物品" : "暂不展示全部物品，避免列表过长。"}</p>`;
+}
+
+function selectFactoryPendingView(view) {
+  const nextView = ["pending-in", "pending-out"].includes(view) ? view : "";
+  factoryPendingView = factoryPendingView === nextView ? "" : nextView;
+  if ($("factoryPendingPanel")) $("factoryPendingPanel").open = true;
+  renderFactoryPendingItems();
 }
 
 async function loadFactoryItems() {
@@ -4593,23 +4614,144 @@ async function loadFactoryItems() {
   if (error) return setMessage("factoryItemList", error.message, "warn");
   let rows = data || [];
   let activeLabel = "";
-  let queueTitle = "待处理物品";
+  let queueTitle = "待处理概览";
   if (factoryDashboardFilter === "pending-in") {
     rows = rows.filter((item) => item.item_status === "已取件");
     activeLabel = "驾驶舱筛选：待入库";
     queueTitle = "待入库物品";
+    factoryPendingView = "pending-in";
   } else if (factoryDashboardFilter === "pending-out") {
     rows = rows.filter((item) => ["已入厂", "清洗中"].includes(item.item_status));
     activeLabel = "驾驶舱筛选：待出库";
     queueTitle = "待出库物品";
+    factoryPendingView = "pending-out";
   }
   renderActiveFilter("factoryActiveFilter", activeLabel, "factory");
   if ($("factoryQueueTitle")) $("factoryQueueTitle").textContent = queueTitle;
   factoryItemRows = rows;
   factoryItemTotalCount = count ?? rows.length;
-  if ($("factoryPendingOverviewCount")) $("factoryPendingOverviewCount").textContent = `${factoryItemTotalCount} 件`;
   if (factoryDashboardFilter && $("factoryPendingPanel")) $("factoryPendingPanel").open = true;
   renderFactoryPendingItems();
+}
+
+function factoryMaskedPhone(value) {
+  const phone = text(value);
+  if (phone.length < 7) return phone || "未留电话";
+  return `${phone.slice(0, 3)}****${phone.slice(-4)}`;
+}
+
+function factorySearchTerm(value) {
+  return text(value).replace(/[,()%'"]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function factorySearchOrderItems(order) {
+  return (Array.isArray(order?.order_items) ? order.order_items : [])
+    .slice()
+    .sort((left, right) => compareNaturalText(left.barcode || "", right.barcode || ""));
+}
+
+function renderFactoryOrderSearchResults() {
+  const target = $("factoryOrderSearchResults");
+  if (!target) return;
+  if (!factoryOrderSearchRows.length) {
+    target.innerHTML = '<p class="factory-search-empty">没有查到匹配订单，请核对订单号、手机号或水洗标。</p>';
+    return;
+  }
+  target.innerHTML = factoryOrderSearchRows.map((order) => {
+    const items = factorySearchOrderItems(order);
+    const images = collectOrderImages(order);
+    const previewKey = `factory-search-${order.id}`;
+    if (images.length) imagePreviewMap.set(previewKey, images);
+    const route = [order.school, orderCampusName(order), order.building].map(text).filter(Boolean).join(" · ") || "地址待确认";
+    return `<article class="factory-order-search-card" data-factory-search-order="${escapeHtml(order.id)}">
+      <div class="factory-order-search-card-head">
+        <div><h3>${escapeHtml(order.customer_name || "未填写姓名")} · ${escapeHtml(factoryMaskedPhone(order.phone))}</h3><p>${escapeHtml(route)}</p></div>
+        <div class="factory-order-search-tags"><span class="status-tag">${escapeHtml(order.order_status || "状态待更新")}</span><span class="count-tag">共${items.length}件</span></div>
+      </div>
+      <p class="factory-search-order-no">订单号　${escapeHtml(order.order_no || "—")}</p>
+      <div class="factory-search-item-list">${items.map((item) => `<div><strong>${escapeHtml(item.barcode || "未生成条码")}</strong><span>${escapeHtml(item.spec || item.product_name || "物品未填写")}</span><b>${escapeHtml(item.item_status || "状态待更新")}</b></div>`).join("") || '<p class="hint">订单暂无水洗标</p>'}</div>
+      <div class="factory-search-actions">
+        <button class="ghost" type="button" data-factory-search-detail="${escapeHtml(order.id)}">订单详情</button>
+        <button class="ghost image-action" type="button" ${images.length ? `data-factory-search-images="${escapeHtml(previewKey)}"` : "disabled"}>${images.length ? "查看图片" : "暂无图片"}</button>
+        <button class="ghost danger" type="button" data-factory-order-exception="${escapeHtml(order.id)}" ${items.length ? "" : "disabled"}>上报异常</button>
+      </div>
+    </article>`;
+  }).join("");
+}
+
+function openFactoryOrderSearchDialog() {
+  if (!currentUser) return alert("请先登录工厂账号");
+  const dialog = $("factoryOrderSearchDialog");
+  if (!dialog) return;
+  if (!dialog.open) dialog.showModal();
+  requestAnimationFrame(() => $("factoryOrderSearchInput")?.focus());
+}
+
+function closeFactoryOrderSearchDialog() {
+  if ($("factoryOrderSearchDialog")?.open) $("factoryOrderSearchDialog").close();
+}
+
+async function searchFactoryOrders() {
+  if (!currentUser || factoryOrderSearchBusy) return;
+  const keyword = factorySearchTerm($("factoryOrderSearchInput")?.value);
+  if (keyword.length < 2) {
+    setMessage("factoryOrderSearchMessage", "请至少输入2个字符。", "warn");
+    $("factoryOrderSearchInput")?.focus();
+    return;
+  }
+  factoryOrderSearchBusy = true;
+  if ($("factoryOrderSearchSubmitBtn")) {
+    $("factoryOrderSearchSubmitBtn").disabled = true;
+    $("factoryOrderSearchSubmitBtn").textContent = "查询中…";
+  }
+  setMessage("factoryOrderSearchMessage", "正在查询订单和水洗标…", "hint");
+  try {
+    const selectFields = "*, order_items(*)";
+    const [ordersResult, itemResult] = await Promise.all([
+      sb.from("orders")
+        .select(selectFields)
+        .or(`order_no.ilike.%${keyword}%,phone.ilike.%${keyword}%,customer_name.ilike.%${keyword}%,address.ilike.%${keyword}%`)
+        .order("created_at", { ascending: false })
+        .limit(20),
+      sb.from("order_items")
+        .select("order_id")
+        .or(`barcode.ilike.%${keyword}%,product_name.ilike.%${keyword}%,spec.ilike.%${keyword}%`)
+        .limit(50),
+    ]);
+    if (ordersResult.error) throw ordersResult.error;
+    if (itemResult.error) throw itemResult.error;
+    const merged = new Map((ordersResult.data || []).map((order) => [order.id, order]));
+    const missingOrderIds = [...new Set((itemResult.data || []).map((item) => item.order_id).filter(Boolean))]
+      .filter((orderId) => !merged.has(orderId));
+    if (missingOrderIds.length) {
+      const extraResult = await sb.from("orders").select(selectFields).in("id", missingOrderIds).limit(50);
+      if (extraResult.error) throw extraResult.error;
+      (extraResult.data || []).forEach((order) => merged.set(order.id, order));
+    }
+    factoryOrderSearchRows = [...merged.values()]
+      .sort((left, right) => parseDate(right.created_at) - parseDate(left.created_at))
+      .slice(0, 30);
+    renderFactoryOrderSearchResults();
+    setMessage("factoryOrderSearchMessage", factoryOrderSearchRows.length ? `查到 ${factoryOrderSearchRows.length} 个订单。` : "没有查到匹配订单。", factoryOrderSearchRows.length ? "success" : "hint");
+  } catch (error) {
+    factoryOrderSearchRows = [];
+    renderFactoryOrderSearchResults();
+    setMessage("factoryOrderSearchMessage", `查询失败：${error?.message || "请稍后重试"}`, "warn");
+  } finally {
+    factoryOrderSearchBusy = false;
+    if ($("factoryOrderSearchSubmitBtn")) {
+      $("factoryOrderSearchSubmitBtn").disabled = false;
+      $("factoryOrderSearchSubmitBtn").textContent = "查询";
+    }
+  }
+}
+
+function openFactoryOrderException(orderId) {
+  const order = factoryOrderSearchRows.find((row) => row.id === orderId);
+  const items = factorySearchOrderItems(order);
+  if (!order || !items.length) return alert("这单暂无可绑定的水洗标");
+  closeFactoryOrderSearchDialog();
+  openExceptionTicketDialog(items[0], { type: "factory-order-search", orderId, items });
 }
 
 function factoryTodayRange(dateText = todayDate()) {
@@ -4756,6 +4898,8 @@ function renderFactoryDailyLists() {
   if ($("factoryTodayOutCount")) $("factoryTodayOutCount").textContent = `${factoryDailyOutboundGroups.length} 单 / ${outboundItems} 件`;
   if ($("factoryTodayInTabCount")) $("factoryTodayInTabCount").textContent = `${inboundItems} 件`;
   if ($("factoryTodayOutTabCount")) $("factoryTodayOutTabCount").textContent = `${outboundItems} 件`;
+  if ($("factoryDailySummaryIn")) $("factoryDailySummaryIn").textContent = String(inboundItems);
+  if ($("factoryDailySummaryOut")) $("factoryDailySummaryOut").textContent = String(outboundItems);
   if ($("factoryTodayInList")) {
     $("factoryTodayInList").innerHTML = inboundGroups.length
       ? inboundGroups.map((group) => renderFactoryDailyOrder(group)).join("")
@@ -4768,6 +4912,16 @@ function renderFactoryDailyLists() {
   }
   updateFactoryOutboundSelectionUi();
   switchFactoryDailyTab(factoryDailyActiveTab);
+}
+
+function toggleFactoryDailyPanel(forceExpanded = null) {
+  const panel = document.querySelector(".factory-daily-panel");
+  const button = $("factoryDailyCollapseBtn");
+  if (!panel || !button) return;
+  const expanded = forceExpanded === null ? panel.classList.contains("is-collapsed") : Boolean(forceExpanded);
+  panel.classList.toggle("is-collapsed", !expanded);
+  button.setAttribute("aria-expanded", String(expanded));
+  button.textContent = expanded ? "收起" : "展开";
 }
 
 async function loadFactoryDailyScans() {
@@ -4841,7 +4995,7 @@ function updateFactoryScanModeUi() {
   if (modeStatus) {
     modeStatus.className = `scan-mode-status ${factoryScanMode === "factory_in" ? "in" : factoryScanMode === "factory_out" ? "out" : ""}`.trim();
     modeStatus.textContent = factoryScanMode
-      ? `当前模式：${factoryModeLabel()}。扫码只加入待提交批次，确认整批后才会${factoryScanMode === "factory_in" ? "入库" : "出库"}。`
+      ? `当前模式：${factoryModeLabel()}。扫码只加入待提交批次，确认整批后才会${factoryScanMode === "factory_in" ? "入库；配送员未点取件也可入库" : "出库；前序状态漏点也可直接出库"}。`
       : "请先选择本轮作业模式";
   }
   if ($("factoryScanCount")) $("factoryScanCount").textContent = `待提交 ${factoryScanQueue.length} 件`;
@@ -4849,7 +5003,13 @@ function updateFactoryScanModeUi() {
   if ($("factorySuccessCount")) $("factorySuccessCount").textContent = String(factoryScanSuccessCount);
   if ($("factoryFailureCount")) $("factoryFailureCount").textContent = String(factoryScanFailureCount);
   if ($("factoryPendingCount")) $("factoryPendingCount").textContent = String(factoryScanQueue.length);
-  $("factoryCameraPanel")?.classList.toggle("hidden", !factoryScanMode);
+  $("factoryCameraPanel")?.classList.toggle("hidden", !factoryScanMode || !factoryCameraExpanded);
+  if ($("factoryCameraToggleBtn")) {
+    $("factoryCameraToggleBtn").classList.toggle("hidden", !factoryScanMode);
+    $("factoryCameraToggleBtn").innerHTML = factoryCameraExpanded
+      ? '<i class="ri-camera-off-line" aria-hidden="true"></i><span>收起手机摄像头</span>'
+      : '<i class="ri-camera-line" aria-hidden="true"></i><span>打开手机摄像头扫码</span>';
+  }
   if ($("submitFactoryScanBatchBtn")) {
     const loadingCount = factoryScanQueue.filter((entry) => entry.loading).length;
     $("submitFactoryScanBatchBtn").disabled = !factoryScanMode || factoryScanQueue.length === 0 || factoryScanBusy || loadingCount > 0;
@@ -5361,12 +5521,13 @@ async function activateFactoryScanMode(mode) {
   renderFactoryScanQueue();
   updateFactoryScanModeUi();
   const batchNotice = factoryScanQueue.length ? ` 当前已有 ${factoryScanQueue.length} 件，将继续追加。` : "";
-  setFactoryScanFeedback(`${factoryModeLabel()}已就绪，正在打开二维码/条形码识别...${batchNotice}`, "processing");
-  if (!scannerIsActive) await startScanner();
+  setFactoryScanFeedback(`${factoryModeLabel()}已就绪，可用扫码枪、手动输入或打开手机摄像头。${batchNotice}`, "processing");
+  $("barcodeInput")?.focus();
 }
 
 function endFactoryScanSession() {
   stopScanner();
+  factoryCameraExpanded = false;
   updateFactoryScanModeUi();
   setFactoryScanFeedback(
     factoryScanQueue.length
@@ -5374,6 +5535,11 @@ function endFactoryScanSession() {
       : "摄像头已停止，当前没有待提交条码。",
     "idle",
   );
+}
+
+function toggleFactoryCamera() {
+  if (factoryCameraExpanded || scannerIsActive) endFactoryScanSession();
+  else startScanner();
 }
 
 async function startScanner() {
@@ -5389,6 +5555,8 @@ async function startScanner() {
     setFactoryScanFeedback("当前浏览器不能持续调用摄像头，请改用 Safari/Chrome，或点击“拍照识别”。", "error");
     return;
   }
+  factoryCameraExpanded = true;
+  updateFactoryScanModeUi();
   stopScanner();
   const session = scanSession;
   setFactoryScanFeedback("正在请求后置摄像头权限，支持二维码和条形码...", "processing");
@@ -5638,6 +5806,22 @@ function factoryScanFailure(barcode, message) {
   return false;
 }
 
+function factoryScanStatusCheck(scanType, itemStatus) {
+  const status = text(itemStatus);
+  if (scanType === "factory_in") {
+    if (status === "已入厂" || status === "清洗中") return { allowed: false, message: "已经入库，无需重复操作" };
+    if (["已出库", "配送中", "已送达"].includes(status)) return { allowed: false, message: `当前状态为“${status}”，不能倒退为入库` };
+    return FACTORY_IN_OVERRIDE_STATUSES.has(status)
+      ? { allowed: true, override: status !== "已取件" }
+      : { allowed: false, message: `当前状态为“${status || "未知"}”，无法确认能否入库` };
+  }
+  if (status === "已出库") return { allowed: false, message: "已经出库；如需贴纸，请在今日出库清单中勾选" };
+  if (["配送中", "已送达"].includes(status)) return { allowed: false, message: `当前状态为“${status}”，不能重复出库` };
+  return FACTORY_OUT_OVERRIDE_STATUSES.has(status)
+    ? { allowed: true, override: !["已入厂", "清洗中"].includes(status) }
+    : { allowed: false, message: `当前状态为“${status || "未知"}”，无法确认能否出库` };
+}
+
 async function factoryScan(scanType, suppliedBarcode = "", options = {}) {
   if (!currentUser) {
     alert("请先登录工厂账号");
@@ -5663,15 +5847,8 @@ async function factoryScan(scanType, suppliedBarcode = "", options = {}) {
       throw new Error("该水洗标正在等待客户补差，确认已补差后才能出库");
     }
 
-    const allowedStatuses = scanType === "factory_in" ? ["已取件"] : ["已入厂", "清洗中"];
-    if (!allowedStatuses.includes(item.item_status)) {
-      if (scanType === "factory_in" && item.item_status === "已入厂") throw new Error("已经入库，无需重复操作");
-      if (scanType === "factory_out" && item.item_status === "已出库") {
-        throw new Error("已经出库；如需贴纸，请在今日出库清单中勾选");
-      }
-      const required = scanType === "factory_in" ? "已取件" : "已入厂或清洗中";
-      throw new Error(`当前状态为“${item.item_status || "未知"}”，只有“${required}”的物品才能${scanType === "factory_in" ? "入库" : "出库"}`);
-    }
+    const statusCheck = factoryScanStatusCheck(scanType, item.item_status);
+    if (!statusCheck.allowed) throw new Error(statusCheck.message);
 
     let previousReturnTask = null;
     if (scanType === "factory_out") {
@@ -5694,6 +5871,13 @@ async function factoryScan(scanType, suppliedBarcode = "", options = {}) {
     const updatedAt = new Date().toISOString();
     const { error: itemError } = await sb.from("order_items").update({ item_status: status, updated_at: updatedAt }).eq("id", item.id);
     if (itemError) throw new Error(itemError.message);
+
+    const { error: flowError } = await sb.rpc("sync_order_flow_state", { target_order_id: item.order_id });
+    if (flowError) {
+      await restoreFactoryState(rollbackAction);
+      rollbackAction = null;
+      throw new Error(`订单状态同步失败：${flowError.message}`);
+    }
 
     if (scanType === "factory_out") {
       const { error: returnError } = await sb.from("return_tasks").upsert({
@@ -5728,7 +5912,11 @@ async function factoryScan(scanType, suppliedBarcode = "", options = {}) {
       itemId: item.id,
       barcode,
       status,
-      note: scanType === "factory_in" ? "工厂批量扫码入库" : returningWithoutWash ? "退洗物品批量扫码出库，生成送回任务" : "工厂批量扫码出库，生成送回任务",
+      note: scanType === "factory_in"
+        ? `工厂批量扫码入库${statusCheck.override ? `（工厂优先：原状态 ${item.item_status || "未知"}）` : ""}`
+        : returningWithoutWash
+          ? `退洗物品批量扫码出库，生成送回任务${statusCheck.override ? `（工厂优先：原状态 ${item.item_status || "未知"}）` : ""}`
+          : `工厂批量扫码出库，生成送回任务${statusCheck.override ? `（工厂优先：原状态 ${item.item_status || "未知"}）` : ""}`,
     });
 
     if ($("barcodeInput")) $("barcodeInput").value = "";
@@ -5969,6 +6157,7 @@ function bindEvents() {
   on("refreshCourierBtn", "click", refreshAll);
   on("refreshFactoryBtn", "click", refreshAll);
   on("refreshFactoryDailyBtn", "click", loadFactoryDailyScans);
+  on("factoryDailyCollapseBtn", "click", () => toggleFactoryDailyPanel());
   on("factoryItemSearch", "input", renderFactoryPendingItems);
   on("factoryItemStatusFilter", "change", renderFactoryPendingItems);
   on("courierSearch", "input", () => {
@@ -5986,6 +6175,7 @@ function bindEvents() {
   on("barcodePhotoInput", "change", handleBarcodePhoto);
   on("toggleTorchBtn", "click", toggleTorch);
   on("stopScanBtn", "click", endFactoryScanSession);
+  on("factoryCameraToggleBtn", "click", toggleFactoryCamera);
   on("factoryInBtn", "click", () => activateFactoryScanMode("factory_in"));
   on("factoryOutBtn", "click", () => activateFactoryScanMode("factory_out"));
   on("manualScanBtn", "click", processManualFactoryScan);
@@ -5996,6 +6186,12 @@ function bindEvents() {
   on("downloadFactoryLabelBtn", "click", downloadFactoryLabelBatch);
   on("selectAllFactoryOutBtn", "click", selectAllFactoryOutboundOrders);
   on("clearFactoryOutSelectionBtn", "click", clearFactoryOutboundSelection);
+  on("factoryOrderSearchBtn", "click", openFactoryOrderSearchDialog);
+  on("factoryPendingOrderSearchBtn", "click", openFactoryOrderSearchDialog);
+  on("factoryOrderSearchSubmitBtn", "click", searchFactoryOrders);
+  on("factoryOrderSearchInput", "keydown", (event) => {
+    if (event.key === "Enter") searchFactoryOrders();
+  });
   on("barcodeInput", "keydown", (event) => {
     if (event.key === "Enter") processManualFactoryScan();
   });
@@ -6011,6 +6207,21 @@ function bindEvents() {
   document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => switchView(tab.dataset.view)));
   document.querySelectorAll(".subtab").forEach((tab) => tab.addEventListener("click", () => switchAdminSection(tab.dataset.adminSection)));
   document.addEventListener("click", (event) => {
+    if (event.target.closest("[data-close-factory-order-search]")) closeFactoryOrderSearchDialog();
+    const factorySearchDetailBtn = event.target.closest("[data-factory-search-detail]");
+    if (factorySearchDetailBtn) {
+      closeFactoryOrderSearchDialog();
+      showOrderDetail(factorySearchDetailBtn.dataset.factorySearchDetail);
+    }
+    const factorySearchImagesBtn = event.target.closest("[data-factory-search-images]");
+    if (factorySearchImagesBtn) {
+      closeFactoryOrderSearchDialog();
+      showImagePreview(factorySearchImagesBtn.dataset.factorySearchImages);
+    }
+    const factoryOrderExceptionBtn = event.target.closest("[data-factory-order-exception]");
+    if (factoryOrderExceptionBtn) openFactoryOrderException(factoryOrderExceptionBtn.dataset.factoryOrderException);
+    const factoryPendingViewBtn = event.target.closest("[data-factory-pending-view]");
+    if (factoryPendingViewBtn) selectFactoryPendingView(factoryPendingViewBtn.dataset.factoryPendingView);
     const newExceptionTicketBtn = event.target.closest("[data-new-exception-ticket]");
     if (newExceptionTicketBtn) openExceptionTicketDialog();
     const reportExceptionBtn = event.target.closest("[data-report-exception]");
@@ -6183,7 +6394,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=57", { updateViaCache: "none" })
+    .register("./sw.js?v=62", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
@@ -6193,5 +6404,6 @@ window.addEventListener("beforeunload", stopScanner);
 hydrateStaticContent();
 renderFactoryScanQueue();
 bindEvents();
+if (APP_MODE === "factory") toggleFactoryDailyPanel(!window.matchMedia("(max-width: 640px)").matches);
 initSupabase();
 applyRouteFromUrl();

@@ -6,7 +6,8 @@
     <meta name="theme-color" content="#f26a1b" />
     <title>工厂扫码台 - 事事通校园配送系统</title>
     <link rel="manifest" href="./manifest.webmanifest" />
-    <link rel="stylesheet" href="./styles.css?v=59" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/remixicon@4.6.0/fonts/remixicon.css" />
+    <link rel="stylesheet" href="./styles.css?v=62" />
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   </head>
   <body data-app-mode="factory" class="role-page factory-page">
@@ -20,6 +21,7 @@
       </div>
       <div class="session-actions">
         <span id="sessionLabel">未连接</span>
+        <button id="factoryOrderSearchBtn" class="ghost factory-order-search-entry" type="button"><i class="ri-search-line" aria-hidden="true"></i><span>订单查询</span></button>
         <button id="signOutBtn" class="ghost hidden" type="button">退出</button>
       </div>
     </header>
@@ -39,17 +41,17 @@
             <div class="card-head scanner-heading">
               <div>
                 <h2>整批扫码作业</h2>
-                <p class="hint">先连续扫完整批，确认无误后再统一入库或出库。</p>
+                <p class="hint">先连续扫完整批，确认无误后再统一处理；工厂扫码优先于配送员漏点状态。</p>
               </div>
               <strong id="factoryScanCount" class="scan-count">待提交 0 件</strong>
             </div>
             <div class="scan-mode-picker" aria-label="选择扫码作业模式">
               <button id="factoryInBtn" class="scan-mode-button scan-in" type="button" aria-pressed="false">
-                <strong>批量入库</strong>
+                <strong><i class="ri-upload-2-line" aria-hidden="true"></i><span class="factory-mode-short">入库</span><span class="factory-mode-full">批量入库</span></strong>
                 <span>先扫码，最后统一入库</span>
               </button>
               <button id="factoryOutBtn" class="scan-mode-button scan-out" type="button" aria-pressed="false">
-                <strong>批量出库</strong>
+                <strong><i class="ri-download-2-line" aria-hidden="true"></i><span class="factory-mode-short">出库</span><span class="factory-mode-full">批量出库</span></strong>
                 <span>先扫码，最后统一出库</span>
               </button>
             </div>
@@ -60,10 +62,11 @@
               <div><strong id="factoryPendingCount">0</strong><span>待提交</span></div>
             </div>
             <div class="toolbar wrap factory-manual-scan">
-              <input id="barcodeInput" class="input" placeholder="扫码枪、二维码或手动输入水洗标" />
-              <button id="manualScanBtn" type="button">处理输入</button>
+              <label class="factory-scan-input-shell" for="barcodeInput"><i class="ri-scan-line" aria-hidden="true"></i><input id="barcodeInput" class="input" placeholder="扫码枪、二维码或手动输入水洗标" /></label>
+              <button id="manualScanBtn" type="button"><i class="ri-flashlight-fill" aria-hidden="true"></i><span>处理</span></button>
             </div>
-            <p id="scanResult" class="scan-feedback idle" role="status" aria-live="assertive">选择作业模式后自动打开后置摄像头，支持二维码和Code-128条形码。</p>
+            <p id="scanResult" class="scan-feedback idle" role="status" aria-live="assertive">选择作业模式后，可用扫码枪、手动输入或打开手机摄像头识别二维码和条形码。</p>
+            <button id="factoryCameraToggleBtn" class="ghost factory-camera-toggle hidden" type="button"><i class="ri-camera-line" aria-hidden="true"></i><span>打开手机摄像头扫码</span></button>
             <div id="factoryCameraPanel" class="factory-camera-panel hidden">
               <video id="scanVideo" class="scan-video" muted autoplay playsinline></video>
               <div class="toolbar wrap factory-camera-actions">
@@ -107,8 +110,12 @@
               <div>
                 <h2 id="factoryDailyTitle">今日出入库清单</h2>
                 <p id="factoryDailyDate" class="hint">按今天实际完成的扫码记录统计</p>
+                <p class="factory-daily-mobile-summary">入库 <strong id="factoryDailySummaryIn">0</strong> 件 · 出库 <strong id="factoryDailySummaryOut">0</strong> 件</p>
               </div>
-              <button id="refreshFactoryDailyBtn" class="ghost" type="button">刷新清单</button>
+              <div class="toolbar factory-daily-head-actions">
+                <button id="factoryDailyCollapseBtn" class="ghost" type="button" aria-expanded="false">展开</button>
+                <button id="refreshFactoryDailyBtn" class="ghost" type="button">刷新清单</button>
+              </div>
             </div>
             <div class="factory-daily-tabs" role="tablist" aria-label="切换今日清单">
               <button id="factoryDailyOutTab" type="button" role="tab" aria-selected="true" data-factory-daily-tab="out">今日出库 <strong id="factoryTodayOutTabCount">0 件</strong></button>
@@ -173,19 +180,17 @@
 
         <details id="factoryPendingPanel" class="panel factory-pending-panel">
           <summary>
-            <span class="factory-pending-summary-main"><strong id="factoryQueueTitle">待处理物品</strong><small>需要查找某件物品时再展开</small></span>
-            <span class="factory-pending-summary-count"><strong id="factoryPendingOverviewCount">0 件</strong><small>展开查看</small></span>
+            <span class="factory-pending-summary-main"><strong id="factoryQueueTitle">待处理概览</strong><small>按入库、出库作业查看，不再铺开全部物品</small></span>
+            <span class="factory-pending-summary-count"><strong id="factoryPendingOverviewCount">入 0 / 出 0</strong><small>展开作业</small></span>
           </summary>
           <div class="factory-pending-body">
+            <div class="factory-pending-quick-actions" aria-label="选择待处理作业类型">
+              <button class="factory-pending-quick in" type="button" data-factory-pending-view="pending-in" aria-pressed="false"><span>待入库</span><strong id="factoryPendingInQuickCount">0 件</strong><small>已取件，等待扫码入厂</small></button>
+              <button class="factory-pending-quick out" type="button" data-factory-pending-view="pending-out" aria-pressed="false"><span>待出库</span><strong id="factoryPendingOutQuickCount">0 件</strong><small>已入厂或清洗中</small></button>
+            </div>
             <div class="toolbar wrap factory-pending-tools">
-              <input id="factoryItemSearch" class="input" placeholder="搜索水洗标、姓名、电话、学校或楼栋" />
-              <select id="factoryItemStatusFilter" class="input">
-                <option value="">全部待处理状态</option>
-                <option value="已取件">只看待入库</option>
-                <option value="已入厂">只看已入厂</option>
-                <option value="清洗中">只看清洗中</option>
-              </select>
-              <button id="refreshFactoryBtn" class="ghost" type="button">刷新待处理</button>
+              <button id="factoryPendingOrderSearchBtn" type="button"><i class="ri-search-line" aria-hidden="true"></i> 查询具体订单 / 水洗标</button>
+              <button id="refreshFactoryBtn" class="ghost" type="button"><i class="ri-refresh-line" aria-hidden="true"></i> 刷新数量</button>
             </div>
             <p id="factoryPendingOverviewHint" class="hint"></p>
             <div id="factoryItemList" class="card-list factory-pending-list"></div>
@@ -194,6 +199,29 @@
       </section>
     </main>
 
-    <script src="./app.js?v=59"></script>
+    <dialog id="factoryOrderSearchDialog" class="factory-order-search-dialog">
+      <div class="factory-search-sheet">
+        <div class="factory-search-sheet-head">
+          <h2>订单查询</h2>
+          <button class="ghost icon-button" type="button" data-close-factory-order-search aria-label="关闭订单查询"><i class="ri-close-line" aria-hidden="true"></i></button>
+        </div>
+        <div class="factory-order-search-form">
+          <label class="factory-order-search-input" for="factoryOrderSearchInput"><i class="ri-search-line" aria-hidden="true"></i><input id="factoryOrderSearchInput" class="input" placeholder="输入订单号、手机号或水洗标" autocomplete="off" /></label>
+          <button id="factoryOrderSearchSubmitBtn" type="button">查询</button>
+        </div>
+        <p id="factoryOrderSearchMessage" class="hint" role="status" aria-live="polite">可查询订单信息、图片和物品当前状态。</p>
+        <div id="factoryOrderSearchResults" class="factory-order-search-results"></div>
+      </div>
+    </dialog>
+
+    <dialog id="orderDialog" class="modal">
+      <div class="modal-head">
+        <h2 id="orderDialogTitle">订单详情</h2>
+        <button id="closeOrderDialogBtn" class="ghost" type="button">关闭</button>
+      </div>
+      <div id="orderDialogBody" class="stack"></div>
+    </dialog>
+
+    <script src="./app.js?v=62"></script>
   </body>
 </html>

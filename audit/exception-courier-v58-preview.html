@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>配送员异常工单流程预览</title>
+    <link rel="stylesheet" href="../styles.css?v=58" />
+  </head>
+  <body class="role-page courier-page">
+    <header class="topbar"><div class="brand"><div class="brand-mark">配</div><div><h1>配送员工作台</h1><p>取件任务、送回任务、电话短信、异常处理</p></div></div><button class="ghost">退出</button></header>
+    <main class="single-layout"><section class="workspace">
+      <section class="panel courier-route-panel"><div class="pickup-cockpit courier-route-cockpit"><div class="pickup-cockpit-head"><div><span class="pickup-eyebrow">当前楼栋</span><strong>中医 / 花溪校区 / 桂园2</strong></div><span class="pickup-current-count">待送回 1单｜待取件 1单</span></div><div class="courier-route-stats"><div><strong>1</strong><span>待取件</span></div><div><strong>1</strong><span>待送回</span></div><div><strong>4</strong><span>今日已完成</span></div></div></div>
+        <article class="task-card pickup-task-card courier-route-card courier-pickup-card"><div class="card-head"><h3>测试同学 · 00000000001</h3><span>待取件</span></div><p class="pickup-card-route">本单 2 件</p><ul class="courier-item-list pickup-label-list"><li><strong>260829001</strong><span>普通鞋1双</span><em>待取件</em></li><li><strong>260829002</strong><span>薄款外套1件</span><em>待取件</em></li></ul><div class="pickup-primary-tools"><button class="pickup-photo-button">看图片（2）</button><button class="ghost">订单详情</button></div><div class="actions pickup-status-actions"><button>已取到</button><button class="ghost">未找到</button><button id="previewCourierException" class="ghost danger">上报异常</button></div></article>
+      </section>
+    </section></main>
+    <dialog id="previewCourierDialog" class="exception-ticket-dialog"><form method="dialog" class="exception-ticket-form"><div class="dialog-heading"><div><p class="eyebrow">绑定到单个水洗标</p><h2>上报异常工单</h2></div><button class="ghost small-btn">关闭</button></div><label class="field-group"><span>选择异常物品</span><select class="input"><option>260829001｜普通鞋1双</option><option>260829002｜薄款外套1件</option></select></label><label class="field-group"><span>水洗标</span><input class="input" value="260829001" readonly /></label><div class="exception-form-grid"><label class="field-group"><span>异常类型</span><select class="input"><option>其他异常</option><option>原有破损</option></select></label><label class="field-group"><span>优先级</span><select class="input"><option>普通</option><option>紧急</option></select></label></div><label class="field-group"><span>问题说明</span><textarea class="input" rows="3" placeholder="填写现场发现的问题"></textarea></label><label class="field-group"><span>建议处理方案</span><input class="input" placeholder="填写建议方案" /></label><label class="field-group"><span>异常照片（可多选）</span><input class="input" type="file" multiple /></label><p class="hint">提交后异常进入后台红色提醒，当前取件任务仍保留。</p><div class="actions"><button>提交工单</button><button class="ghost">取消</button></div></form></dialog>
+    <script>document.getElementById('previewCourierException').addEventListener('click',()=>document.getElementById('previewCourierDialog').showModal());</script>
+  </body>
+</html>
