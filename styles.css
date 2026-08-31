@@ -1759,7 +1759,7 @@ body.has-access .layout {
 
 .courier-return-item-actions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 5px;
 }
 
@@ -1784,6 +1784,102 @@ body.has-access .layout {
   border-color: #23875f;
   background: #23875f;
   color: #fff;
+}
+
+.courier-return-proof {
+  display: grid;
+  gap: 8px;
+  margin: 9px 0;
+  border: 1px solid #9ed7ba;
+  border-radius: 9px;
+  padding: 9px;
+  background: #f4fbf7;
+}
+
+.courier-return-proof.ready {
+  border-color: #58b88a;
+  background: #edf9f2;
+}
+
+.courier-return-proof-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.courier-return-proof-picker > div,
+.courier-return-proof-picker > span {
+  display: grid;
+  gap: 2px;
+}
+
+.courier-return-proof-picker span,
+.courier-return-proof > p,
+.courier-return-proof-complete span {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.courier-return-proof-picker img,
+.courier-return-proof-complete img {
+  width: 58px;
+  height: 58px;
+  border: 1px solid #b8dec9;
+  border-radius: 8px;
+  object-fit: cover;
+  background: #fff;
+}
+
+.courier-return-proof-picker label,
+.courier-return-proof-complete a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  border: 1px solid #72bd98;
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: #fff;
+  color: #176744;
+  font-size: 12px;
+  font-weight: 900;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.courier-return-proof-picker input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.courier-return-confirm {
+  width: 100%;
+  min-height: 42px;
+  border-color: #178354;
+  background: #178354;
+}
+
+.courier-return-proof-complete {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin: 8px 0;
+  border: 1px solid #b8dec9;
+  border-radius: 9px;
+  padding: 8px;
+  background: #f1faf5;
+}
+
+.courier-return-proof-complete > div {
+  display: grid;
+  gap: 2px;
 }
 
 .courier-card-secondary-actions {
@@ -2406,6 +2502,32 @@ button.danger,
 .modal-head h2 {
   margin: 0;
   font-size: 18px;
+}
+
+.return-delivery-dialog {
+  width: min(440px, calc(100vw - 20px));
+  padding-bottom: 12px;
+  background: #fff;
+}
+
+.return-delivery-dialog > .hint,
+.return-delivery-dialog-actions {
+  margin: 10px 12px 0;
+}
+
+.return-delivery-photo {
+  display: block;
+  width: calc(100% - 24px);
+  max-height: 48vh;
+  margin: 12px auto 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  object-fit: contain;
+  background: #f5f5f3;
+}
+
+.return-delivery-dialog-actions {
+  grid-template-columns: 1fr 1fr;
 }
 
 #orderDialogBody {
@@ -3861,7 +3983,7 @@ code {
   }
 
   .courier-return-item-actions {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .courier-return-item-actions button,
@@ -3881,6 +4003,25 @@ code {
     min-height: 34px;
     padding: 5px;
     font-size: 12px;
+  }
+
+  .courier-return-proof {
+    gap: 6px;
+    margin: 6px 0;
+    padding: 7px;
+  }
+
+  .courier-return-proof-picker img {
+    width: 48px;
+    height: 48px;
+  }
+
+  .courier-return-proof-complete {
+    grid-template-columns: 48px minmax(0, 1fr);
+  }
+
+  .courier-return-proof-complete a {
+    grid-column: 1 / -1;
   }
 }
 

@@ -140,6 +140,8 @@ create table if not exists return_tasks (
   outbound_date date not null default current_date,
   status text not null default '待送回',
   exception_note text default '',
+  delivery_photo_path text not null default '',
+  delivered_at timestamptz,
   operator_id uuid references profiles(id),
   updated_at timestamptz not null default now(),
   unique(item_id)
@@ -379,3 +381,23 @@ for select using (auth.role() = 'authenticated');
 create policy "admins manage settlement catalog" on settlement_catalog
 for all using (public.current_user_role() = 'admin')
 with check (public.current_user_role() = 'admin');
+
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('return-delivery-proof', 'return-delivery-proof', true, 10485760, array['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'])
+on conflict (id) do update
+set public = true,
+    file_size_limit = excluded.file_size_limit,
+    allowed_mime_types = excluded.allowed_mime_types;
+
+drop policy if exists "employees read return delivery proof" on storage.objects;
+drop policy if exists "employees upload return delivery proof" on storage.objects;
+drop policy if exists "employees delete return delivery proof" on storage.objects;
+
+create policy "employees read return delivery proof" on storage.objects
+for select using (bucket_id = 'return-delivery-proof' and auth.role() = 'authenticated');
+
+create policy "employees upload return delivery proof" on storage.objects
+for insert with check (bucket_id = 'return-delivery-proof' and auth.role() = 'authenticated');
+
+create policy "employees delete return delivery proof" on storage.objects
+for delete using (bucket_id = 'return-delivery-proof' and auth.role() = 'authenticated');
