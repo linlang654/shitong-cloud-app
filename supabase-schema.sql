@@ -141,11 +141,19 @@ create table if not exists return_tasks (
   status text not null default '待送回',
   exception_note text default '',
   delivery_photo_path text not null default '',
+  delivery_short_code text not null default '',
   delivered_at timestamptz,
   operator_id uuid references profiles(id),
   updated_at timestamptz not null default now(),
   unique(item_id)
 );
+
+alter table return_tasks add column if not exists delivery_photo_path text not null default '';
+alter table return_tasks add column if not exists delivery_short_code text not null default '';
+alter table return_tasks add column if not exists delivered_at timestamptz;
+create index if not exists return_tasks_delivery_short_code_idx
+on return_tasks(delivery_short_code)
+where delivery_short_code <> '';
 
 create table if not exists factory_scans (
   id uuid primary key default gen_random_uuid(),
@@ -262,6 +270,28 @@ as $$
 $$;
 
 grant execute on function public.track_timeline_by_phone(text) to anon, authenticated;
+
+create or replace function public.get_return_delivery_proof(target_code text)
+returns table (
+  delivery_photo_path text,
+  delivered_at timestamptz
+)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select rt.delivery_photo_path, rt.delivered_at
+  from public.return_tasks rt
+  where rt.delivery_short_code = lower(trim(target_code))
+    and rt.status = '已送达'
+    and rt.delivery_photo_path <> ''
+  order by rt.delivered_at desc nulls last
+  limit 1;
+$$;
+
+revoke all on function public.get_return_delivery_proof(text) from public;
+grant execute on function public.get_return_delivery_proof(text) to anon, authenticated;
 
 alter table profiles enable row level security;
 alter table orders enable row level security;

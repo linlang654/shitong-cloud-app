@@ -39,6 +39,7 @@ const RETURN_DELIVERY_BUCKET = "return-delivery-proof";
 const RETURN_DELIVERY_MAX_BYTES = 10 * 1024 * 1024;
 const RETURN_DELIVERY_TARGET_BYTES = 600 * 1024;
 const RETURN_DELIVERY_STORED_MAX_BYTES = 800 * 1024;
+const DELIVERY_PROOF_PUBLIC_URL = "https://linlang654.github.io/shitong-cloud-app/p.html?c=";
 const EXCEPTION_OPEN_STATUSES = ["待客服", "待客户", "处理中"];
 const EXCEPTION_TICKET_TYPES = ["原有破损", "材质风险", "受潮", "漏取/补取", "返洗", "退洗", "补差", "少件/串单", "清洗效果", "配送异常", "其他异常"];
 const PICKUP_OPEN_STATUSES = new Set(["待取件", "未找到"]);
@@ -119,8 +120,6 @@ let courierPickupScrollToNext = false;
 let courierReturnOrderGroups = [];
 let courierReturnBusyTaskId = "";
 const courierReturnProofFiles = new Map();
-const courierSelectedReturnOrders = new Set();
-const courierReturnAreaMap = new Map();
 let currentExceptionRows = [];
 let currentExceptionTickets = [];
 let exceptionActionMessage = "";
@@ -491,6 +490,7 @@ async function initSupabase() {
     sb = window.supabase.createClient(config.url, config.anonKey);
     setConnectionStatus("正在检查数据库连接…", "checking");
     await refreshSession();
+    if ($("deliveryProofState")) await loadDeliveryProof();
   } else {
     sb = null;
     if ($("sessionLabel")) $("sessionLabel").textContent = "未连接";
@@ -4225,27 +4225,14 @@ function renderCourierRouteCockpit(pendingPickups, pendingReturns, processedPick
   </section>`;
 }
 
-function renderCourierBatchPanel(pendingReturnGroups) {
-  if (!pendingReturnGroups.length) return "";
-  return `<details class="courier-batch-panel">
-    <summary><span>批量送回操作</span><strong id="courierSelectedReturnCount">已选 0 单 / 0 件</strong></summary>
-    <div class="courier-batch-body">
-      <p class="hint">出发前可按当前楼栋选择订单，统一标记配送中或复制通知。</p>
-      <div class="toolbar wrap">
-        <button class="ghost" type="button" data-courier-select-all>全选当前结果</button>
-        <button class="ghost" type="button" data-courier-clear-selection>清空选择</button>
-        <button type="button" data-courier-batch-status="配送中">整批标记配送中</button>
-        <button type="button" data-courier-batch-notify>复制批量送回通知</button>
-      </div>
-      <p id="courierBatchMessage" class="hint">物品送达后，在对应水洗标旁点击“确认送达”。</p>
-    </div>
-  </details>`;
-}
-
 function returnDeliveryPhotoUrl(task) {
   const path = text(task?.delivery_photo_path);
   if (!path || !sb?.storage) return "";
   return sb.storage.from(RETURN_DELIVERY_BUCKET).getPublicUrl(path)?.data?.publicUrl || "";
+}
+
+function returnDeliveryShortUrl(code) {
+  return text(code) ? `${DELIVERY_PROOF_PUBLIC_URL}${encodeURIComponent(text(code))}` : "";
 }
 
 function courierReturnOrderMessage(order, records, photoUrl) {
@@ -4258,7 +4245,6 @@ function renderCourierReturnCard(group, processed = false) {
   const records = [...group.records].sort((left, right) => compareNaturalText(left.item?.barcode, right.item?.barcode));
   const deliveredCount = records.filter(({ task }) => task.status === "已送达").length;
   const pendingRecords = records.filter((record) => !courierReturnRecordFinished(record));
-  const selected = courierSelectedReturnOrders.has(group.key);
   const allDelivered = deliveredCount === records.length;
   const hasException = records.some(({ task }) => task.status === "异常");
   const groupBusy = records.some(({ task }) => courierReturnBusyTaskId === task.id);
@@ -4268,12 +4254,12 @@ function renderCourierReturnCard(group, processed = false) {
   const proofState = courierReturnProofFiles.get(group.key);
   const deliveredRecord = records.find(({ task }) => text(task.delivery_photo_path));
   const deliveredPhotoUrl = returnDeliveryPhotoUrl(deliveredRecord?.task);
+  const deliveredShareUrl = returnDeliveryShortUrl(deliveredRecord?.task?.delivery_short_code) || deliveredPhotoUrl;
   const deliveredBatchRecords = deliveredRecord
     ? records.filter(({ task }) => text(task.delivery_photo_path) === text(deliveredRecord.task.delivery_photo_path))
     : [];
-  const deliveredMessage = deliveredPhotoUrl ? courierReturnOrderMessage(order, deliveredBatchRecords, deliveredPhotoUrl) : "";
-  return `<article class="task-card courier-order-card courier-route-card courier-return-card ${allDelivered ? "done" : ""} ${hasException && !pendingRecords.length ? "alert" : ""} ${selected ? "selected" : ""}" data-route-task-card="return-${escapeHtml(group.key)}" ${groupBusy ? 'aria-busy="true"' : ""}>
-    ${processed || !pendingRecords.length ? "" : `<label class="courier-order-select"><input type="checkbox" data-courier-return-order="${escapeHtml(group.key)}" ${selected ? "checked" : ""} /><span>选择本单待送物品</span></label>`}
+  const deliveredMessage = deliveredPhotoUrl ? courierReturnOrderMessage(order, deliveredBatchRecords, deliveredShareUrl) : "";
+  return `<article class="task-card courier-order-card courier-route-card courier-return-card ${allDelivered ? "done" : ""} ${hasException && !pendingRecords.length ? "alert" : ""}" data-route-task-card="return-${escapeHtml(group.key)}" ${groupBusy ? 'aria-busy="true"' : ""}>
     <div class="card-head"><h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3><span>${escapeHtml(groupBusy ? "提交中…" : cardStatus)}</span></div>
     <p class="courier-card-summary">本单 ${records.length} 件｜订单号：${escapeHtml(order.order_no || "")}</p>
     <div class="courier-card-address courier-return-address"><span>送达地址</span><p>${escapeHtml(order.address || "未填写完整地址")}</p></div>
@@ -4298,15 +4284,11 @@ function renderCourierReturnCard(group, processed = false) {
 }
 
 function renderCourierRouteAreaContent(area, processed = false) {
-  if (!processed) {
-    courierReturnAreaMap.set(area.key, area.returns.filter(courierReturnGroupHasPending).map((group) => group.key));
-  }
   const returnItemCount = area.returns.reduce((sum, group) => sum + group.records.filter((record) => processed || !courierReturnRecordFinished(record)).length, 0);
   return `<div class="courier-route-area-content">
     ${area.returns.length ? `<section class="courier-route-section courier-route-return-section">
-      <div class="courier-route-section-head"><div><strong>${processed ? "已处理送回" : "先送回"}</strong><span>${area.returns.length} 单 / ${returnItemCount} 件</span></div>${processed ? "" : `<button class="ghost small-btn" type="button" data-select-courier-building="${escapeHtml(area.key)}">本栋送回全选</button>`}</div>
+      <div class="courier-route-section-head"><div><strong>${processed ? "已处理送回" : "先送回"}</strong><span>${area.returns.length} 单 / ${returnItemCount} 件</span></div></div>
       <div class="card-list">${area.returns.map((group) => renderCourierReturnCard(group, processed)).join("")}</div>
-      ${!processed && area.key === courierActivePickupAreaKey ? renderCourierBatchPanel(area.returns) : ""}
     </section>` : ""}
     ${area.pickups.length ? `<section class="courier-route-section courier-route-pickup-section">
       <div class="courier-route-section-head"><div><strong>${processed ? "已处理取件" : "再取件"}</strong><span>${area.pickups.length} 单</span></div></div>
@@ -4362,13 +4344,9 @@ function renderCourierRouteTasks() {
   const pendingReturns = courierReturnOrderGroups.filter(courierReturnGroupHasPending);
   const processedReturns = courierReturnOrderGroups.filter((group) => !courierReturnGroupHasPending(group) && (hasSearch || courierReturnGroupFinishedOnDate(group, activityDate)));
   const availableKeys = new Set(pendingReturns.map((group) => group.key));
-  [...courierSelectedReturnOrders].forEach((key) => {
-    if (!availableKeys.has(key)) courierSelectedReturnOrders.delete(key);
-  });
   [...courierReturnProofFiles.keys()].forEach((key) => {
     if (!availableKeys.has(key)) clearCourierReturnProof(key);
   });
-  courierReturnAreaMap.clear();
   const pendingAreas = buildCourierRouteAreas(pendingPickups, pendingReturns);
   const processedAreas = buildCourierRouteAreas(processedPickups, processedReturns);
   const activeArea = ensureCourierActivePickupArea(pendingAreas);
@@ -4386,99 +4364,11 @@ function renderCourierRouteTasks() {
       <summary><strong>已处理</strong><span>${completed} 项任务</span></summary>
       <div class="pickup-processed-body">${renderCourierRouteTree(processedAreas, true)}</div>
     </details>` : ""}`;
-  updateCourierReturnSelectionUi();
   if (courierPickupScrollToNext) {
     courierPickupScrollToNext = false;
     requestAnimationFrame(() => {
       document.querySelector(".courier-route-area.active [data-route-task-card]")?.scrollIntoView({ behavior: "smooth", block: "center" });
     });
-  }
-}
-
-function selectedCourierReturnGroups() {
-  return courierReturnOrderGroups.filter((group) => courierSelectedReturnOrders.has(group.key) && courierReturnGroupHasPending(group));
-}
-
-function updateCourierReturnSelectionUi() {
-  const selected = selectedCourierReturnGroups();
-  const itemCount = selected.reduce((sum, group) => sum + group.records.length, 0);
-  if ($("courierSelectedReturnCount")) $("courierSelectedReturnCount").textContent = `已选 ${selected.length} 单 / ${itemCount} 件`;
-  document.querySelectorAll("[data-courier-return-order]").forEach((input) => {
-    input.checked = courierSelectedReturnOrders.has(input.dataset.courierReturnOrder);
-    input.closest(".courier-order-card")?.classList.toggle("selected", input.checked);
-  });
-  document.querySelectorAll("[data-courier-batch-status], [data-courier-batch-notify]").forEach((button) => {
-    button.disabled = selected.length === 0;
-  });
-}
-
-function selectCourierBuilding(areaKey) {
-  (courierReturnAreaMap.get(areaKey) || []).forEach((key) => courierSelectedReturnOrders.add(key));
-  updateCourierReturnSelectionUi();
-}
-
-function selectAllCourierReturns() {
-  courierReturnOrderGroups.filter(courierReturnGroupHasPending).forEach((group) => courierSelectedReturnOrders.add(group.key));
-  updateCourierReturnSelectionUi();
-}
-
-function clearCourierReturnSelection() {
-  courierSelectedReturnOrders.clear();
-  updateCourierReturnSelectionUi();
-}
-
-function setCourierBatchMessage(message, state = "hint") {
-  const target = $("courierBatchMessage");
-  if (!target) return;
-  target.className = state;
-  target.textContent = message;
-}
-
-async function batchUpdateCourierReturns(status = "配送中") {
-  const groups = selectedCourierReturnGroups();
-  if (!groups.length) return setCourierBatchMessage("请先选择需要处理的订单。", "warn");
-  const records = groups.flatMap((group) => group.records).filter((record) => !courierReturnRecordFinished(record));
-  const taskIds = records.map((record) => record.task.id).filter(Boolean);
-  const itemIds = records.map((record) => record.item.id).filter(Boolean);
-  const now = new Date().toISOString();
-  setCourierBatchMessage(`正在处理 ${groups.length} 单、${records.length} 件……`);
-  const results = await Promise.all([
-    taskIds.length ? sb.from("return_tasks").update({ status, operator_id: currentProfile?.id || null, updated_at: now }).in("id", taskIds) : Promise.resolve({ error: null }),
-    itemIds.length ? sb.from("order_items").update({ item_status: status, updated_at: now }).in("id", itemIds) : Promise.resolve({ error: null }),
-    status === "已送达" && itemIds.length && washAdjustmentSchemaAvailable
-      ? sb.from("order_items").update({ wash_decision: WASH_DECISION_RETURNED, wash_decision_updated_at: now, updated_at: now }).in("id", itemIds).eq("wash_decision", WASH_DECISION_RETURN_PENDING)
-      : Promise.resolve({ error: null }),
-  ]);
-  const failure = results.find((result) => result.error)?.error;
-  if (failure) return setCourierBatchMessage(`整批处理失败：${failure.message}`, "warn");
-  await Promise.all(groups.map((group) => insertLog({ orderId: group.order.id, status, note: `配送端整批操作，共 ${group.records.length} 件` })));
-  courierSelectedReturnOrders.clear();
-  await refreshAll();
-}
-
-async function copyCourierBatchNotifications() {
-  const groups = selectedCourierReturnGroups();
-  if (!groups.length) return setCourierBatchMessage("请先选择需要通知的订单。", "warn");
-  const content = groups.map((group, index) => {
-    const order = group.order || {};
-    return `${index + 1}. ${order.customer_name || "同学"}（${order.phone || "无电话"}）\n【事事通】您的洗护订单已出库，配送员将送回${order.school || ""}${orderCampusName(order)}${order.building || ""}，请保持电话畅通。`;
-  }).join("\n\n");
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(content);
-    } else {
-      const input = document.createElement("textarea");
-      input.value = content;
-      input.style.position = "fixed";
-      input.style.opacity = "0";
-      document.body.appendChild(input);
-      input.select();
-      document.execCommand("copy");
-      input.remove();
-    }
-    setCourierBatchMessage(`已复制 ${groups.length} 条送回通知，可粘贴到客服工具统一发送。`, "success");
-  } catch (error) {
-    setCourierBatchMessage("复制失败，请检查浏览器剪贴板权限。", "warn");
   }
 }
 
@@ -4613,9 +4503,9 @@ async function prepareReturnDeliveryPhoto(file) {
   }
 }
 
-function showReturnDeliverySuccess(order, records, photoUrl) {
+function showReturnDeliverySuccess(order, records, photoUrl, shareUrl) {
   const dialog = $("returnDeliveryDialog");
-  const message = courierReturnOrderMessage(order, records, photoUrl);
+  const message = courierReturnOrderMessage(order, records, shareUrl || photoUrl);
   if ($("returnDeliveryPhoto")) $("returnDeliveryPhoto").src = photoUrl;
   if ($("returnDeliverySummary")) $("returnDeliverySummary").textContent = `本次 ${records.length} 件已整单送达，照片已保存。`;
   if ($("returnDeliverySmsBtn")) $("returnDeliverySmsBtn").href = smsComposeHref(order.phone || "", message);
@@ -4637,6 +4527,7 @@ async function confirmCourierReturnOrder(groupKey) {
   const now = new Date().toISOString();
   let uploadedPath = "";
   let deliveryCommitted = false;
+  const deliveryShortCode = crypto.randomUUID().replace(/-/g, "").slice(0, 10);
   try {
     const uploadFile = await prepareReturnDeliveryPhoto(proofState.file);
     if (uploadFile.size > RETURN_DELIVERY_STORED_MAX_BYTES) {
@@ -4654,18 +4545,21 @@ async function confirmCourierReturnOrder(groupKey) {
     const returnResult = await sb.from("return_tasks").update({
       status: "已送达",
       delivery_photo_path: uploadedPath,
+      delivery_short_code: deliveryShortCode,
       delivered_at: now,
       operator_id: currentProfile?.id || null,
       updated_at: now,
     }).in("id", taskIds);
     if (returnResult.error) {
-      throw new Error(returnResult.error.message.includes("delivery_photo_path") ? "请先执行送达照片数据库迁移" : returnResult.error.message);
+      const missingDeliveryField = /delivery_photo_path|delivery_short_code/i.test(returnResult.error.message);
+      throw new Error(missingDeliveryField ? "请先执行送达照片数据库迁移" : returnResult.error.message);
     }
     const itemResult = await sb.from("order_items").update({ item_status: "已送达", updated_at: now }).in("id", itemIds);
     if (itemResult.error) {
       await Promise.all(pendingRecords.map(({ task }) => sb.from("return_tasks").update({
         status: task.status,
         delivery_photo_path: task.delivery_photo_path || "",
+        delivery_short_code: task.delivery_short_code || "",
         delivered_at: task.delivered_at || null,
         updated_at: new Date().toISOString(),
       }).eq("id", task.id)));
@@ -4692,7 +4586,7 @@ async function confirmCourierReturnOrder(groupKey) {
     courierReturnBusyTaskId = "";
     courierPickupScrollToNext = true;
     await loadCourierTasks();
-    showReturnDeliverySuccess(group.order, pendingRecords, photoUrl);
+    showReturnDeliverySuccess(group.order, pendingRecords, photoUrl, returnDeliveryShortUrl(deliveryShortCode));
   } catch (error) {
     if (uploadedPath && !deliveryCommitted) await sb.storage.from(RETURN_DELIVERY_BUCKET).remove([uploadedPath]);
     courierReturnBusyTaskId = "";
@@ -6272,6 +6166,38 @@ function renderStudentOrder(order) {
   </article>`;
 }
 
+async function loadDeliveryProof() {
+  const code = text(new URLSearchParams(window.location.search).get("c")).toLowerCase();
+  const state = $("deliveryProofState");
+  if (!state || !sb) return;
+  if (!/^[a-f0-9]{10}$/.test(code)) {
+    state.textContent = "送达凭证链接无效，请检查短信中的完整链接。";
+    state.className = "warn";
+    return;
+  }
+  state.textContent = "正在读取送达照片…";
+  const { data, error } = await sb.rpc("get_return_delivery_proof", { target_code: code });
+  const proof = Array.isArray(data) ? data[0] : null;
+  if (error || !proof?.delivery_photo_path) {
+    state.textContent = "没有找到该送达凭证，链接可能有误或照片已失效。";
+    state.className = "warn";
+    return;
+  }
+  const photoUrl = sb.storage.from(RETURN_DELIVERY_BUCKET).getPublicUrl(proof.delivery_photo_path)?.data?.publicUrl || "";
+  if (!photoUrl) {
+    state.textContent = "送达照片暂时无法打开，请稍后重试。";
+    state.className = "warn";
+    return;
+  }
+  if ($("deliveryProofPhoto")) {
+    $("deliveryProofPhoto").src = photoUrl;
+    $("deliveryProofPhoto").classList.remove("hidden");
+  }
+  if ($("deliveryProofTime")) $("deliveryProofTime").textContent = formatDateTime(proof.delivered_at) || "刚刚送达";
+  state.textContent = "该照片由配送员完成送达时上传";
+  state.className = "success";
+}
+
 async function trackByPhone() {
   if (!requireClient()) return;
   const phone = phoneValue($("studentPhone").value);
@@ -6402,13 +6328,6 @@ function bindEvents() {
     const confirmReturnOrderBtn = event.target.closest("[data-confirm-return-order]");
     if (confirmReturnOrderBtn) confirmCourierReturnOrder(confirmReturnOrderBtn.dataset.confirmReturnOrder);
     if (event.target.closest("[data-close-return-delivery]")) $("returnDeliveryDialog")?.close();
-    const selectCourierBuildingBtn = event.target.closest("[data-select-courier-building]");
-    if (selectCourierBuildingBtn) selectCourierBuilding(selectCourierBuildingBtn.dataset.selectCourierBuilding);
-    if (event.target.closest("[data-courier-select-all]")) selectAllCourierReturns();
-    if (event.target.closest("[data-courier-clear-selection]")) clearCourierReturnSelection();
-    const courierBatchStatusBtn = event.target.closest("[data-courier-batch-status]");
-    if (courierBatchStatusBtn) batchUpdateCourierReturns(courierBatchStatusBtn.dataset.courierBatchStatus);
-    if (event.target.closest("[data-courier-batch-notify]")) copyCourierBatchNotifications();
     const previewBtn = event.target.closest("[data-preview-images]");
     if (previewBtn) showImagePreview(previewBtn.dataset.previewImages);
     const detailBtn = event.target.closest("[data-detail]");
@@ -6473,13 +6392,6 @@ function bindEvents() {
       document.querySelector(`[data-settlement-other-fields="${settlementSelect.dataset.settlementSelect}"]`)
         ?.classList.toggle("hidden", settlementSelect.value !== SETTLEMENT_OTHER);
     }
-    const courierReturnOrder = event.target.closest("[data-courier-return-order]");
-    if (courierReturnOrder) {
-      const key = courierReturnOrder.dataset.courierReturnOrder;
-      if (courierReturnOrder.checked) courierSelectedReturnOrders.add(key);
-      else courierSelectedReturnOrders.delete(key);
-      updateCourierReturnSelectionUi();
-    }
     const factoryOutboundOrder = event.target.closest("[data-factory-outbound-order]");
     if (factoryOutboundOrder) {
       toggleFactoryOutboundOrder(factoryOutboundOrder.dataset.factoryOutboundOrder, factoryOutboundOrder.checked);
@@ -6541,7 +6453,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=63", { updateViaCache: "none" })
+    .register("./sw.js?v=65", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }

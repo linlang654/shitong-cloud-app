@@ -1507,58 +1507,6 @@ body.has-access .layout {
   background: #fbfaf7;
 }
 
-.courier-batch-panel {
-  position: sticky;
-  top: 8px;
-  z-index: 5;
-  display: grid;
-  gap: 10px;
-  margin-bottom: 12px;
-  border: 1px solid #d8b65d;
-  border-radius: 12px;
-  padding: 12px;
-  background: rgba(255, 250, 237, 0.97);
-  box-shadow: 0 10px 26px rgba(87, 57, 14, 0.11);
-  backdrop-filter: blur(8px);
-}
-
-.courier-batch-panel > summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  cursor: pointer;
-  font-weight: 900;
-  list-style: none;
-}
-
-.courier-batch-panel > summary::-webkit-details-marker {
-  display: none;
-}
-
-.courier-batch-panel > summary::after {
-  content: "展开";
-  margin-left: auto;
-  color: var(--orange-deep);
-  font-size: 12px;
-}
-
-.courier-batch-panel[open] > summary::after {
-  content: "收起";
-}
-
-.courier-batch-panel > summary strong {
-  color: #7c5d31;
-  font-size: 13px;
-}
-
-.courier-batch-body {
-  display: grid;
-  gap: 10px;
-  padding-top: 10px;
-  border-top: 1px solid rgba(216, 182, 93, 0.45);
-}
-
 .courier-route-panel {
   min-width: 0;
 }
@@ -1665,11 +1613,6 @@ body.has-access .layout {
 .courier-route-return-section {
   border-color: #aad8c2;
   background: #edf8f2;
-}
-
-.courier-route-return-section .courier-batch-panel {
-  margin: 2px 0 0;
-  background: rgba(255, 255, 255, 0.8);
 }
 
 .courier-route-pickup-section {
@@ -1888,27 +1831,6 @@ body.has-access .layout {
 
 .courier-route-processed {
   margin-top: 10px;
-}
-
-.courier-order-card.selected {
-  border-color: var(--orange);
-  box-shadow: 0 0 0 2px rgba(242, 106, 27, 0.12);
-}
-
-.courier-order-select {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  margin-bottom: 9px;
-  color: var(--orange-deep);
-  font-size: 13px;
-  font-weight: 900;
-}
-
-.courier-order-select input {
-  width: 20px;
-  height: 20px;
-  accent-color: var(--orange);
 }
 
 .courier-item-list {
@@ -2528,6 +2450,76 @@ button.danger,
 
 .return-delivery-dialog-actions {
   grid-template-columns: 1fr 1fr;
+}
+
+.delivery-proof-page {
+  background: #f2f7f4;
+}
+
+.delivery-proof-page .proof-mark {
+  background: #178354;
+}
+
+.delivery-proof-layout {
+  padding-top: 18px;
+}
+
+.delivery-proof-card {
+  display: grid;
+  gap: 14px;
+  border-color: #b8dec9;
+  padding: 16px;
+}
+
+.delivery-proof-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.delivery-proof-heading > span {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 50%;
+  background: #178354;
+  color: #fff;
+  font-size: 22px;
+  font-weight: 900;
+}
+
+.delivery-proof-heading h2,
+.delivery-proof-heading p,
+.delivery-proof-card > p {
+  margin: 0;
+}
+
+.delivery-proof-heading p,
+.delivery-proof-card > .success {
+  color: #31745a;
+}
+
+.delivery-proof-public-photo {
+  width: 100%;
+  max-height: 64vh;
+  border: 1px solid #cfe5d9;
+  border-radius: 12px;
+  object-fit: contain;
+  background: #eef4f0;
+}
+
+.delivery-proof-help {
+  border-radius: 9px;
+  padding: 11px;
+  background: #f6f3ed;
+  color: #5d554b;
+  line-height: 1.6;
+}
+
+.delivery-proof-help a {
+  color: #b94f10;
+  font-weight: 900;
 }
 
 #orderDialogBody {
@@ -3533,11 +3525,6 @@ code {
   .scan-video {
     max-height: 360px;
     aspect-ratio: 4 / 3;
-  }
-
-  .courier-batch-panel {
-    position: static;
-    padding: 9px 10px;
   }
 
   .pickup-cockpit {

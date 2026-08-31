@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#178354" />
+    <title>送达凭证 - 事事通校园配送系统</title>
+    <link rel="stylesheet" href="./styles.css?v=65" />
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  </head>
+  <body data-app-mode="student" class="role-page delivery-proof-page">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark proof-mark">达</div>
+        <div>
+          <h1>送达凭证</h1>
+          <p>事事通校园配送系统</p>
+        </div>
+      </div>
+    </header>
+    <main class="single-layout narrow delivery-proof-layout">
+      <section class="panel delivery-proof-card">
+        <div class="delivery-proof-heading">
+          <span>✓</span>
+          <div><h2>物品已送达</h2><p id="deliveryProofTime">正在读取送达时间</p></div>
+        </div>
+        <img id="deliveryProofPhoto" class="delivery-proof-public-photo hidden" alt="配送员上传的送达照片" />
+        <p id="deliveryProofState" class="hint">正在读取送达照片…</p>
+        <p class="delivery-proof-help">请及时到约定位置领取并核对。如有问题，请联系售后 <a href="tel:15599157072">15599157072</a>。</p>
+      </section>
+    </main>
+    <script src="./app.js?v=65"></script>
+  </body>
+</html>
