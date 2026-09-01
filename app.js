@@ -3362,8 +3362,26 @@ function washItemCategoryKey(item) {
 }
 
 async function loadWashLabelRows(limit = 1000, batchDate = "") {
-  const { data, error } = await sb.from("order_items").select("*, orders(*)").order("barcode", { ascending: true }).limit(limit);
-  if (error) return { rows: [], error };
+  // 水洗标管理既用于按批次作业，也需要能追溯历史水洗标。分页取数避免
+  // Supabase 单次查询上限导致“全库搜索”只命中前一部分记录。
+  const numericLimit = Number(limit);
+  const maxRows = limit === null || limit === undefined || limit === ""
+    ? null
+    : Number.isFinite(numericLimit) ? Math.max(1, Math.floor(numericLimit)) : null;
+  const pageSize = 1000;
+  const data = [];
+  for (let from = 0; !maxRows || data.length < maxRows; from += pageSize) {
+    const size = maxRows ? Math.min(pageSize, maxRows - data.length) : pageSize;
+    const { data: page, error } = await sb
+      .from("order_items")
+      .select("*, orders(*)")
+      .order("barcode", { ascending: true })
+      .range(from, from + size - 1);
+    if (error) return { rows: [], error };
+    const pageRows = page || [];
+    data.push(...pageRows);
+    if (pageRows.length < size) break;
+  }
   const sortedItems = [...(data || [])].sort((left, right) => {
     const leftOrder = Array.isArray(left.orders) ? left.orders[0] || {} : left.orders || {};
     const rightOrder = Array.isArray(right.orders) ? right.orders[0] || {} : right.orders || {};
@@ -3378,9 +3396,12 @@ async function loadWashLabelRows(limit = 1000, batchDate = "") {
       序号: index + 1,
       条形编码: item.barcode || "",
       所属商家: order.merchant || "",
+      订单号: order.order_no || "",
       姓名: order.customer_name || "",
       电话: order.phone || "",
       校区: washLabelCampus(order),
+      楼栋: order.building || "",
+      详细地址: order.address || "",
       物品: washItemShortName(item),
       实付款: order.paid_amount ?? "",
       下单时间: formatDateTime(order.order_time, true),
@@ -3415,14 +3436,14 @@ async function loadWashLabelRows(limit = 1000, batchDate = "") {
 
 async function loadLabels() {
   await Promise.all([detectSettlementSchemaAvailability(), detectWashAdjustmentSchemaAvailability()]);
-  const allResult = await loadWashLabelRows(5000);
+  const allResult = await loadWashLabelRows(null);
   const rows = allResult.rows;
   const error = allResult.error;
   if (error) return setMessage("adminLabels", error.message, "warn");
   const batchDates = [...new Set(rows.map((row) => row.batch_date).filter(Boolean))].sort().reverse();
   const selectedBatch = $("washBatchSelect")?.value || batchDates[0] || currentBusinessBatchDate();
   const filteredRows = rows.filter((row) => row.batch_date === selectedBatch);
-  labelReviewRows = filteredRows;
+  labelReviewRows = rows;
   labelVisibleRows = filteredRows;
   labelSelectedItems.clear();
   const confirmedCount = filteredRows.filter((row) => row.settlement_confirmed).length;
@@ -3437,10 +3458,10 @@ async function loadLabels() {
         <select id="washBatchSelect" class="input">
           ${batchDates.map((date) => `<option value="${escapeHtml(date)}" ${date === selectedBatch ? "selected" : ""}>${escapeHtml(date)} 批次（${escapeHtml(businessBatchLabel(date))}）</option>`).join("") || `<option value="${escapeHtml(selectedBatch)}">${escapeHtml(selectedBatch)} 批次</option>`}
         </select>
-        <input id="labelSearch" class="input" placeholder="搜索水洗标、姓名、电话、校区" />
+        <input id="labelSearch" class="input" placeholder="搜索全部数据：水洗标、订单、姓名、电话、地址" />
         <button id="confirmSuggestedSettlementBtn" class="ghost" type="button" ${settlementSchemaAvailable && suggestedRows.length ? "" : "disabled"}>确认系统建议（${suggestedRows.length}）</button>
       </div>
-      <p class="hint">批次规则：昨天 18:00 之后到当天 18:00 之前付款/下单的订单，归为当天批次。</p>
+      <p class="hint">批次规则：昨天 18:00 之后到当天 18:00 之前付款/下单的订单，归为当天批次。<span id="labelSearchScope">未输入搜索词时仅显示当前批次；输入后搜索全部批次。</span></p>
       <div class="settlement-summary"><strong>结算品类：</strong><span class="success">已确认 ${confirmedCount}</span><span class="warn">待确认 ${pendingCount}</span></div>
       <div class="settlement-bulk-bar">
         <div class="settlement-bulk-copy">
@@ -3470,9 +3491,14 @@ async function loadLabels() {
   $("confirmSuggestedSettlementBtn")?.addEventListener("click", () => confirmSuggestedSettlementCategories(suggestedRows));
   $("labelSearch")?.addEventListener("input", () => {
     const keyword = text($("labelSearch").value).toLowerCase();
-    labelVisibleRows = filteredRows.filter((row) => JSON.stringify(row).toLowerCase().includes(keyword));
+    const sourceRows = keyword ? rows : filteredRows;
+    labelVisibleRows = sourceRows.filter((row) => JSON.stringify(row).toLowerCase().includes(keyword));
     labelSelectedItems.clear();
     $("labelRows").innerHTML = renderLabelRows(labelVisibleRows);
+    const searchScope = $("labelSearchScope");
+    if (searchScope) searchScope.textContent = keyword
+      ? `正在搜索全部批次，找到 ${labelVisibleRows.length} 个水洗标。`
+      : "未输入搜索词时仅显示当前批次；输入后搜索全部批次。";
     updateLabelSelectionUi();
   });
 }
@@ -3507,6 +3533,14 @@ function updateLabelSelectionUi() {
   document.querySelectorAll("[data-clear-label-selection], [data-apply-label-category], [data-save-label-selection]").forEach((control) => {
     control.disabled = !selectedCount || labelBulkSaveBusy || !settlementSchemaAvailable;
   });
+  const selectPendingButton = document.querySelector("[data-select-label-pending]");
+  if (selectPendingButton) {
+    const hasVisiblePending = labelVisibleRows.some((row) => !row.settlement_confirmed);
+    selectPendingButton.disabled = !hasVisiblePending || !settlementSchemaAvailable;
+    selectPendingButton.textContent = text($("labelSearch")?.value)
+      ? "全选搜索结果待确认"
+      : "全选当前待确认";
+  }
 }
 
 function selectLabelOrder(orderId) {
@@ -6453,7 +6487,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=65", { updateViaCache: "none" })
+    .register("./sw.js?v=66", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
