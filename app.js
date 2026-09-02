@@ -41,7 +41,7 @@ const RETURN_DELIVERY_TARGET_BYTES = 600 * 1024;
 const RETURN_DELIVERY_STORED_MAX_BYTES = 800 * 1024;
 const DELIVERY_PROOF_PUBLIC_URL = "https://linlang654.github.io/shitong-cloud-app/p.html?c=";
 const EXCEPTION_OPEN_STATUSES = ["待客服", "待客户", "处理中"];
-const EXCEPTION_TICKET_TYPES = ["原有破损", "材质风险", "受潮", "漏取/补取", "返洗", "退洗", "补差", "少件/串单", "清洗效果", "配送异常", "其他异常"];
+const EXCEPTION_TICKET_TYPES = ["材质风险", "清洗效果", "原有破损", "受潮", "漏取/补取", "返洗", "退洗", "补差", "少件/串单", "配送异常", "其他异常"];
 const PICKUP_OPEN_STATUSES = new Set(["待取件", "未找到"]);
 const RETRY_PICKUP_OPEN_STATUSES = new Set(["待补取", "未找到"]);
 const WASH_DECISION_OPTIONS = [
@@ -127,6 +127,7 @@ let exceptionTicketSchemaAvailable = null;
 let exceptionTicketSchemaError = "";
 let exceptionTicketBusy = false;
 let exceptionTicketContext = null;
+let exceptionEvidencePreviewTimer = null;
 let retryPickupSchemaAvailable = null;
 let retryPickupSchemaError = "";
 let reconciliationSummary = null;
@@ -2542,6 +2543,9 @@ function renderExceptionTicketCard(ticket) {
   const item = relationOne(ticket.order_items);
   const barcode = ticket.barcode || item.barcode || "未绑定水洗标";
   const resolved = !EXCEPTION_OPEN_STATUSES.includes(ticket.status);
+  const evidenceKey = `exception-ticket-${ticket.id}`;
+  const evidenceUrls = ticket.evidenceUrls || [];
+  if (evidenceUrls.length) imagePreviewMap.set(evidenceKey, evidenceUrls);
   return `
     <article class="task-card exception-ticket-card ${ticket.priority === "紧急" ? "urgent" : ""}" data-exception-ticket="${ticket.id}">
       <div class="card-head">
@@ -2550,7 +2554,11 @@ function renderExceptionTicketCard(ticket) {
       </div>
       <p class="exception-ticket-description">${escapeHtml(ticket.description || "未填写问题说明")}</p>
       <div class="exception-ticket-meta"><span>订单 ${escapeHtml(order.order_no || "—")}</span><span>${escapeHtml(item.spec || item.product_name || "物品待核对")}</span><span>${escapeHtml(ticket.source || "后台")}</span><span>${escapeHtml(formatDateTime(ticket.created_at, true))}</span></div>
-      ${ticket.evidenceUrls?.length ? `<div class="exception-evidence-grid">${ticket.evidenceUrls.map((url, index) => `<button type="button" data-full-image="${escapeHtml(url)}" aria-label="查看异常照片 ${index + 1}"><img src="${escapeHtml(url)}" alt="异常证据 ${index + 1}" /></button>`).join("")}</div>` : '<p class="hint">暂无异常照片</p>'}
+      ${evidenceUrls.length ? `<div class="exception-evidence-grid">${evidenceUrls.map((url, index) => {
+        const singleImageKey = `${evidenceKey}-${index}`;
+        imagePreviewMap.set(singleImageKey, [url]);
+        return `<button type="button" data-exception-evidence-single="${escapeHtml(singleImageKey)}" data-exception-evidence-all="${escapeHtml(evidenceKey)}" aria-label="查看异常照片 ${index + 1}" title="单击查看此图，双击查看全部照片"><img src="${escapeHtml(url)}" alt="异常证据 ${index + 1}" /></button>`;
+      }).join("")}</div>` : '<p class="hint">暂无异常照片</p>'}
       ${ticket.proposed_solution ? `<p><strong>建议方案：</strong>${escapeHtml(ticket.proposed_solution)}</p>` : ""}
       ${ticket.customer_reply ? `<p><strong>客户回复：</strong>${escapeHtml(ticket.customer_reply)}</p>` : ""}
       ${ticket.resolution ? `<p><strong>处理结果：</strong>${escapeHtml(ticket.resolution)}</p>` : ""}
@@ -2828,8 +2836,17 @@ async function copyExceptionCustomerMessage(ticketId) {
   const ticket = currentExceptionTickets.find((row) => row.id === ticketId);
   if (!ticket) return;
   const order = relationOne(ticket.orders);
-  const customerName = order.customer_name ? `${order.customer_name}同学，您好。` : "您好。";
-  const content = `${customerName}您的洗护物品（水洗标：${ticket.barcode || "待核对"}）发现“${ticket.ticket_type}”：${ticket.description}${ticket.proposed_solution ? `。建议处理：${ticket.proposed_solution}` : ""}。请回复确认处理方式，谢谢。`;
+  const greeting = order.customer_name ? `${order.customer_name}同学你好，` : "你好，";
+  const originalDescription = text(ticket.description);
+  const riskDescription = originalDescription
+    .replace(/清洗后|洗后/g, "")
+    .replace(/可能会?加重|加重/g, "")
+    .replace(/[，,。；;！!]+$/g, "")
+    .replace(/^有/, "")
+    .trim();
+  const content = ticket.ticket_type === "原有破损"
+    ? `${greeting}你的物品${riskDescription ? `有${riskDescription}的情况，清洗后${riskDescription}可能会加重，` : "有原有破损，清洗后可能会加重，"}麻烦确认一下是否要继续清洗，谢谢！`
+    : `${greeting}你的物品${originalDescription ? `有${originalDescription}的情况，` : `出现${ticket.ticket_type}的情况，`}麻烦确认一下后续怎么处理，谢谢！`;
   await copyText(content);
   exceptionActionMessage = "客户沟通内容已复制，可直接粘贴到微信";
   await loadExceptions();
@@ -6342,8 +6359,18 @@ function bindEvents() {
     if (copyExceptionBtn) copyExceptionCustomerMessage(copyExceptionBtn.dataset.copyExceptionMessage);
     const scheduleRetryBtn = event.target.closest("[data-schedule-retry-item]");
     if (scheduleRetryBtn) scheduleRetryPickupFromUi(scheduleRetryBtn.dataset.scheduleRetryItem, scheduleRetryBtn.dataset.retryOrder, scheduleRetryBtn.dataset.retryTicket || null);
-    const exceptionEvidenceBtn = event.target.closest("[data-full-image]");
-    if (exceptionEvidenceBtn) window.open(exceptionEvidenceBtn.dataset.fullImage, "_blank", "noopener,noreferrer");
+    const exceptionEvidenceBtn = event.target.closest("[data-exception-evidence-single]");
+    if (exceptionEvidenceBtn) {
+      if (exceptionEvidencePreviewTimer) window.clearTimeout(exceptionEvidencePreviewTimer);
+      const singleImageKey = exceptionEvidenceBtn.dataset.exceptionEvidenceSingle;
+      exceptionEvidencePreviewTimer = window.setTimeout(() => {
+        showImagePreview(singleImageKey);
+        exceptionEvidencePreviewTimer = null;
+      }, 220);
+      return;
+    }
+    const fullImageBtn = event.target.closest("[data-full-image]");
+    if (fullImageBtn) window.open(fullImageBtn.dataset.fullImage, "_blank", "noopener,noreferrer");
     const dashboardTarget = event.target.closest("[data-dashboard-target]");
     if (dashboardTarget) openDashboardTarget(dashboardTarget.dataset.dashboardTarget);
     const clearDashboardBtn = event.target.closest("[data-clear-dashboard-filter]");
@@ -6398,6 +6425,13 @@ function bindEvents() {
     if (deleteRuleBtn) deleteRule(deleteRuleBtn.dataset.deleteRule);
   });
   document.addEventListener("dblclick", (event) => {
+    const exceptionEvidence = event.target.closest("[data-exception-evidence-all]");
+    if (exceptionEvidence) {
+      if (exceptionEvidencePreviewTimer) window.clearTimeout(exceptionEvidencePreviewTimer);
+      exceptionEvidencePreviewTimer = null;
+      showImagePreview(exceptionEvidence.dataset.exceptionEvidenceAll);
+      return;
+    }
     const image = event.target.closest("[data-full-image]");
     if (image) window.open(image.dataset.fullImage, "_blank", "noopener,noreferrer");
   });
@@ -6487,7 +6521,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=66", { updateViaCache: "none" })
+    .register("./sw.js?v=67", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
