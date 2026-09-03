@@ -2959,6 +2959,30 @@ button.danger,
   margin-top: 9px;
 }
 
+.factory-outbound-batch-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: min(100%, 270px);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.factory-outbound-batch-control select {
+  min-width: 190px;
+  max-width: 100%;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 4px 8px;
+  color: var(--ink);
+  background: #fff;
+}
+
+.factory-outbound-batch-hint {
+  margin: 7px 0 0;
+}
+
 .factory-daily-list {
   display: grid;
   gap: 8px;

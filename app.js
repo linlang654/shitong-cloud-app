@@ -95,7 +95,10 @@ const factoryLabelBatch = [];
 const factoryScanQueue = [];
 let factoryDailyScans = [];
 let factoryDailyOutboundGroups = [];
+let factoryDailyOutboundBatches = [];
+let factoryDailyActiveOutboundBatchKey = "";
 let factoryDailyActiveTab = "out";
+let factoryScanBatchSchemaAvailable = null;
 let factoryItemRows = [];
 let factoryItemTotalCount = 0;
 let factoryPendingView = "";
@@ -275,6 +278,14 @@ async function detectRetryPickupSchemaAvailability(force = false) {
 
 function retryPickupMigrationMessage() {
   return "补取任务数据库尚未启用，请先执行 supabase-repickup-migration.sql。普通取件仍可继续使用。";
+}
+
+async function detectFactoryScanBatchSchemaAvailability(force = false) {
+  if (!sb) return false;
+  if (!force && factoryScanBatchSchemaAvailable !== null) return factoryScanBatchSchemaAvailable;
+  const { error } = await sb.from("factory_scans").select("batch_key").limit(1);
+  factoryScanBatchSchemaAvailable = !error;
+  return factoryScanBatchSchemaAvailable;
 }
 
 function washDecisionDefinition(key) {
@@ -4866,15 +4877,65 @@ function factoryDailyOrderKey(record) {
   return text(record?.order?.id || record?.item?.order_id || `item-${record?.item_id || record?.id}`);
 }
 
-function factoryDailyGroups(scanType) {
-  const groups = new Map();
+function factoryDailyBatchKey(record) {
+  return text(record?._factoryDailyBatchKey || record?.batch_key || `legacy-${record?.scan_type || "scan"}-${record?.id || record?.item_id}`);
+}
+
+function factoryDailyBatches(scanType) {
+  const persistedBatches = new Map();
+  const legacyBatches = [];
+  const legacyGapMs = 2 * 60 * 1000;
+  let activeLegacyBatch = null;
   factoryDailyScans
     .filter((record) => record.scan_type === scanType)
+    .sort((left, right) => new Date(left.created_at) - new Date(right.created_at))
     .forEach((record) => {
-      const key = factoryDailyOrderKey(record);
+      const persistedKey = text(record.batch_key);
+      if (persistedKey) {
+        if (!persistedBatches.has(persistedKey)) {
+          persistedBatches.set(persistedKey, { key: persistedKey, scans: [], firstScannedAt: record.created_at, legacy: false });
+        }
+        const batch = persistedBatches.get(persistedKey);
+        batch.scans.push(record);
+        record._factoryDailyBatchKey = batch.key;
+        return;
+      }
+      const scannedAt = new Date(record.created_at).getTime();
+      const previousAt = activeLegacyBatch ? new Date(activeLegacyBatch.lastScannedAt).getTime() : 0;
+      if (!activeLegacyBatch || !Number.isFinite(scannedAt) || scannedAt - previousAt > legacyGapMs) {
+        activeLegacyBatch = {
+          key: `legacy-${record.id}`,
+          scans: [],
+          firstScannedAt: record.created_at,
+          lastScannedAt: record.created_at,
+          legacy: true,
+        };
+        legacyBatches.push(activeLegacyBatch);
+      }
+      activeLegacyBatch.scans.push(record);
+      activeLegacyBatch.lastScannedAt = record.created_at;
+      record._factoryDailyBatchKey = activeLegacyBatch.key;
+    });
+  return [...persistedBatches.values(), ...legacyBatches]
+    .sort((left, right) => new Date(left.firstScannedAt) - new Date(right.firstScannedAt))
+    .map((batch, index) => ({ ...batch, sequence: index + 1 }));
+}
+
+function factoryOutboundBatchLabel(batch) {
+  return `第 ${batch.sequence} 批 · ${factoryDailyTime(batch.firstScannedAt)} · ${batch.scans.length} 件${batch.legacy ? "（历史记录）" : ""}`;
+}
+
+function factoryDailyGroups(scanType, batchKey = "") {
+  const groups = new Map();
+  factoryDailyScans
+    .filter((record) => record.scan_type === scanType && (!batchKey || factoryDailyBatchKey(record) === batchKey))
+    .forEach((record) => {
+      const recordBatchKey = factoryDailyBatchKey(record);
+      const key = `${recordBatchKey}:${factoryDailyOrderKey(record)}`;
       if (!groups.has(key)) {
         groups.set(key, {
           key,
+          batchKey: recordBatchKey,
           order: record.order || {},
           scans: [],
           firstScannedAt: record.created_at,
@@ -4971,17 +5032,24 @@ function switchFactoryDailyTab(tabName = "out") {
 }
 
 function renderFactoryDailyLists() {
+  factoryDailyBatches("factory_in");
   const inboundGroups = factoryDailyGroups("factory_in");
-  factoryDailyOutboundGroups = factoryDailyGroups("factory_out");
+  factoryDailyOutboundBatches = factoryDailyBatches("factory_out");
+  const validBatchKeys = new Set(factoryDailyOutboundBatches.map((batch) => batch.key));
+  if (!validBatchKeys.has(factoryDailyActiveOutboundBatchKey)) {
+    factoryDailyActiveOutboundBatchKey = factoryDailyOutboundBatches.at(-1)?.key || "";
+  }
+  factoryDailyOutboundGroups = factoryDailyGroups("factory_out", factoryDailyActiveOutboundBatchKey);
   const validOutboundKeys = new Set(factoryDailyOutboundGroups.map((group) => group.key));
   [...factorySelectedOutboundOrders].forEach((key) => {
     if (!validOutboundKeys.has(key)) factorySelectedOutboundOrders.delete(key);
   });
   const inboundItems = inboundGroups.reduce((total, group) => total + group.scans.length, 0);
-  const outboundItems = factoryDailyOutboundGroups.reduce((total, group) => total + group.scans.length, 0);
+  const outboundItems = factoryDailyOutboundBatches.reduce((total, batch) => total + batch.scans.length, 0);
+  const outboundOrderCount = new Set(factoryDailyOutboundBatches.flatMap((batch) => batch.scans.map(factoryDailyOrderKey))).size;
   if ($("factoryDailyDate")) $("factoryDailyDate").textContent = `${todayDate()} · 按今日实际完成的扫码记录统计`;
   if ($("factoryTodayInCount")) $("factoryTodayInCount").textContent = `${inboundGroups.length} 单 / ${inboundItems} 件`;
-  if ($("factoryTodayOutCount")) $("factoryTodayOutCount").textContent = `${factoryDailyOutboundGroups.length} 单 / ${outboundItems} 件`;
+  if ($("factoryTodayOutCount")) $("factoryTodayOutCount").textContent = `${outboundOrderCount} 单 / ${outboundItems} 件`;
   if ($("factoryTodayInTabCount")) $("factoryTodayInTabCount").textContent = `${inboundItems} 件`;
   if ($("factoryTodayOutTabCount")) $("factoryTodayOutTabCount").textContent = `${outboundItems} 件`;
   if ($("factoryDailySummaryIn")) $("factoryDailySummaryIn").textContent = String(inboundItems);
@@ -4995,6 +5063,18 @@ function renderFactoryDailyLists() {
     $("factoryTodayOutList").innerHTML = factoryDailyOutboundGroups.length
       ? factoryDailyOutboundGroups.map((group) => renderFactoryDailyOrder(group, true)).join("")
       : '<p class="hint">今天还没有完成出库的订单。</p>';
+  }
+  if ($("factoryOutboundBatchSelect")) {
+    $("factoryOutboundBatchSelect").innerHTML = factoryDailyOutboundBatches.length
+      ? factoryDailyOutboundBatches.map((batch) => `<option value="${escapeHtml(batch.key)}" ${batch.key === factoryDailyActiveOutboundBatchKey ? "selected" : ""}>${escapeHtml(factoryOutboundBatchLabel(batch))}</option>`).join("")
+      : '<option value="">暂无出库批次</option>';
+    $("factoryOutboundBatchSelect").disabled = !factoryDailyOutboundBatches.length;
+  }
+  const activeBatch = factoryDailyOutboundBatches.find((batch) => batch.key === factoryDailyActiveOutboundBatchKey);
+  if ($("factoryOutboundBatchHint")) {
+    $("factoryOutboundBatchHint").textContent = activeBatch
+      ? `当前打印：${factoryOutboundBatchLabel(activeBatch)}。切换批次会清空已选订单，避免混印。`
+      : "完成一批出库后会自动出现在这里，可按批次生成独立打印文件。";
   }
   updateFactoryOutboundSelectionUi();
   switchFactoryDailyTab(factoryDailyActiveTab);
@@ -5013,9 +5093,10 @@ function toggleFactoryDailyPanel(forceExpanded = null) {
 async function loadFactoryDailyScans() {
   if (!$("factoryTodayInList") && !$("factoryTodayOutList")) return;
   const range = factoryTodayRange();
+  const supportsBatchKey = await detectFactoryScanBatchSchemaAvailability();
   const { data, error } = await sb
     .from("factory_scans")
-    .select("id,item_id,barcode,scan_type,created_at,order_items(*,orders(*))")
+    .select(`id,item_id,barcode,scan_type,created_at${supportsBatchKey ? ",batch_key" : ""},order_items(*,orders(*))`)
     .gte("created_at", range.start)
     .lt("created_at", range.end)
     .order("created_at", { ascending: true })
@@ -5053,7 +5134,16 @@ function selectAllFactoryOutboundOrders() {
   factoryDailyOutboundGroups.forEach((group) => factorySelectedOutboundOrders.add(group.key));
   renderFactoryDailyLists();
   const pages = factoryDailyOutboundGroups.reduce((total, group) => total + group.scans.length, 0);
-  setFactoryLabelStatus(`已选择今日全部 ${factoryDailyOutboundGroups.length} 个订单，共 ${pages} 页。`, "ready");
+  setFactoryLabelStatus(`已选择当前批次全部 ${factoryDailyOutboundGroups.length} 个订单，共 ${pages} 页。`, "ready");
+}
+
+function selectFactoryOutboundBatch(batchKey) {
+  if (batchKey === factoryDailyActiveOutboundBatchKey) return;
+  factoryDailyActiveOutboundBatchKey = batchKey;
+  factorySelectedOutboundOrders.clear();
+  factoryLabelBatch.length = 0;
+  renderFactoryDailyLists();
+  setFactoryLabelStatus("已切换出库批次，请全选本批或按需勾选后生成打印文件。", "ready");
 }
 
 function clearFactoryOutboundSelection() {
@@ -5531,7 +5621,9 @@ async function printFactoryLabelBatch() {
 function factoryLabelBatchFileName() {
   const now = new Date();
   const paperSize = factoryLabelPaperSize();
-  return `出库贴纸_${paperSize.key}mm_${dateOnly(now)}_${pad(now.getHours())}${pad(now.getMinutes())}_${factoryLabelBatch.length}页.pdf`;
+  const activeBatch = factoryDailyOutboundBatches.find((batch) => batch.key === factoryDailyActiveOutboundBatchKey);
+  const batchPart = activeBatch ? `_第${activeBatch.sequence}批` : "";
+  return `出库贴纸${batchPart}_${paperSize.key}mm_${dateOnly(now)}_${pad(now.getHours())}${pad(now.getMinutes())}_${factoryLabelBatch.length}页.pdf`;
 }
 
 async function downloadFactoryLabelBatch() {
@@ -5981,12 +6073,15 @@ async function factoryScan(scanType, suppliedBarcode = "", options = {}) {
       }
     }
 
-    const { error: scanError } = await sb.from("factory_scans").insert({
+    await detectFactoryScanBatchSchemaAvailability();
+    const scanPayload = {
       item_id: item.id,
       barcode,
       scan_type: scanType,
       operator_id: currentProfile?.id || null,
-    });
+    };
+    if (factoryScanBatchSchemaAvailable) scanPayload.batch_key = options.batchKey || crypto.randomUUID();
+    const { error: scanError } = await sb.from("factory_scans").insert(scanPayload);
     if (scanError) {
       await restoreFactoryState(rollbackAction);
       rollbackAction = null;
@@ -6043,6 +6138,7 @@ async function submitFactoryScanBatch() {
     }
   }
   const scanType = factoryScanMode;
+  const batchKey = crypto.randomUUID();
   const queued = factoryScanQueue.map((entry) => ({ ...entry }));
   const completed = [];
   const failed = [];
@@ -6070,6 +6166,7 @@ async function submitFactoryScanBatch() {
       }
       const succeeded = await factoryScan(scanType, entry.barcode, {
         source: "整批提交",
+        batchKey,
         batchCommit: true,
         suppressRefresh: true,
       });
@@ -6275,6 +6372,7 @@ function bindEvents() {
   on("refreshCourierBtn", "click", refreshAll);
   on("refreshFactoryBtn", "click", refreshAll);
   on("refreshFactoryDailyBtn", "click", loadFactoryDailyScans);
+  on("factoryOutboundBatchSelect", "change", () => selectFactoryOutboundBatch($("factoryOutboundBatchSelect")?.value || ""));
   on("factoryDailyCollapseBtn", "click", () => toggleFactoryDailyPanel());
   on("factoryItemSearch", "input", renderFactoryPendingItems);
   on("factoryItemStatusFilter", "change", renderFactoryPendingItems);
@@ -6521,7 +6619,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=67", { updateViaCache: "none" })
+    .register("./sw.js?v=68", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
