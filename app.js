@@ -814,19 +814,17 @@ function defaultCampusForSchool(school) {
 }
 
 const GUIZHOU_TCM_DORM_CODE_MAP = Object.freeze({
-  H1: "橘园1栋（H1）",
-  H2: "橘园2栋（H2）",
-  H3: "橘园3栋（H3）",
-  H4: "橘园4栋（H4）",
-  H5: "桂园1栋（H5）",
-  H6: "桂园2栋（H6）",
-  H7: "桂园3栋（H7）",
-  H8: "H8号学生公寓（H8）",
-  J1: "杏园1栋（J1）",
-  J2: "杏园2栋（J2）",
-  J3: "杏园3栋（J3）",
-  J4: "李园1栋（J4）",
-  J5: "李园2栋（J5）",
+  H1: ["橘园1栋"],
+  H2: ["橘园2栋", "橘园4栋"],
+  H3: ["橘园3栋"],
+  H5: ["桂园3栋"],
+  H6: ["桂园2栋"],
+  H7: ["桂园1栋"],
+  H8: ["桂园4栋"],
+  J1: ["杏园1栋", "杏园2栋"],
+  J3: ["杏园3栋", "杏园4栋"],
+  J4: ["李园2栋"],
+  J5: ["李园1栋"],
 });
 
 function guizhouTcmDormCodeEvidence(source) {
@@ -851,13 +849,34 @@ function guizhouTcmDormCodeEvidence(source) {
       reason: "旧代码J6只能确定为桃园，地址未写明A、B、C或D区",
     };
   }
-  const building = GUIZHOU_TCM_DORM_CODE_MAP[code];
-  if (!building) return null;
+  const candidates = GUIZHOU_TCM_DORM_CODE_MAP[code];
+  if (!candidates) return null;
+  const namedBuilding = candidates.find((candidate) => {
+    const readableName = candidate.replace("栋", "");
+    return value.includes(candidate) || value.includes(readableName);
+  });
+  if (namedBuilding) {
+    return {
+      building: `${namedBuilding}（${code}）`,
+      match: codeMatch[0].trim() || code,
+      confidence: 98,
+      reason: `地址明确写出${namedBuilding}，并与贵州中医药大学旧宿舍代码${code}对应`,
+    };
+  }
+  if (candidates.length > 1) {
+    return {
+      building: `${candidates.join(" / ")}（${code}）`,
+      match: codeMatch[0].trim() || code,
+      confidence: 72,
+      reason: `贵州中医药大学旧宿舍代码${code}对应多个楼栋，需结合完整地址确认`,
+    };
+  }
+  const building = `${candidates[0]}（${code}）`;
   return {
     building,
     match: codeMatch[0].trim() || code,
     confidence: 97,
-    reason: `贵州中医药大学旧宿舍代码${code}对应${building}`,
+    reason: `贵州中医药大学旧宿舍代码${code}对应${candidates[0]}`,
   };
 }
 
@@ -971,7 +990,7 @@ function locationNeedsReview(school, campus, building) {
   if (isTcmSchool(school)) {
     const gardenBuilding = /^(橘园|桂园|杏园|李园)(\d{1,2})(?:栋)?$/.exec(normalizedBuilding);
     if (gardenBuilding) {
-      const limits = { 橘园: 4, 桂园: 3, 杏园: 3, 李园: 2 };
+      const limits = { 橘园: 4, 桂园: 4, 杏园: 4, 李园: 2 };
       if (Number(gardenBuilding[2]) > limits[gardenBuilding[1]]) return true;
     }
     const peachBuilding = /^桃园([A-Z])区$/i.exec(normalizedBuilding);
@@ -3255,6 +3274,7 @@ function washLabelCampus(order) {
   if (isTcmSchool(school) && /桂园/.test(building)) return `中医桂园:${building.replace("桂园", "")}`;
   if (isTcmSchool(school) && /杏园/.test(building)) return `中医杏园:${building.replace("杏园", "")}`;
   if (isTcmSchool(school) && /橘园/.test(building)) return `中医橘园:${building.replace("橘园", "")}`;
+  if (isTcmSchool(school) && /李园/.test(building)) return `中医李园:${building.replace("李园", "")}`;
   if (isTcmSchool(school) && /桃园/.test(building)) return `中医桃园:${building.replace("桃园", "")}`;
   if (isTcmSchool(school)) return `中医${campus}:${building}`;
   return `${school}${campus}:${building}`;
@@ -6619,7 +6639,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=68", { updateViaCache: "none" })
+    .register("./sw.js?v=69", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
