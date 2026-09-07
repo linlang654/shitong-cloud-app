@@ -5019,11 +5019,14 @@ function selectedFactoryOutboundGroups() {
 
 function rebuildFactoryLabelBatchFromSelection() {
   factoryLabelBatch.length = 0;
-  selectedFactoryOutboundGroups().forEach((group) => {
-    group.scans.forEach((record) => {
+  const selectedGroupKeys = new Set(selectedFactoryOutboundGroups().map((group) => group.key));
+  const activeBatch = factoryDailyOutboundBatches.find((batch) => batch.key === factoryDailyActiveOutboundBatchKey);
+  (activeBatch?.scans || [])
+    .filter((record) => selectedGroupKeys.has(`${factoryDailyBatchKey(record)}:${factoryDailyOrderKey(record)}`))
+    .sort((left, right) => new Date(left.created_at) - new Date(right.created_at))
+    .forEach((record) => {
       factoryLabelBatch.push(factoryLabelData({ ...record.item, orders: record.order }, record.created_at));
     });
-  });
   return factoryLabelBatch;
 }
 
@@ -5144,7 +5147,7 @@ function toggleFactoryOutboundOrder(key, checked) {
   const selectedGroups = selectedFactoryOutboundGroups();
   const pages = selectedGroups.reduce((total, group) => total + group.scans.length, 0);
   setFactoryLabelStatus(
-    pages ? `已选择 ${selectedGroups.length} 个订单，共生成 ${pages} 页贴纸。` : "请从今日出库清单中勾选需要打印的订单。",
+    pages ? `已选择 ${selectedGroups.length} 个订单，共生成 ${pages} 页贴纸；打印顺序与水洗标出库扫码顺序一致。` : "请从今日出库清单中勾选需要打印的订单。",
     pages ? "ready" : "",
   );
 }
@@ -5154,7 +5157,7 @@ function selectAllFactoryOutboundOrders() {
   factoryDailyOutboundGroups.forEach((group) => factorySelectedOutboundOrders.add(group.key));
   renderFactoryDailyLists();
   const pages = factoryDailyOutboundGroups.reduce((total, group) => total + group.scans.length, 0);
-  setFactoryLabelStatus(`已选择当前批次全部 ${factoryDailyOutboundGroups.length} 个订单，共 ${pages} 页。`, "ready");
+  setFactoryLabelStatus(`已选择当前批次全部 ${factoryDailyOutboundGroups.length} 个订单，共 ${pages} 页；将按水洗标出库扫码顺序打印。`, "ready");
 }
 
 function selectFactoryOutboundBatch(batchKey) {
@@ -6639,7 +6642,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=69", { updateViaCache: "none" })
+    .register("./sw.js?v=70", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
