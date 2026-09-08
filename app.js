@@ -5368,7 +5368,7 @@ function factoryLabelData(item, scannedAt = "") {
     customerName: text(order.customer_name),
     phone: text(order.phone),
     itemName: text(item?.spec || item?.product_name),
-    afterSalesPhone: AFTER_SALES_PHONE,
+    notice: "收到打开包装通风",
     scannedAt: scannedAt || new Date().toISOString(),
   };
 }
@@ -5391,7 +5391,7 @@ function factoryLabelFields(label) {
     ["姓名", label.customerName, ""],
     ["电话", label.phone, ""],
     ["物品", label.itemName, ""],
-    ["售后", label.afterSalesPhone, ""],
+    ["提示", label.notice, ""],
   ];
 }
 
@@ -6642,7 +6642,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=70", { updateViaCache: "none" })
+    .register("./sw.js?v=71", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
