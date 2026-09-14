@@ -3872,6 +3872,7 @@ async function showOrderDetail(orderId) {
   const order = orderResult.data;
   const canEditItemStatus = APP_MODE === "admin" && currentProfile?.role === "admin";
   const canEditAddress = canEditItemStatus;
+  const orderImages = collectOrderImages({ order_items: itemResult.data || [] });
   $("orderDialogTitle").textContent = `订单详情：${order.order_no}`;
   $("orderDialogBody").innerHTML = `
     <section class="panel">
@@ -3892,6 +3893,15 @@ async function showOrderDetail(orderId) {
         <div data-order-address-message="${escapeHtml(order.id)}" aria-live="polite"></div>
       </details>` : ""}
     </section>
+    <section class="panel">
+      <h3>订单图片（${orderImages.length}）</h3>
+      ${previewButton(`detail-${order.id}`, orderImages)}
+      ${orderImages.length ? "" : '<p class="hint">暂无订单图片，可由后台补传。</p>'}
+      ${canEditItemStatus ? `<label class="field-group"><span>补传订单图片</span><input class="input" type="file" accept="image/jpeg,image/png,image/webp" multiple data-order-photo-files="${escapeHtml(order.id)}" /></label>
+      <p class="hint">一次最多 6 张，支持 JPG、PNG、WebP；原图每张不超过 10MB，自动压缩后保存不超过 800KB。追加到本单所有物品，保留原图，不改变订单状态。</p>
+      <div class="actions"><button type="button" data-upload-order-photos="${escapeHtml(order.id)}">上传订单图片</button></div>
+      <div data-order-photo-message="${escapeHtml(order.id)}" aria-live="polite"></div>` : ""}
+    </section>
     <section class="panel table-panel">
       <h3>物品 / 水洗标</h3>
       ${canEditItemStatus ? '<p class="hint">这里修改只影响当前水洗标；整单状态会按该订单下所有水洗标的最慢进度自动汇总。</p>' : ""}
@@ -3902,6 +3912,69 @@ async function showOrderDetail(orderId) {
       <ul class="timeline">${(logResult.data || []).map((log) => `<li><strong>${escapeHtml(log.status)}</strong><span>${escapeHtml(formatDateTime(log.created_at, true))}</span><p>${escapeHtml(log.note || "")}</p></li>`).join("") || "<li>暂无记录</li>"}</ul>
     </section>`;
   if (!$("orderDialog").open) $("orderDialog").showModal();
+}
+
+const orderPhotoUploadsBusy = new Set();
+
+async function uploadOrderPhotosFromDialog(orderId) {
+  if (APP_MODE !== "admin" || currentProfile?.role !== "admin" || orderPhotoUploadsBusy.has(orderId)) return;
+  const input = document.querySelector(`[data-order-photo-files="${orderId}"]`);
+  const button = document.querySelector(`[data-upload-order-photos="${orderId}"]`);
+  const message = document.querySelector(`[data-order-photo-message="${orderId}"]`);
+  const files = Array.from(input?.files || []);
+  const showMessage = (value) => { if (message) message.textContent = value; };
+  if (!files.length || files.length > 6) return showMessage("请选择 1～6 张订单照片。");
+  if (files.some((file) => !["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > RETURN_DELIVERY_MAX_BYTES)) {
+    return showMessage("请选择 JPG、PNG 或 WebP 图片，每张原图不能超过 10MB。");
+  }
+  orderPhotoUploadsBusy.add(orderId);
+  if (button) button.disabled = true;
+  if (input) input.disabled = true;
+  const uploadedPaths = [];
+  let linksMayBeSaved = false;
+  try {
+    const initial = await sb.from("order_items").select("id").eq("order_id", orderId);
+    if (initial.error) throw initial.error;
+    if (!initial.data?.length) throw new Error("此订单没有物品，暂时无法关联图片。");
+    const urls = [];
+    for (const [index, file] of files.entries()) {
+      showMessage(`正在压缩并上传第 ${index + 1}/${files.length} 张…`);
+      const prepared = await prepareReturnDeliveryPhoto(file);
+      if (prepared.size > RETURN_DELIVERY_STORED_MAX_BYTES) throw new Error("图片压缩后仍超过 800KB，请降低清晰度后重试。");
+      // Reuse the existing image bucket; a separate prefix distinguishes order supplements from delivery proof.
+      const path = `order-photos/${orderId}/${crypto.randomUUID()}-${safeEvidenceFileName(prepared.name)}`;
+      const result = await sb.storage.from(RETURN_DELIVERY_BUCKET).upload(path, prepared, { contentType: prepared.type, upsert: false });
+      if (result.error) throw result.error;
+      uploadedPaths.push(path);
+      const url = sb.storage.from(RETURN_DELIVERY_BUCKET).getPublicUrl(path)?.data?.publicUrl;
+      if (!url) throw new Error("无法生成图片链接。");
+      urls.push(url);
+    }
+    const latest = await sb.from("order_items").select("id,image_links").eq("order_id", orderId);
+    if (latest.error) throw latest.error;
+    if (!latest.data?.length) throw new Error("订单物品已变更，请刷新后重试。");
+    for (const item of latest.data) {
+      const merged = [...new Set([...text(item.image_links).split(/[\n,，\s]+/).filter(Boolean), ...urls])].join("\n");
+      let update = sb.from("order_items").update({ image_links: merged }).eq("id", item.id).eq("order_id", orderId);
+      update = item.image_links == null ? update.is("image_links", null) : update.eq("image_links", item.image_links);
+      // A lost response can occur after a successful write: never delete potentially referenced photos.
+      linksMayBeSaved = true;
+      const result = await update.select("id");
+      if (result.error) throw result.error;
+      if (!result.data?.length) throw new Error("订单图片刚被其他人修改，请刷新详情核对后再补传。");
+    }
+    await insertLog({ orderId, status: "后台补传订单图片", note: `补传 ${urls.length} 张订单照片，保留原有图片。` });
+    await showOrderDetail(orderId);
+    const resultMessage = document.querySelector(`[data-order-photo-message="${orderId}"]`);
+    if (resultMessage) resultMessage.textContent = `已补传 ${urls.length} 张图片，配送员和工厂端刷新后即可查看。`;
+  } catch (error) {
+    if (!linksMayBeSaved && uploadedPaths.length) await sb.storage.from(RETURN_DELIVERY_BUCKET).remove(uploadedPaths).catch(() => {});
+    showMessage(`${linksMayBeSaved ? "部分图片可能已保存，请重新打开详情核对后再操作。" : "上传未完成。"}${error.message || error}`);
+  } finally {
+    orderPhotoUploadsBusy.delete(orderId);
+    if (button) button.disabled = false;
+    if (input) input.disabled = false;
+  }
 }
 
 async function saveOrderAddressFromDialog(orderId) {
@@ -6516,6 +6589,8 @@ function bindEvents() {
     if (detailBtn) showOrderDetail(detailBtn.dataset.detail);
     const saveOrderAddressBtn = event.target.closest("[data-save-order-address]");
     if (saveOrderAddressBtn) saveOrderAddressFromDialog(saveOrderAddressBtn.dataset.saveOrderAddress);
+    const uploadOrderPhotosBtn = event.target.closest("[data-upload-order-photos]");
+    if (uploadOrderPhotosBtn) uploadOrderPhotosFromDialog(uploadOrderPhotosBtn.dataset.uploadOrderPhotos);
     const factoryDailyTab = event.target.closest("[data-factory-daily-tab]");
     if (factoryDailyTab) switchFactoryDailyTab(factoryDailyTab.dataset.factoryDailyTab);
     const settlementSaveBtn = event.target.closest("[data-save-settlement]");
