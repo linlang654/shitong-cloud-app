@@ -2552,12 +2552,11 @@ function relationOne(value) {
 }
 
 async function hydrateExceptionTicketEvidence(tickets) {
-  if (!tickets.length) return tickets;
-  return Promise.all(tickets.map(async (ticket) => {
-    const paths = Array.isArray(ticket.evidence_paths) ? ticket.evidence_paths.filter(Boolean) : [];
-    if (!paths.length) return { ...ticket, evidenceUrls: [] };
-    const { data } = await sb.storage.from("exception-evidence").createSignedUrls(paths, 60 * 60);
-    return { ...ticket, evidenceUrls: (data || []).map((entry) => entry.signedUrl).filter(Boolean) };
+  return tickets.map((ticket) => ({
+    ...ticket,
+    evidencePaths: Array.isArray(ticket.evidence_paths) ? ticket.evidence_paths.filter(Boolean) : [],
+    evidenceUrls: [],
+    evidenceLoaded: false,
   }));
 }
 
@@ -2575,6 +2574,7 @@ function renderExceptionTicketCard(ticket) {
   const resolved = !EXCEPTION_OPEN_STATUSES.includes(ticket.status);
   const evidenceKey = `exception-ticket-${ticket.id}`;
   const evidenceUrls = ticket.evidenceUrls || [];
+  const evidencePaths = ticket.evidencePaths || (Array.isArray(ticket.evidence_paths) ? ticket.evidence_paths : []);
   if (evidenceUrls.length) imagePreviewMap.set(evidenceKey, evidenceUrls);
   return `
     <article class="task-card exception-ticket-card ${ticket.priority === "紧急" ? "urgent" : ""}" data-exception-ticket="${ticket.id}">
@@ -2587,8 +2587,9 @@ function renderExceptionTicketCard(ticket) {
       ${evidenceUrls.length ? `<div class="exception-evidence-grid">${evidenceUrls.map((url, index) => {
         const singleImageKey = `${evidenceKey}-${index}`;
         imagePreviewMap.set(singleImageKey, [url]);
-        return `<button type="button" data-exception-evidence-single="${escapeHtml(singleImageKey)}" data-exception-evidence-all="${escapeHtml(evidenceKey)}" aria-label="查看异常照片 ${index + 1}" title="单击查看此图，双击查看全部照片"><img src="${escapeHtml(url)}" alt="异常证据 ${index + 1}" /></button>`;
-      }).join("")}</div>` : '<p class="hint">暂无异常照片</p>'}
+        return `<button type="button" data-exception-evidence-single="${escapeHtml(singleImageKey)}" data-exception-evidence-all="${escapeHtml(evidenceKey)}" aria-label="查看异常照片 ${index + 1}" title="单击查看此图，双击查看全部照片"><img src="${escapeHtml(url)}" alt="异常证据 ${index + 1}" loading="lazy" decoding="async" /></button>`;
+      }).join("")}</div>` : evidencePaths.length ? '<p class="hint">异常照片已保存，点击下方按钮后加载。</p>' : '<p class="hint">暂无异常照片</p>'}
+      ${evidencePaths.length && !evidenceUrls.length ? `<button type="button" class="ghost" data-load-exception-evidence="${escapeHtml(ticket.id)}" ${ticket.evidenceLoading ? "disabled" : ""}>${ticket.evidenceLoading ? "正在加载照片…" : `加载异常照片（${evidencePaths.length} 张）`}</button>${ticket.evidenceLoadError ? `<p class="warn">${escapeHtml(ticket.evidenceLoadError)}</p>` : ""}` : ""}
       ${ticket.proposed_solution ? `<p><strong>建议方案：</strong>${escapeHtml(ticket.proposed_solution)}</p>` : ""}
       ${ticket.customer_reply ? `<p><strong>客户回复：</strong>${escapeHtml(ticket.customer_reply)}</p>` : ""}
       ${ticket.resolution ? `<p><strong>处理结果：</strong>${escapeHtml(ticket.resolution)}</p>` : ""}
@@ -2598,6 +2599,30 @@ function renderExceptionTicketCard(ticket) {
         ${resolved ? "" : `<button class="ghost" type="button" data-exception-status="${ticket.id}" data-status="待客户">标记待客户</button><button class="ghost" type="button" data-exception-status="${ticket.id}" data-status="处理中">开始处理</button><button type="button" data-exception-status="${ticket.id}" data-status="已解决">处理完成</button>`}
       </div>
     </article>`;
+}
+
+async function loadExceptionTicketEvidence(ticketId) {
+  const ticket = currentExceptionTickets.find((row) => row.id === ticketId);
+  if (!ticket || ticket.evidenceLoaded || ticket.evidenceLoading) return;
+  const paths = ticket.evidencePaths || (Array.isArray(ticket.evidence_paths) ? ticket.evidence_paths : []);
+  if (!paths.length) return;
+  ticket.evidenceLoading = true;
+  const card = document.querySelector(`[data-exception-ticket="${ticketId}"]`);
+  if (card) card.outerHTML = renderExceptionTicketCard(ticket);
+  try {
+    const { data, error } = await sb.storage.from("exception-evidence").createSignedUrls(paths, 60 * 60);
+    if (error) throw error;
+    ticket.evidenceUrls = (data || []).map((entry) => entry.signedUrl).filter(Boolean);
+    if (!ticket.evidenceUrls.length) throw new Error("没有获取到照片链接");
+    ticket.evidenceLoaded = true;
+    ticket.evidenceLoadError = "";
+  } catch (error) {
+    ticket.evidenceLoadError = `照片加载失败：${error.message || error}`;
+  } finally {
+    ticket.evidenceLoading = false;
+    const refreshedCard = document.querySelector(`[data-exception-ticket="${ticketId}"]`);
+    if (refreshedCard) refreshedCard.outerHTML = renderExceptionTicketCard(ticket);
+  }
 }
 
 function ensureExceptionTicketDialog() {
@@ -2616,7 +2641,8 @@ function ensureExceptionTicketDialog() {
         <label id="exceptionTicketRetryDateField" class="field-group hidden"><span>补取日期</span><input id="exceptionTicketRetryDate" class="input" type="date" /><small>选中的水洗标会单独进入补取路线，订单内其他物品不受影响。</small></label>
         <label class="field-group"><span>问题说明</span><textarea id="exceptionTicketDescription" class="input" rows="3" placeholder="例如：前后logo存在脱落风险，建议先联系客户确认"></textarea></label>
         <label class="field-group"><span>建议处理方案</span><input id="exceptionTicketSolution" class="input" placeholder="例如：客户确认后继续清洗 / 返洗 / 退洗" /></label>
-        <label class="field-group"><span>异常照片（可多选）</span><input id="exceptionTicketFiles" class="input" type="file" accept="image/*" multiple /></label>
+        <label class="field-group"><span>异常照片（最多 6 张）</span><input id="exceptionTicketFiles" class="input" type="file" accept="image/*" multiple /></label>
+        <p class="hint">照片会在上传前缩小并压缩，单张保存约 600KB（上限 800KB）；原图每张最多 100MB。</p>
         <p id="exceptionTicketMessage" class="hint" role="status" aria-live="polite"></p>
         <div class="actions"><button type="button" data-submit-exception-ticket>提交工单</button><button class="ghost" type="button" data-close-exception-ticket>取消</button></div>
       </form>
@@ -2778,10 +2804,19 @@ async function submitExceptionTicket() {
     if (existingError) throw existingError;
     if (existingTicket) throw new Error("这个水洗标已有同类型待处理工单，请勿重复上报");
     const files = [...($("exceptionTicketFiles")?.files || [])];
+    if (files.length > 6) throw new Error("异常照片最多选择 6 张。");
+    if (files.some((file) => !String(file.type || "").startsWith("image/") || file.size > 100 * 1024 * 1024)) {
+      throw new Error("请选择图片文件，每张原图不能超过 100MB。");
+    }
     const evidencePaths = [];
-    for (const file of files) {
-      const path = `${item.order_id}/${crypto.randomUUID()}-${safeEvidenceFileName(file.name)}`;
-      const { error: uploadError } = await sb.storage.from("exception-evidence").upload(path, file, { contentType: file.type || "image/jpeg", upsert: false });
+    for (const [index, file] of files.entries()) {
+      setMessage("exceptionTicketMessage", `正在压缩并上传第 ${index + 1}/${files.length} 张照片…`, "hint");
+      const compressedFile = await prepareReturnDeliveryPhoto(file);
+      if (compressedFile.size > RETURN_DELIVERY_STORED_MAX_BYTES) {
+        throw new Error(`${file.name} 压缩后仍超过 800KB；请转换为 JPG 后重试。`);
+      }
+      const path = `${item.order_id}/${crypto.randomUUID()}-${safeEvidenceFileName(compressedFile.name)}`;
+      const { error: uploadError } = await sb.storage.from("exception-evidence").upload(path, compressedFile, { contentType: compressedFile.type || "image/jpeg", upsert: false });
       if (uploadError) throw uploadError;
       evidencePaths.push(path);
     }
@@ -6563,6 +6598,8 @@ function bindEvents() {
       }, 220);
       return;
     }
+    const loadExceptionEvidenceBtn = event.target.closest("[data-load-exception-evidence]");
+    if (loadExceptionEvidenceBtn) loadExceptionTicketEvidence(loadExceptionEvidenceBtn.dataset.loadExceptionEvidence);
     const fullImageBtn = event.target.closest("[data-full-image]");
     if (fullImageBtn) window.open(fullImageBtn.dataset.fullImage, "_blank", "noopener,noreferrer");
     const dashboardTarget = event.target.closest("[data-dashboard-target]");
