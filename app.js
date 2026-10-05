@@ -1,4 +1,7 @@
-const CONFIG_KEY = "shitong_cloud_supabase_config";
+const IS_TEMP_ENVIRONMENT = new URLSearchParams(window.location.search).get("env") === "temporary";
+const CONFIG_KEY = IS_TEMP_ENVIRONMENT
+  ? "shitong_cloud_supabase_config_temporary"
+  : "shitong_cloud_supabase_config";
 const AFTER_SALES_PHONE = "15599157072";
 const APP_BUILD = (() => {
   const scriptUrl = document.currentScript?.src || "";
@@ -8,6 +11,10 @@ const APP_BUILD = (() => {
 const DEFAULT_SUPABASE_CONFIG = {
   url: "https://ukzjgjfefqlyeqecqyiz.supabase.co",
   anonKey: "sb_publishable_OAwXdqIPnQqYHUJj4Md-pw_HAFIMMcO",
+};
+const TEMP_SUPABASE_CONFIG = {
+  url: "https://bjlimqtrkdokmjpdcraa.supabase.co",
+  anonKey: "sb_publishable_ogvv4aULMe1_13Tla4y-ZQ_JLOdEoCt",
 };
 const OVERDUE_HOURS = 48;
 const APP_MODE = document.body?.dataset.appMode || new URLSearchParams(window.location.search).get("page") || "admin";
@@ -39,7 +46,9 @@ const RETURN_DELIVERY_BUCKET = "return-delivery-proof";
 const RETURN_DELIVERY_MAX_BYTES = 10 * 1024 * 1024;
 const RETURN_DELIVERY_TARGET_BYTES = 600 * 1024;
 const RETURN_DELIVERY_STORED_MAX_BYTES = 800 * 1024;
-const DELIVERY_PROOF_PUBLIC_URL = "https://linlang654.github.io/shitong-cloud-app/p.html?c=";
+const DELIVERY_PROOF_PUBLIC_URL = IS_TEMP_ENVIRONMENT
+  ? "https://linlang654.github.io/shitong-cloud-app/p.html?env=temporary&c="
+  : "https://linlang654.github.io/shitong-cloud-app/p.html?c=";
 const EXCEPTION_OPEN_STATUSES = ["待客服", "待客户", "处理中"];
 const EXCEPTION_TICKET_TYPES = ["材质风险", "清洗效果", "原有破损", "受潮", "漏取/补取", "返洗", "退洗", "补差", "少件/串单", "配送异常", "其他异常"];
 const PICKUP_OPEN_STATUSES = new Set(["待取件", "未找到"]);
@@ -454,14 +463,15 @@ function setConnectionStatus(message, state = "checking") {
 }
 
 function loadConfig() {
+  const fallbackConfig = IS_TEMP_ENVIRONMENT ? TEMP_SUPABASE_CONFIG : DEFAULT_SUPABASE_CONFIG;
   try {
     const saved = JSON.parse(localStorage.getItem(CONFIG_KEY) || "{}");
     return {
-      url: saved.url || DEFAULT_SUPABASE_CONFIG.url,
-      anonKey: saved.anonKey || DEFAULT_SUPABASE_CONFIG.anonKey,
+      url: saved.url || fallbackConfig.url,
+      anonKey: saved.anonKey || fallbackConfig.anonKey,
     };
   } catch {
-    return DEFAULT_SUPABASE_CONFIG;
+    return fallbackConfig;
   }
 }
 
@@ -604,7 +614,10 @@ function switchView(viewName) {
       student: "./track.html",
     };
     if (dedicatedPages[viewName]) {
-      const buildQuery = APP_BUILD ? `?build=${encodeURIComponent(APP_BUILD)}` : "";
+      const params = new URLSearchParams();
+      if (IS_TEMP_ENVIRONMENT) params.set("env", "temporary");
+      if (APP_BUILD) params.set("build", APP_BUILD);
+      const buildQuery = params.size ? `?${params.toString()}` : "";
       window.location.href = `${dedicatedPages[viewName]}${buildQuery}`;
       return;
     }
@@ -624,7 +637,10 @@ function applyRouteFromUrl() {
   const page = params.get("page") || params.get("view");
   if (APP_MODE === "admin" && ["courier", "factory", "student", "track"].includes(page)) {
     const target = page === "student" || page === "track" ? "track" : page;
-    window.location.replace(`./${target}.html`);
+    const routeParams = new URLSearchParams();
+    if (IS_TEMP_ENVIRONMENT) routeParams.set("env", "temporary");
+    if (params.has("build")) routeParams.set("build", params.get("build"));
+    window.location.replace(`./${target}.html${routeParams.size ? `?${routeParams.toString()}` : ""}`);
     return;
   }
   const routeMap = {
@@ -6752,9 +6768,17 @@ function bindEvents() {
   });
 }
 
+if (IS_TEMP_ENVIRONMENT) {
+  document.body?.classList.add("temporary-environment");
+  document.body?.insertAdjacentHTML(
+    "afterbegin",
+    '<div class="temporary-env-banner" role="status">临时空数据环境 · 与原系统数据隔离</div>',
+  );
+}
+
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=71", { updateViaCache: "none" })
+    .register("./sw.js?v=74", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
