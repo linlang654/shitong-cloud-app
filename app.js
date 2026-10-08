@@ -6768,17 +6768,9 @@ function bindEvents() {
   });
 }
 
-if (IS_TEMP_ENVIRONMENT) {
-  document.body?.classList.add("temporary-environment");
-  document.body?.insertAdjacentHTML(
-    "afterbegin",
-    '<div class="temporary-env-banner" role="status">临时空数据环境 · 与原系统数据隔离</div>',
-  );
-}
-
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=74", { updateViaCache: "none" })
+    .register("./sw.js?v=75", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
