@@ -30,11 +30,12 @@ const ROLE_ACCESS = {
   factory: ["admin", "factory"],
 };
 const ORDER_STATUSES = ["待取件", "待补取", "已取件", "未找到", "已入厂", "已出库", "配送中", "已送达", "异常"];
-const ITEM_STATUSES = ["待取件", "待补取", "已取件", "未找到", "已入厂", "清洗中", "已出库", "配送中", "已送达", "异常"];
+const ITEM_STATUSES = ["待取件", "待补取", "已取件", "未找到", "已入厂", "清洗中", "已出库", "配送中", "已送达", "异常", "退洗"];
 const ORDER_EDITABLE_STATUSES = ORDER_STATUSES.filter((status) => status !== "待补取");
 const ITEM_EDITABLE_STATUSES = ITEM_STATUSES.filter((status) => status !== "待补取");
 const FACTORY_IN_OVERRIDE_STATUSES = new Set(["待取件", "待补取", "已取件", "未找到", "异常"]);
-const FACTORY_OUT_OVERRIDE_STATUSES = new Set(["待取件", "待补取", "已取件", "未找到", "异常", "已入厂", "清洗中"]);
+const FACTORY_OUT_OVERRIDE_STATUSES = new Set(["待取件", "待补取", "已取件", "未找到", "异常", "已入厂", "清洗中", "退洗"]);
+const FACTORY_PENDING_OUT_STATUSES = ["已入厂", "清洗中", "退洗"];
 const SETTLEMENT_UNCONFIRMED = "unconfirmed";
 const SETTLEMENT_OTHER = "other";
 const WASH_DECISION_NORMAL = "normal";
@@ -154,6 +155,8 @@ const settlementCatalogDraft = new Map();
 let settlementCatalogSearch = "";
 let settlementCatalogActiveOnly = true;
 let labelReviewRows = [];
+let activeWashAdjustmentRow = null;
+let activeWashAdjustmentSelect = null;
 let labelVisibleRows = [];
 const labelSelectedItems = new Set();
 let labelBulkSaveBusy = false;
@@ -2471,6 +2474,39 @@ async function updateOrderStatus(orderId, status) {
 async function updateOrderItemStatus(itemId, orderId, barcode, status, selectElement) {
   if (!itemId || !orderId || !ITEM_STATUSES.includes(status)) return;
   if (status === "待补取") return alert("请使用右侧“安排补取”，系统会同时生成补取路线。");
+  if (status === "退洗") {
+    if (!washAdjustmentSchemaAvailable) {
+      if (selectElement) selectElement.value = selectElement.dataset.originalStatus || "待取件";
+      return alert(washAdjustmentMigrationMessage());
+    }
+    if (selectElement) selectElement.dataset.previousStatus = selectElement.dataset.originalStatus || "待取件";
+    if (selectElement) selectElement.disabled = true;
+    const { data: item, error } = await sb.from("order_items").select("*, orders(*)").eq("id", itemId).maybeSingle();
+    if (error || !item) {
+      if (selectElement) selectElement.disabled = false;
+      if (selectElement) selectElement.value = selectElement.dataset.previousStatus || "待取件";
+      return alert(`无法开启退洗处理：${error?.message || "没有找到这个水洗标"}`);
+    }
+    if (["已出库", "配送中", "已送达"].includes(item.item_status)) {
+      if (selectElement) {
+        selectElement.disabled = false;
+        selectElement.value = item.item_status;
+      }
+      return alert("该物品已经出库，不能再改为退洗；请在退送任务中处理。");
+    }
+    openWashAdjustmentDialog(itemId, item, selectElement);
+    if (selectElement) selectElement.disabled = false;
+    return;
+  }
+  const { data: currentItem, error: currentItemError } = await sb.from("order_items").select("item_status,wash_decision").eq("id", itemId).maybeSingle();
+  if (currentItemError) {
+    if (selectElement) selectElement.value = selectElement.dataset.originalStatus || "待取件";
+    return alert(`读取水洗标状态失败：${currentItemError.message}`);
+  }
+  if (currentItem?.wash_decision === WASH_DECISION_RETURN_PENDING) {
+    if (selectElement) selectElement.value = currentItem.item_status;
+    return alert("该物品已在退洗流程中，请通过退洗处理入口修改，避免影响退款和送回任务。");
+  }
   if (selectElement) selectElement.disabled = true;
   const { error } = await sb.from("order_items").update({
     item_status: status,
@@ -3740,10 +3776,24 @@ function updateWashAdjustmentDialogUi() {
   }
 }
 
-function openWashAdjustmentDialog(itemId) {
+function openWashAdjustmentDialog(itemId, suppliedRow = null, statusSelect = null) {
   if (!washAdjustmentSchemaAvailable) return alert(washAdjustmentMigrationMessage());
-  const row = labelReviewRows.find((entry) => entry.id === itemId);
+  const sourceRow = labelReviewRows.find((entry) => entry.id === itemId) || suppliedRow;
+  const row = sourceRow && !sourceRow.条形编码 ? {
+    ...sourceRow,
+    条形编码: sourceRow.barcode,
+    姓名: sourceRow.orders?.customer_name || "",
+    电话: sourceRow.orders?.phone || "",
+    物品: sourceRow.product_name || "",
+    校区: sourceRow.orders?.campus || sourceRow.orders?.school || "",
+    wash_decision: sourceRow.wash_decision || WASH_DECISION_NORMAL,
+    wash_decision_reason: sourceRow.wash_decision_reason || "",
+    wash_decision_note: sourceRow.wash_decision_note || "",
+    price_adjustment_amount: Number(sourceRow.price_adjustment_amount) || 0,
+  } : sourceRow;
   if (!row) return alert("没有找到这个水洗标");
+  activeWashAdjustmentRow = row;
+  activeWashAdjustmentSelect = statusSelect;
   $("orderDialogTitle").textContent = "单个水洗标差价 / 退洗";
   $("orderDialogBody").innerHTML = `
     <div class="wash-adjustment-summary">
@@ -3779,7 +3829,7 @@ function openWashAdjustmentDialog(itemId) {
 
 async function saveWashAdjustment(itemId) {
   if (!washAdjustmentSchemaAvailable) return setMessage("washAdjustmentMessage", washAdjustmentMigrationMessage(), "warn");
-  const row = labelReviewRows.find((entry) => entry.id === itemId);
+  const row = labelReviewRows.find((entry) => entry.id === itemId) || (activeWashAdjustmentRow?.id === itemId ? activeWashAdjustmentRow : null);
   const decision = $("washAdjustmentDecision")?.value || WASH_DECISION_NORMAL;
   const definition = washDecisionDefinition(decision);
   const amount = definition.adjustmentType === "none" ? 0 : Number($("washAdjustmentAmount")?.value);
@@ -3803,6 +3853,7 @@ async function saveWashAdjustment(itemId) {
   }
   const updatedAt = new Date().toISOString();
   const { error } = await sb.from("order_items").update({
+    ...(decision === WASH_DECISION_RETURN_PENDING ? { item_status: "退洗" } : {}),
     wash_decision: decision,
     price_adjustment_type: definition.adjustmentType,
     price_adjustment_amount: amount,
@@ -3822,7 +3873,11 @@ async function saveWashAdjustment(itemId) {
     note: `${definition.label}${amount > 0 ? `，金额 ¥${amount.toFixed(2)}` : ""}${reason ? `，原因：${reason}` : ""}${note ? `，备注：${note}` : ""}`,
   });
   $("orderDialog").close();
+  const orderId = row?.order_id;
+  activeWashAdjustmentRow = null;
+  activeWashAdjustmentSelect = null;
   await loadLabels();
+  if (orderId) await showOrderDetail(orderId);
   setMessage("labelReviewMessage", `${row?.条形编码 || "水洗标"} 已标记为“${definition.label}”。`, "success");
 }
 
@@ -3956,7 +4011,7 @@ async function showOrderDetail(orderId) {
     <section class="panel table-panel">
       <h3>物品 / 水洗标</h3>
       ${canEditItemStatus ? '<p class="hint">这里修改只影响当前水洗标；整单状态会按该订单下所有水洗标的最慢进度自动汇总。</p>' : ""}
-      <div class="table-wrap"><table><thead><tr><th>水洗标</th><th>商品</th><th>规格</th><th>结算品类</th><th>状态</th><th>图片</th>${canEditItemStatus ? "<th>操作</th>" : ""}</tr></thead><tbody>${(itemResult.data || []).map((item) => `<tr><td>${escapeHtml(item.barcode)}</td><td>${escapeHtml(item.product_name)}</td><td>${escapeHtml(item.spec)}</td><td>${escapeHtml(settlementDisplayLabel(item))}${resolvedSettlementCategory(item).confirmed ? "" : "（待确认）"}</td><td>${canEditItemStatus ? `<select class="input compact-input" data-order-item-status="${escapeHtml(item.id)}" data-order-id="${escapeHtml(order.id)}" data-item-barcode="${escapeHtml(item.barcode)}">${item.item_status === "待补取" ? '<option value="待补取" selected disabled>待补取（由补取任务控制）</option>' : ""}${ITEM_EDITABLE_STATUSES.map((status) => `<option value="${escapeHtml(status)}" ${status === item.item_status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}</select>` : escapeHtml(item.item_status)}</td><td>${item.image_links ? `<a href="${escapeHtml(item.image_links.split("\n")[0])}" target="_blank">查看</a>` : ""}</td>${canEditItemStatus ? `<td>${["待取件", "未找到", "待补取", "已取件"].includes(item.item_status) ? `<button class="ghost small-btn" type="button" data-schedule-retry-item="${escapeHtml(item.id)}" data-retry-order="${escapeHtml(order.id)}">安排补取</button>` : "—"}</td>` : ""}</tr>`).join("")}</tbody></table></div>
+    <div class="table-wrap"><table><thead><tr><th>水洗标</th><th>商品</th><th>规格</th><th>结算品类</th><th>状态</th><th>图片</th>${canEditItemStatus ? "<th>操作</th>" : ""}</tr></thead><tbody>${(itemResult.data || []).map((item) => `<tr><td>${escapeHtml(item.barcode)}</td><td>${escapeHtml(item.product_name)}</td><td>${escapeHtml(item.spec)}</td><td>${escapeHtml(settlementDisplayLabel(item))}${resolvedSettlementCategory(item).confirmed ? "" : "（待确认）"}</td><td>${canEditItemStatus ? `<select class="input compact-input" data-order-item-status="${escapeHtml(item.id)}" data-order-id="${escapeHtml(order.id)}" data-item-barcode="${escapeHtml(item.barcode)}" data-original-status="${escapeHtml(item.item_status)}">${item.item_status === "待补取" ? '<option value="待补取" selected disabled>待补取（由补取任务控制）</option>' : ""}${ITEM_EDITABLE_STATUSES.map((status) => `<option value="${escapeHtml(status)}" ${status === item.item_status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}</select>` : escapeHtml(item.item_status)}</td><td>${item.image_links ? `<a href="${escapeHtml(item.image_links.split("\n")[0])}" target="_blank">查看</a>` : ""}</td>${canEditItemStatus ? `<td>${["待取件", "未找到", "待补取", "已取件"].includes(item.item_status) ? `<button class="ghost small-btn" type="button" data-schedule-retry-item="${escapeHtml(item.id)}" data-retry-order="${escapeHtml(order.id)}">安排补取</button>` : "—"}</td>` : ""}</tr>`).join("")}</tbody></table></div>
     </section>
     <section class="panel">
       <h3>状态时间线</h3>
@@ -4805,10 +4860,10 @@ async function confirmCourierReturnOrder(groupKey) {
 
 function renderFactoryPendingItems() {
   const pendingIn = factoryItemRows.filter((item) => item.item_status === "已取件").length;
-  const pendingOut = factoryItemRows.filter((item) => ["已入厂", "清洗中"].includes(item.item_status)).length;
+  const pendingOut = factoryItemRows.filter((item) => FACTORY_PENDING_OUT_STATUSES.includes(item.item_status)).length;
   const rows = factoryItemRows.filter((item) => {
     if (factoryPendingView === "pending-in") return item.item_status === "已取件";
-    if (factoryPendingView === "pending-out") return ["已入厂", "清洗中"].includes(item.item_status);
+    if (factoryPendingView === "pending-out") return FACTORY_PENDING_OUT_STATUSES.includes(item.item_status);
     return false;
   });
   document.querySelectorAll("[data-factory-pending-view]").forEach((button) => {
@@ -4847,9 +4902,9 @@ async function loadFactoryItems() {
   if (factoryDashboardFilter === "pending-in") {
     query = query.eq("item_status", "已取件");
   } else if (factoryDashboardFilter === "pending-out") {
-    query = query.in("item_status", ["已入厂", "清洗中"]);
+    query = query.in("item_status", FACTORY_PENDING_OUT_STATUSES);
   } else {
-    query = query.in("item_status", ["已取件", "已入厂", "清洗中"]);
+    query = query.in("item_status", ["已取件", ...FACTORY_PENDING_OUT_STATUSES]);
   }
   const { data, error, count } = await query.limit(500);
   if (error) return setMessage("factoryItemList", error.message, "warn");
@@ -4862,7 +4917,7 @@ async function loadFactoryItems() {
     queueTitle = "待入库物品";
     factoryPendingView = "pending-in";
   } else if (factoryDashboardFilter === "pending-out") {
-    rows = rows.filter((item) => ["已入厂", "清洗中"].includes(item.item_status));
+    rows = rows.filter((item) => FACTORY_PENDING_OUT_STATUSES.includes(item.item_status));
     activeLabel = "驾驶舱筛选：待出库";
     queueTitle = "待出库物品";
     factoryPendingView = "pending-out";
@@ -6134,6 +6189,7 @@ function factoryScanFailure(barcode, message) {
 function factoryScanStatusCheck(scanType, itemStatus) {
   const status = text(itemStatus);
   if (scanType === "factory_in") {
+    if (status === "退洗") return { allowed: false, message: "该物品已标记退洗，不需要入库清洗；请按退洗流程出库送回" };
     if (status === "已入厂" || status === "清洗中") return { allowed: false, message: "已经入库，无需重复操作" };
     if (["已出库", "配送中", "已送达"].includes(status)) return { allowed: false, message: `当前状态为“${status}”，不能倒退为入库` };
     return FACTORY_IN_OVERRIDE_STATUSES.has(status)
@@ -6510,6 +6566,11 @@ async function trackByPhone() {
 }
 
 function bindEvents() {
+  $("orderDialog")?.addEventListener("close", () => {
+    if (activeWashAdjustmentSelect) activeWashAdjustmentSelect.value = activeWashAdjustmentSelect.dataset.originalStatus || "待取件";
+    activeWashAdjustmentSelect = null;
+    activeWashAdjustmentRow = null;
+  });
   on("saveConfigBtn", "click", saveConfig);
   on("loginBtn", "click", login);
   on("signOutBtn", "click", signOut);
@@ -6658,7 +6719,12 @@ function bindEvents() {
     if (washAdjustmentBtn) openWashAdjustmentDialog(washAdjustmentBtn.dataset.washAdjustment);
     const saveWashAdjustmentBtn = event.target.closest("[data-save-wash-adjustment]");
     if (saveWashAdjustmentBtn) saveWashAdjustment(saveWashAdjustmentBtn.dataset.saveWashAdjustment);
-    if (event.target.closest("[data-close-wash-adjustment]")) $("orderDialog")?.close();
+    if (event.target.closest("[data-close-wash-adjustment]")) {
+      if (activeWashAdjustmentSelect) activeWashAdjustmentSelect.value = activeWashAdjustmentSelect.dataset.originalStatus || "待取件";
+      activeWashAdjustmentSelect = null;
+      activeWashAdjustmentRow = null;
+      $("orderDialog")?.close();
+    }
     if (event.target.closest("[data-open-label-review]")) switchAdminSection("labels");
     const confirmDormBtn = event.target.closest("[data-confirm-dorm]");
     if (confirmDormBtn) saveDorm(confirmDormBtn.dataset.confirmDorm, { confirm: true, next: true });
@@ -6770,7 +6836,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=75", { updateViaCache: "none" })
+    .register("./sw.js?v=76", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
