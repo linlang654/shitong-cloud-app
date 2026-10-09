@@ -29,9 +29,9 @@ const ROLE_ACCESS = {
   courier: ["admin", "courier"],
   factory: ["admin", "factory"],
 };
-const ORDER_STATUSES = ["待取件", "待补取", "已取件", "未找到", "已入厂", "已出库", "配送中", "已送达", "异常"];
+const ORDER_STATUSES = ["待取件", "待补取", "已取件", "未找到", "已入厂", "已出库", "配送中", "已送达", "已退单", "已完结", "异常"];
 const ITEM_STATUSES = ["待取件", "待补取", "已取件", "未找到", "已入厂", "清洗中", "已出库", "配送中", "已送达", "异常", "退洗"];
-const ORDER_EDITABLE_STATUSES = ORDER_STATUSES.filter((status) => status !== "待补取");
+const ORDER_EDITABLE_STATUSES = ORDER_STATUSES.filter((status) => !["待补取", "已退单", "已完结"].includes(status));
 const ITEM_EDITABLE_STATUSES = ITEM_STATUSES.filter((status) => status !== "待补取");
 const FACTORY_IN_OVERRIDE_STATUSES = new Set(["待取件", "待补取", "已取件", "未找到", "异常"]);
 const FACTORY_OUT_OVERRIDE_STATUSES = new Set(["待取件", "待补取", "已取件", "未找到", "异常", "已入厂", "清洗中", "退洗"]);
@@ -43,6 +43,8 @@ const WASH_DECISION_SUPPLEMENT_PENDING = "supplement_pending";
 const WASH_DECISION_SUPPLEMENT_CONFIRMED = "supplement_confirmed";
 const WASH_DECISION_RETURN_PENDING = "return_pending";
 const WASH_DECISION_RETURNED = "returned";
+const WASH_DECISION_RETURN_CANCELLED = "return_cancelled";
+const UNPICKED_ITEM_STATUSES = new Set(["待取件", "待补取", "未找到"]);
 const RETURN_DELIVERY_BUCKET = "return-delivery-proof";
 const RETURN_DELIVERY_MAX_BYTES = 10 * 1024 * 1024;
 const RETURN_DELIVERY_TARGET_BYTES = 600 * 1024;
@@ -60,6 +62,7 @@ const WASH_DECISION_OPTIONS = [
   { key: WASH_DECISION_SUPPLEMENT_CONFIRMED, label: "已补差，继续清洗", adjustmentType: "supplement" },
   { key: WASH_DECISION_RETURN_PENDING, label: "不洗，待退回", adjustmentType: "refund" },
   { key: WASH_DECISION_RETURNED, label: "已退洗并退回", adjustmentType: "refund" },
+  { key: WASH_DECISION_RETURN_CANCELLED, label: "未取件退单（直接完结）", adjustmentType: "refund" },
 ];
 const DEFAULT_SETTLEMENT_CATEGORIES = [
   { key: "regular_shoe", label: "休闲鞋/运动鞋/帆布鞋/板鞋", shortLabel: "普通鞋", unit: "双", detail: "含网面普通鞋；特殊材质和靴类需另选" },
@@ -82,7 +85,7 @@ const STUDENT_TIMELINE_STEPS = [
   { key: "picked", label: "已取件待清洗", statuses: ["已取件"] },
   { key: "factory", label: "已入厂清洗中", statuses: ["已入厂", "清洗中"] },
   { key: "outbound", label: "已出库待配送", statuses: ["已出库", "配送中"] },
-  { key: "delivered", label: "已送达", statuses: ["已送达"] },
+  { key: "delivered", label: "已送达", statuses: ["已送达", "已退单", "已完结"] },
 ];
 
 let sb = null;
@@ -309,7 +312,12 @@ function washDecisionLabel(item) {
 }
 
 function washDecisionIsReturn(item) {
-  return [WASH_DECISION_RETURN_PENDING, WASH_DECISION_RETURNED].includes(text(item?.wash_decision));
+  return [WASH_DECISION_RETURN_PENDING, WASH_DECISION_RETURNED, WASH_DECISION_RETURN_CANCELLED].includes(text(item?.wash_decision));
+}
+
+function factoryItemNeedsOutbound(item) {
+  return ["已入厂", "清洗中"].includes(text(item?.item_status))
+    || (text(item?.item_status) === "退洗" && item?.wash_decision === WASH_DECISION_RETURN_PENDING);
 }
 
 function normalizeRecognitionText(value) {
@@ -1825,7 +1833,7 @@ async function loadStats() {
     sb.from("return_tasks").select("id", { count: "exact", head: true }).eq("status", "待送回"),
     sb.from("orders").select("id", { count: "exact", head: true }).or("exception_note.neq.,school.eq.学校未识别,campus.eq.校区未识别,building.eq.楼栋未识别,order_status.eq.异常,order_status.eq.未找到"),
     exceptionTicketsQuery,
-    sb.from("orders").select("id,order_status,updated_at").neq("order_status", "已送达").lt("updated_at", overdueBefore),
+    sb.from("orders").select("id,order_status,updated_at").neq("order_status", "已送达").neq("order_status", "已退单").neq("order_status", "已完结").lt("updated_at", overdueBefore),
   ]);
   const exceptionTotal = (exceptions.error ? 0 : exceptions.count || 0) + (exceptionTickets.error ? 0 : exceptionTickets.count || 0);
   const dashboardValues = [
@@ -2271,7 +2279,7 @@ function inDateRange(order, startText, endText) {
 
 function isOverdueOrder(order) {
   const updatedAt = Date.parse(order.updated_at || "");
-  if (!Number.isFinite(updatedAt) || order.order_status === "已送达") return false;
+  if (!Number.isFinite(updatedAt) || ["已送达", "已退单", "已完结"].includes(order.order_status)) return false;
   return updatedAt < Date.now() - OVERDUE_HOURS * 60 * 60 * 1000;
 }
 
@@ -2414,8 +2422,9 @@ function renderOrderRows(rows) {
       <td>${escapeHtml(order.phone)}</td>
       <td>${escapeHtml(`${order.school || ""}${orderCampusName(order)}${order.building || ""}`)}</td>
       <td>
-        <select class="input compact-input" data-order-status="${order.id}">
+        <select class="input compact-input" data-order-status="${order.id}" ${["已退单", "已完结"].includes(order.order_status) ? "disabled" : ""}>
           ${order.order_status === "待补取" ? '<option value="待补取" selected disabled>待补取（按水洗标处理）</option>' : ""}
+          ${["已退单", "已完结"].includes(order.order_status) ? `<option value="${escapeHtml(order.order_status)}" selected disabled>${escapeHtml(order.order_status)}（自动完结）</option>` : ""}
           ${ORDER_EDITABLE_STATUSES.map((status) => `<option value="${escapeHtml(status)}" ${status === order.order_status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}
         </select>
       </td>
@@ -2494,7 +2503,8 @@ async function updateOrderItemStatus(itemId, orderId, barcode, status, selectEle
       }
       return alert("该物品已经出库，不能再改为退洗；请在退送任务中处理。");
     }
-    openWashAdjustmentDialog(itemId, item, selectElement);
+    const directUnpickedReturn = UNPICKED_ITEM_STATUSES.has(item.item_status);
+    openWashAdjustmentDialog(itemId, item, selectElement, directUnpickedReturn);
     if (selectElement) selectElement.disabled = false;
     return;
   }
@@ -3747,8 +3757,11 @@ async function saveSelectedSettlementCategories() {
   setMessage("labelReviewMessage", failed ? `已保存 ${succeeded} 个，失败 ${failed} 个，请重新选择后重试。` : `已一次保存 ${succeeded} 个水洗标的结算品类。`, failed ? "warn" : "success");
 }
 
-function washAdjustmentOptionHtml(row) {
+function washAdjustmentOptionHtml(row, directUnpickedReturn = false) {
   return WASH_DECISION_OPTIONS
+    .filter((option) => directUnpickedReturn
+      ? option.key === WASH_DECISION_RETURN_CANCELLED
+      : option.key !== WASH_DECISION_RETURN_CANCELLED || row.wash_decision === WASH_DECISION_RETURN_CANCELLED)
     .filter((option) => option.key !== WASH_DECISION_RETURNED || row.wash_decision === WASH_DECISION_RETURNED)
     .map((option) => `<option value="${option.key}" ${row.wash_decision === option.key ? "selected" : ""}>${escapeHtml(option.label)}</option>`)
     .join("");
@@ -3766,7 +3779,9 @@ function updateWashAdjustmentDialogUi() {
     $("washAdjustmentReasonLabel").textContent = definition.adjustmentType === "refund" ? "退洗原因" : "补差原因";
   }
   if ($("washAdjustmentHelp")) {
-    $("washAdjustmentHelp").textContent = decision === WASH_DECISION_RETURN_PENDING
+    $("washAdjustmentHelp").textContent = decision === WASH_DECISION_RETURN_CANCELLED
+      ? "物品尚未被取件员取走；保存后本件直接退单完结，不进入工厂和送回流程。若同单还有其他物品，整单会在其他物品也完成后自动完结。"
+      : decision === WASH_DECISION_RETURN_PENDING
       ? "保存后该水洗标标记为不清洗；工厂出库后会作为单件退洗物品送回。"
       : decision === WASH_DECISION_SUPPLEMENT_PENDING
         ? "待客户确认并完成补差前，系统禁止该水洗标出库。"
@@ -3776,7 +3791,7 @@ function updateWashAdjustmentDialogUi() {
   }
 }
 
-function openWashAdjustmentDialog(itemId, suppliedRow = null, statusSelect = null) {
+function openWashAdjustmentDialog(itemId, suppliedRow = null, statusSelect = null, directUnpickedReturn = false) {
   if (!washAdjustmentSchemaAvailable) return alert(washAdjustmentMigrationMessage());
   const sourceRow = labelReviewRows.find((entry) => entry.id === itemId) || suppliedRow;
   const row = sourceRow && !sourceRow.条形编码 ? {
@@ -3786,12 +3801,16 @@ function openWashAdjustmentDialog(itemId, suppliedRow = null, statusSelect = nul
     电话: sourceRow.orders?.phone || "",
     物品: sourceRow.product_name || "",
     校区: sourceRow.orders?.campus || sourceRow.orders?.school || "",
-    wash_decision: sourceRow.wash_decision || WASH_DECISION_NORMAL,
+    wash_decision: directUnpickedReturn
+      ? WASH_DECISION_RETURN_CANCELLED
+      : sourceRow.wash_decision || WASH_DECISION_NORMAL,
     wash_decision_reason: sourceRow.wash_decision_reason || "",
     wash_decision_note: sourceRow.wash_decision_note || "",
     price_adjustment_amount: Number(sourceRow.price_adjustment_amount) || 0,
   } : sourceRow;
   if (!row) return alert("没有找到这个水洗标");
+  if (directUnpickedReturn) row.wash_decision = WASH_DECISION_RETURN_CANCELLED;
+  const terminalUnpickedReturn = row.wash_decision === WASH_DECISION_RETURN_CANCELLED;
   activeWashAdjustmentRow = row;
   activeWashAdjustmentSelect = statusSelect;
   $("orderDialogTitle").textContent = "单个水洗标差价 / 退洗";
@@ -3803,7 +3822,7 @@ function openWashAdjustmentDialog(itemId, suppliedRow = null, statusSelect = nul
     </div>
     <label class="field-group" for="washAdjustmentDecision">
       <span>处理方式</span>
-      <select id="washAdjustmentDecision" class="input">${washAdjustmentOptionHtml(row)}</select>
+      <select id="washAdjustmentDecision" class="input" ${directUnpickedReturn || terminalUnpickedReturn ? "disabled" : ""}>${washAdjustmentOptionHtml(row, directUnpickedReturn || terminalUnpickedReturn)}</select>
     </label>
     <div id="washAdjustmentFields" class="wash-adjustment-fields">
       <label class="field-group" for="washAdjustmentAmount">
@@ -3844,6 +3863,9 @@ async function saveWashAdjustment(itemId) {
   if (decision === WASH_DECISION_RETURN_PENDING && ["已出库", "配送中", "已送达"].includes(row?.item_status)) {
     return setMessage("washAdjustmentMessage", "该物品已经出库，不能再改为待退洗。", "warn");
   }
+  if (decision === WASH_DECISION_RETURN_CANCELLED && !UNPICKED_ITEM_STATUSES.has(row?.item_status) && row?.wash_decision !== WASH_DECISION_RETURN_CANCELLED) {
+    return setMessage("washAdjustmentMessage", "只有尚未取件的物品可以直接退单，请按退洗送回流程处理。", "warn");
+  }
   setMessage("washAdjustmentMessage", "正在保存处理结果...", "hint");
   const settlementValues = settlementValuesFromRow(itemId);
   if (validSettlementCategoryKey(settlementValues.categoryKey)
@@ -3852,8 +3874,9 @@ async function saveWashAdjustment(itemId) {
     if (settlementResult.error) return setMessage("washAdjustmentMessage", `结算品类保存失败：${settlementResult.error.message}`, "warn");
   }
   const updatedAt = new Date().toISOString();
+  const directUnpickedReturn = decision === WASH_DECISION_RETURN_CANCELLED;
   const { error } = await sb.from("order_items").update({
-    ...(decision === WASH_DECISION_RETURN_PENDING ? { item_status: "退洗" } : {}),
+    ...([WASH_DECISION_RETURN_PENDING, WASH_DECISION_RETURN_CANCELLED].includes(decision) ? { item_status: "退洗" } : {}),
     wash_decision: decision,
     price_adjustment_type: definition.adjustmentType,
     price_adjustment_amount: amount,
@@ -3864,13 +3887,25 @@ async function saveWashAdjustment(itemId) {
     updated_at: updatedAt,
   }).eq("id", itemId);
   if (error) return setMessage("washAdjustmentMessage", `保存失败：${error.message}`, "warn");
-  const logStatus = definition.adjustmentType === "refund" ? "退洗" : definition.adjustmentType === "supplement" ? "补差" : "正常洗护";
+  if (directUnpickedReturn) {
+    const { error: retryCancelError } = await sb.from("pickup_retry_tasks")
+      .update({ status: "已取消", updated_at: updatedAt })
+      .eq("item_id", itemId)
+      .in("status", ["待补取", "未找到"]);
+    if (retryCancelError) console.warn("取消退单物品的补取任务失败：", retryCancelError.message);
+    const { error: returnCancelError } = await sb.from("return_tasks")
+      .update({ status: "已取消", updated_at: updatedAt })
+      .eq("item_id", itemId)
+      .not("status", "eq", "已送达");
+    if (returnCancelError) console.warn("关闭退单物品的送回任务失败：", returnCancelError.message);
+  }
+  const logStatus = directUnpickedReturn ? "已退单" : definition.adjustmentType === "refund" ? "退洗" : definition.adjustmentType === "supplement" ? "补差" : "正常洗护";
   await insertLog({
     orderId: row?.order_id,
     itemId,
     barcode: row?.条形编码,
     status: logStatus,
-    note: `${definition.label}${amount > 0 ? `，金额 ¥${amount.toFixed(2)}` : ""}${reason ? `，原因：${reason}` : ""}${note ? `，备注：${note}` : ""}`,
+    note: `${directUnpickedReturn ? "未取件退单，直接完结" : definition.label}${amount > 0 ? `，金额 ¥${amount.toFixed(2)}` : ""}${reason ? `，原因：${reason}` : ""}${note ? `，备注：${note}` : ""}`,
   });
   $("orderDialog").close();
   const orderId = row?.order_id;
@@ -4370,7 +4405,7 @@ function aggregateCourierReturnOrders(records) {
   });
 }
 
-const COURIER_RETURN_FINISHED_STATUSES = new Set(["已送达", "异常"]);
+const COURIER_RETURN_FINISHED_STATUSES = new Set(["已送达", "已取消", "异常"]);
 
 function courierLocalDate(value) {
   const date = parseDate(value);
@@ -4860,10 +4895,10 @@ async function confirmCourierReturnOrder(groupKey) {
 
 function renderFactoryPendingItems() {
   const pendingIn = factoryItemRows.filter((item) => item.item_status === "已取件").length;
-  const pendingOut = factoryItemRows.filter((item) => FACTORY_PENDING_OUT_STATUSES.includes(item.item_status)).length;
+  const pendingOut = factoryItemRows.filter(factoryItemNeedsOutbound).length;
   const rows = factoryItemRows.filter((item) => {
     if (factoryPendingView === "pending-in") return item.item_status === "已取件";
-    if (factoryPendingView === "pending-out") return FACTORY_PENDING_OUT_STATUSES.includes(item.item_status);
+    if (factoryPendingView === "pending-out") return factoryItemNeedsOutbound(item);
     return false;
   });
   document.querySelectorAll("[data-factory-pending-view]").forEach((button) => {
@@ -4917,7 +4952,7 @@ async function loadFactoryItems() {
     queueTitle = "待入库物品";
     factoryPendingView = "pending-in";
   } else if (factoryDashboardFilter === "pending-out") {
-    rows = rows.filter((item) => FACTORY_PENDING_OUT_STATUSES.includes(item.item_status));
+    rows = rows.filter(factoryItemNeedsOutbound);
     activeLabel = "驾驶舱筛选：待出库";
     queueTitle = "待出库物品";
     factoryPendingView = "pending-out";
@@ -6186,7 +6221,7 @@ function factoryScanFailure(barcode, message) {
   return false;
 }
 
-function factoryScanStatusCheck(scanType, itemStatus) {
+function factoryScanStatusCheck(scanType, itemStatus, washDecision = "") {
   const status = text(itemStatus);
   if (scanType === "factory_in") {
     if (status === "退洗") return { allowed: false, message: "该物品已标记退洗，不需要入库清洗；请按退洗流程出库送回" };
@@ -6196,6 +6231,7 @@ function factoryScanStatusCheck(scanType, itemStatus) {
       ? { allowed: true, override: status !== "已取件" }
       : { allowed: false, message: `当前状态为“${status || "未知"}”，无法确认能否入库` };
   }
+  if (status === "退洗" && washDecision === WASH_DECISION_RETURN_CANCELLED) return { allowed: false, message: "该订单尚未取件，已直接退单完结，无需工厂出库" };
   if (status === "已出库") return { allowed: false, message: "已经出库；如需贴纸，请在今日出库清单中勾选" };
   if (["配送中", "已送达"].includes(status)) return { allowed: false, message: `当前状态为“${status}”，不能重复出库` };
   return FACTORY_OUT_OVERRIDE_STATUSES.has(status)
@@ -6228,7 +6264,7 @@ async function factoryScan(scanType, suppliedBarcode = "", options = {}) {
       throw new Error("该水洗标正在等待客户补差，确认已补差后才能出库");
     }
 
-    const statusCheck = factoryScanStatusCheck(scanType, item.item_status);
+    const statusCheck = factoryScanStatusCheck(scanType, item.item_status, item.wash_decision);
     if (!statusCheck.allowed) throw new Error(statusCheck.message);
 
     let previousReturnTask = null;
@@ -6468,7 +6504,7 @@ function groupStudentOrders(rows, logs) {
 
 function currentTimelineIndex(order) {
   const status = order.order_status || "";
-  if (status === "已送达") return 4;
+  if (["已送达", "已退单", "已完结"].includes(status)) return 4;
   if (status === "已出库" || status === "配送中") return 3;
   if (status === "已入厂" || status === "清洗中") return 2;
   if (status === "已取件") return 1;
@@ -6478,7 +6514,7 @@ function currentTimelineIndex(order) {
 function findStepTime(order, step) {
   if (step.key === "ordered") return order.order_time;
   const hit = (order.logs || [])
-    .filter((log) => step.statuses.includes(log.status))
+    .filter((log) => step.statuses.includes(log.status) || (step.key === "delivered" && log.status === "已退单"))
     .sort((a, b) => parseDate(a.created_at) - parseDate(b.created_at))[0];
   return hit?.created_at || "";
 }
@@ -6492,7 +6528,7 @@ function renderStudentTimeline(order) {
       const current = index === currentIndex;
       return `<li class="${done ? "done" : ""} ${current ? "current" : ""}">
         <span class="timeline-dot"></span>
-        <div><strong>${escapeHtml(step.label)}</strong><time>${escapeHtml(formatDateTime(time) || (done ? "进行中" : "待更新"))}</time></div>
+        <div><strong>${escapeHtml(step.key === "delivered" && order.order_status === "已退单" ? "已退单" : step.key === "delivered" && order.order_status === "已完结" ? "已完结" : step.label)}</strong><time>${escapeHtml(formatDateTime(time) || (done ? "进行中" : "待更新"))}</time></div>
       </li>`;
     }).join("")}
   </ol>`;
@@ -6836,7 +6872,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=76", { updateViaCache: "none" })
+    .register("./sw.js?v=77", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
