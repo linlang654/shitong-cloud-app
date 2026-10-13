@@ -4014,6 +4014,7 @@ async function showOrderDetail(orderId) {
   const canEditItemStatus = APP_MODE === "admin" && currentProfile?.role === "admin";
   const canEditAddress = canEditItemStatus;
   const orderImages = collectOrderImages({ order_items: itemResult.data || [] });
+  const groupedStatusLogs = groupOrderStatusLogs(logResult.data || []);
   $("orderDialogTitle").textContent = `订单详情：${order.order_no}`;
   $("orderDialogBody").innerHTML = `
     <section class="panel">
@@ -4050,9 +4051,49 @@ async function showOrderDetail(orderId) {
     </section>
     <section class="panel">
       <h3>状态时间线</h3>
-      <ul class="timeline">${(logResult.data || []).map((log) => `<li><strong>${escapeHtml(log.status)}</strong><span>${escapeHtml(formatDateTime(log.created_at, true))}</span><p>${escapeHtml(log.note || "")}</p></li>`).join("") || "<li>暂无记录</li>"}</ul>
+      <ul class="timeline order-timeline">${groupedStatusLogs.map((entry) => {
+        const itemCount = new Set(entry.logs.map((log) => log.item_id).filter(Boolean)).size;
+        const itemLabel = itemCount ? `${itemCount} 件物品` : `${entry.logs.length} 条记录`;
+        const mergedLabel = entry.logs.length > 1
+          ? entry.status === "已送达" && entry.note.startsWith("配送员整单确认本次送达")
+            ? `整单事件 · ${itemLabel} · 已合并旧重复记录`
+            : `同一时间合并 ${entry.logs.length} 条记录${itemCount ? ` · ${itemLabel}` : ""}`
+          : "";
+        const note = entry.note.startsWith("配送员整单确认本次送达")
+          ? entry.note.replace("配送员整单确认本次送达", "配送员整单确认送达")
+          : entry.note;
+        return `<li>
+          <div class="order-timeline-heading"><strong>${escapeHtml(entry.status)}</strong><time>${escapeHtml(entry.time)}</time></div>
+          ${mergedLabel ? `<span class="order-timeline-merged">${escapeHtml(mergedLabel)}</span>` : ""}
+          ${note ? `<p>${escapeHtml(note)}</p>` : ""}
+          ${entry.barcodes.length ? `<small>水洗标：${escapeHtml(entry.barcodes.slice(0, 4).join("、"))}${entry.barcodes.length > 4 ? ` 等 ${entry.barcodes.length} 个` : ""}</small>` : ""}
+        </li>`;
+      }).join("") || '<li class="order-timeline-empty">暂无记录</li>'}</ul>
     </section>`;
   if (!$("orderDialog").open) $("orderDialog").showModal();
+}
+
+function groupOrderStatusLogs(logs) {
+  const groups = new Map();
+  for (const log of logs) {
+    const time = formatDateTime(log.created_at, true) || "时间未知";
+    const note = log.note || "";
+    const key = JSON.stringify([log.status || "", note, time]);
+    const existing = groups.get(key);
+    if (existing) {
+      existing.logs.push(log);
+      if (log.barcode && !existing.barcodes.includes(log.barcode)) existing.barcodes.push(log.barcode);
+    } else {
+      groups.set(key, {
+        status: log.status || "状态更新",
+        note,
+        time,
+        logs: [log],
+        barcodes: log.barcode ? [log.barcode] : [],
+      });
+    }
+  }
+  return [...groups.values()];
 }
 
 const orderPhotoUploadsBusy = new Set();
@@ -4871,13 +4912,11 @@ async function confirmCourierReturnOrder(groupKey) {
       }).in("id", itemIds).eq("wash_decision", WASH_DECISION_RETURN_PENDING);
     }
     await sb.rpc("sync_order_flow_state", { target_order_id: group.order.id });
-    await Promise.all(pendingRecords.map(({ item }) => insertLog({
+    await insertLog({
       orderId: group.order.id,
-      itemId: item.id,
-      barcode: item.barcode,
       status: "已送达",
-      note: `配送员整单确认本次送达；送达照片：${photoUrl}`,
-    })));
+      note: `配送员整单确认本次送达（${itemIds.length}件）；送达照片：${photoUrl}`,
+    });
     clearCourierReturnProof(groupKey);
     courierReturnBusyTaskId = "";
     courierPickupScrollToNext = true;

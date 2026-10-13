@@ -2541,6 +2541,67 @@ button.danger,
   font-size: 12px;
 }
 
+.order-timeline {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.order-timeline li {
+  min-width: 0;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fff;
+}
+
+.order-timeline-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+
+.order-timeline-heading strong {
+  color: var(--ink);
+}
+
+.order-timeline-heading time,
+.order-timeline small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.order-timeline-merged {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #fff3dc;
+  color: #8a5410;
+  font-size: 12px;
+}
+
+.order-timeline p {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.order-timeline small {
+  display: block;
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+}
+
+.order-timeline .order-timeline-empty {
+  color: var(--muted);
+}
+
 .scan-video {
   width: 100%;
   aspect-ratio: 4 / 3;
