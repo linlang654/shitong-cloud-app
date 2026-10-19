@@ -442,6 +442,10 @@ body.has-access .layout {
   margin: 10px 0;
 }
 
+.diagnosis-panel .mini-stats {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
 .mini-stats div {
   border: 1px solid var(--line);
   border-radius: 8px;
