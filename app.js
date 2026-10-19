@@ -1,4 +1,7 @@
-const IS_TEMP_ENVIRONMENT = new URLSearchParams(window.location.search).get("env") === "temporary";
+const ENVIRONMENT_PARAM = new URLSearchParams(window.location.search).get("env") === "original"
+  ? "original"
+  : "temporary";
+const IS_TEMP_ENVIRONMENT = ENVIRONMENT_PARAM === "temporary";
 const CONFIG_KEY = IS_TEMP_ENVIRONMENT
   ? "shitong_cloud_supabase_config_temporary"
   : "shitong_cloud_supabase_config";
@@ -49,9 +52,7 @@ const RETURN_DELIVERY_BUCKET = "return-delivery-proof";
 const RETURN_DELIVERY_MAX_BYTES = 10 * 1024 * 1024;
 const RETURN_DELIVERY_TARGET_BYTES = 600 * 1024;
 const RETURN_DELIVERY_STORED_MAX_BYTES = 800 * 1024;
-const DELIVERY_PROOF_PUBLIC_URL = IS_TEMP_ENVIRONMENT
-  ? "https://linlang654.github.io/shitong-cloud-app/p.html?env=temporary&c="
-  : "https://linlang654.github.io/shitong-cloud-app/p.html?c=";
+const DELIVERY_PROOF_PUBLIC_URL = `https://linlang654.github.io/shitong-cloud-app/p.html?env=${ENVIRONMENT_PARAM}&c=`;
 const EXCEPTION_OPEN_STATUSES = ["待客服", "待客户", "处理中"];
 const EXCEPTION_TICKET_TYPES = ["材质风险", "清洗效果", "原有破损", "受潮", "漏取/补取", "返洗", "退洗", "补差", "少件/串单", "配送异常", "其他异常"];
 const PICKUP_OPEN_STATUSES = new Set(["待取件", "未找到"]);
@@ -626,7 +627,7 @@ function switchView(viewName) {
     };
     if (dedicatedPages[viewName]) {
       const params = new URLSearchParams();
-      if (IS_TEMP_ENVIRONMENT) params.set("env", "temporary");
+      params.set("env", ENVIRONMENT_PARAM);
       if (APP_BUILD) params.set("build", APP_BUILD);
       const buildQuery = params.size ? `?${params.toString()}` : "";
       window.location.href = `${dedicatedPages[viewName]}${buildQuery}`;
@@ -649,7 +650,7 @@ function applyRouteFromUrl() {
   if (APP_MODE === "admin" && ["courier", "factory", "student", "track"].includes(page)) {
     const target = page === "student" || page === "track" ? "track" : page;
     const routeParams = new URLSearchParams();
-    if (IS_TEMP_ENVIRONMENT) routeParams.set("env", "temporary");
+    routeParams.set("env", ENVIRONMENT_PARAM);
     if (params.has("build")) routeParams.set("build", params.get("build"));
     window.location.replace(`./${target}.html${routeParams.size ? `?${routeParams.toString()}` : ""}`);
     return;
@@ -758,10 +759,19 @@ function paid(row) {
 }
 
 function refunded(row) {
+  const refundStatus = text(field(row, ["退款状态", "退款单状态", "售后状态", "退款处理状态"]))
+    .replace(/\s+/g, "");
+  if (/^(?:退款已取消|已取消退款|退款取消|退款申请已取消|已撤销退款)$/.test(refundStatus)) return false;
   return numberValue(field(row, ["退款金额", "已退款金额", "退款"])) > 0;
 }
 
+function isPriceAdjustmentRow(row) {
+  const product = `${field(row, ["商品名称", "商品"])} ${field(row, ["规格", "规格名称"])}`;
+  return /补差价|补差专拍|补款专拍|差价补拍/.test(product);
+}
+
 function isWashOrder(row) {
+  if (isPriceAdjustmentRow(row)) return false;
   const merchant = text(field(row, ["所属商家", "商家", "门店"]));
   const product = `${field(row, ["商品名称", "商品"])} ${field(row, ["规格", "规格名称"])} ${field(row, ["表单信息", "备注"])}`;
   if (/洗护|洗衣|洗鞋|干洗|事事超级洗护/.test(merchant)) return true;
@@ -787,7 +797,7 @@ function fillSharedFields(rows) {
     if (!grouped.has(orderNo)) grouped.set(orderNo, []);
     grouped.get(orderNo).push(row);
   });
-  const sharedFields = ["所属商家", "姓名", "电话", "收货地址", "表单信息", "状态", "退款金额", "下单时间", "付款时间", "配送方式"];
+  const sharedFields = ["所属商家", "姓名", "电话", "收货地址", "表单信息", "状态", "退款状态", "退款单状态", "售后状态", "退款处理状态", "退款金额", "下单时间", "付款时间", "配送方式"];
   grouped.forEach((items) => {
     sharedFields.forEach((name) => {
       const value = items.map((row) => field(row, [name])).find((item) => text(item));
@@ -1492,7 +1502,7 @@ function summarizeRecognition(workItems) {
 }
 
 function diagnoseRows(rows) {
-  const stats = { total: rows.length, paid: 0, refunded: 0, wash: 0, usable: 0, merchantCounts: {}, statusCounts: {}, nonWashSamples: [] };
+  const stats = { total: rows.length, paid: 0, refunded: 0, wash: 0, usable: 0, priceAdjustmentRows: 0, merchantCounts: {}, statusCounts: {}, nonWashSamples: [] };
   fillSharedFields(rows).forEach((row) => {
     const status = text(field(row, ["状态", "订单状态"])) || "空状态";
     const merchant = text(field(row, ["所属商家", "商家", "门店"])) || "空商家";
@@ -1500,9 +1510,10 @@ function diagnoseRows(rows) {
     stats.merchantCounts[merchant] = (stats.merchantCounts[merchant] || 0) + 1;
     if (paid(row)) stats.paid += 1;
     if (refunded(row)) stats.refunded += 1;
+    if (isPriceAdjustmentRow(row)) stats.priceAdjustmentRows += 1;
     if (isWashOrder(row)) stats.wash += 1;
     if (text(field(row, ["订单号", "订单编号"])) && paid(row) && !refunded(row) && isWashOrder(row)) stats.usable += 1;
-    if (paid(row) && !refunded(row) && !isWashOrder(row) && stats.nonWashSamples.length < 5) {
+    if (paid(row) && !refunded(row) && !isPriceAdjustmentRow(row) && !isWashOrder(row) && stats.nonWashSamples.length < 5) {
       stats.nonWashSamples.push(`${merchant}｜${text(field(row, ["商品名称", "商品"]))}｜${text(field(row, ["规格", "规格名称"]))}`);
     }
   });
@@ -1521,6 +1532,7 @@ function renderImportDiagnosis(stats, resultText = "") {
         <div><strong>${stats.refunded}</strong><span>退款</span></div>
         <div><strong>${stats.wash}</strong><span>洗护行</span></div>
         <div><strong>${stats.usable}</strong><span>可导入行</span></div>
+        <div><strong>${stats.priceAdjustmentRows}</strong><span>补差价排除</span></div>
       </div>
       <div class="diagnosis-grid">
         <div><h3>状态统计</h3><ul>${list(stats.statusCounts) || "<li>无</li>"}</ul></div>
@@ -6522,9 +6534,31 @@ function hydrateStaticContent() {
 }
 
 async function loadStudentTimeline(phone) {
-  const { data, error } = await sb.rpc("track_timeline_by_phone", { query_phone: phone });
-  if (error) return [];
+  const { data, error } = await studentQueryRpc("track_timeline_by_phone", phone);
+  if (error) {
+    console.warn("Student order timeline query failed", error);
+    return [];
+  }
   return data || [];
+}
+
+function isFetchNetworkError(error) {
+  const message = String(error?.message || error || "");
+  return error instanceof TypeError || /failed to fetch|networkerror|network error|fetch failed|load failed/i.test(message);
+}
+
+async function studentQueryRpc(functionName, phone) {
+  let result;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      result = await sb.rpc(functionName, { query_phone: phone });
+    } catch (error) {
+      result = { data: null, error };
+    }
+    if (!result.error || !isFetchNetworkError(result.error) || attempt === 1) return result;
+    await new Promise((resolve) => window.setTimeout(resolve, 700));
+  }
+  return result;
 }
 
 function groupStudentOrders(rows, logs) {
@@ -6626,18 +6660,37 @@ async function loadDeliveryProof() {
 
 async function trackByPhone() {
   if (!requireClient()) return;
+  const button = $("trackBtn");
+  if (button?.disabled) return;
   const phone = phoneValue($("studentPhone").value);
   if (!phone) return alert("请输入手机号");
-  setMessage("trackResults", "正在查询订单进度...", "hint");
-  const { data, error } = await sb.rpc("track_by_phone", { query_phone: phone });
-  if (error) return setMessage("trackResults", `查询失败：${error.message}`, "warn");
-  const rows = data || [];
-  if (!rows.length) {
-    $("trackResults").innerHTML = '<p class="hint">没有查到订单，请确认手机号是否与下单手机号一致。</p>';
-    return;
+  if (button) {
+    button.disabled = true;
+    button.textContent = "查询中…";
   }
-  const logs = await loadStudentTimeline(phone);
-  $("trackResults").innerHTML = groupStudentOrders(rows, logs).map(renderStudentOrder).join("");
+  setMessage("trackResults", "正在查询订单进度...", "hint");
+  try {
+    const { data, error } = await studentQueryRpc("track_by_phone", phone);
+    if (error) throw error;
+    const rows = data || [];
+    if (!rows.length) {
+      $("trackResults").innerHTML = '<p class="hint">没有查到订单，请确认手机号是否与下单手机号一致。</p>';
+      return;
+    }
+    const logs = await loadStudentTimeline(phone);
+    $("trackResults").innerHTML = groupStudentOrders(rows, logs).map(renderStudentOrder).join("");
+  } catch (error) {
+    console.warn("Student order query failed", error);
+    const message = isFetchNetworkError(error)
+      ? "暂时连接不上订单查询服务，请检查网络后再试；如果反复失败，请联系客服。"
+      : "暂时无法查询订单，请稍后重试或联系客服。";
+    setMessage("trackResults", message, "warn");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "查询";
+    }
+  }
 }
 
 function bindEvents() {
@@ -6911,7 +6964,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=77", { updateViaCache: "none" })
+    .register("./sw.js?v=78", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
