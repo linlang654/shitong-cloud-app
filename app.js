@@ -163,6 +163,7 @@ let activeWashAdjustmentRow = null;
 let activeWashAdjustmentSelect = null;
 let labelVisibleRows = [];
 const labelSelectedItems = new Set();
+let labelExportBusy = false;
 let labelBulkSaveBusy = false;
 
 const $ = (id) => document.getElementById(id);
@@ -3620,6 +3621,11 @@ async function loadLabels() {
       </div>
       <p class="hint">批次规则：昨天 18:00 之后到当天 18:00 之前付款/下单的订单，归为当天批次。<span id="labelSearchScope">未输入搜索词时仅显示当前批次；输入后搜索全部批次。</span></p>
       <div class="settlement-summary"><strong>结算品类：</strong><span class="success">已确认 ${confirmedCount}</span><span class="warn">待确认 ${pendingCount}</span></div>
+      <div class="toolbar wrap" aria-label="水洗标补打导出">
+        <button class="ghost small" type="button" data-select-label-visible>全选当前批次</button>
+        <button type="button" data-export-selected-labels disabled>导出所选水洗标（0）</button>
+        <span class="hint">勾选后按列表顺序导出 Excel，可用于重新打印水洗标。</span>
+      </div>
       <div class="settlement-bulk-bar">
         <div class="settlement-bulk-copy">
           <strong>批量确认品类</strong>
@@ -3658,6 +3664,7 @@ async function loadLabels() {
       : "未输入搜索词时仅显示当前批次；输入后搜索全部批次。";
     updateLabelSelectionUi();
   });
+  updateLabelSelectionUi();
 }
 
 function renderLabelRows(rows) {
@@ -3687,9 +3694,22 @@ function updateLabelSelectionUi() {
     checkbox.checked = labelSelectedItems.has(checkbox.dataset.labelCheckbox);
     checkbox.closest("[data-label-row]")?.classList.toggle("selected", checkbox.checked);
   });
-  document.querySelectorAll("[data-clear-label-selection], [data-apply-label-category], [data-save-label-selection]").forEach((control) => {
+  document.querySelectorAll("[data-clear-label-selection]").forEach((control) => {
+    control.disabled = !selectedCount || labelBulkSaveBusy;
+  });
+  document.querySelectorAll("[data-apply-label-category], [data-save-label-selection]").forEach((control) => {
     control.disabled = !selectedCount || labelBulkSaveBusy || !settlementSchemaAvailable;
   });
+  const exportButton = document.querySelector("[data-export-selected-labels]");
+  if (exportButton) {
+    exportButton.disabled = !selectedCount || labelExportBusy;
+    exportButton.textContent = labelExportBusy ? "正在导出…" : `导出所选水洗标（${selectedCount}）`;
+  }
+  const selectVisibleButton = document.querySelector("[data-select-label-visible]");
+  if (selectVisibleButton) {
+    selectVisibleButton.disabled = !labelVisibleRows.length;
+    selectVisibleButton.textContent = text($("labelSearch")?.value) ? "全选搜索结果" : "全选当前批次";
+  }
   const selectPendingButton = document.querySelector("[data-select-label-pending]");
   if (selectPendingButton) {
     const hasVisiblePending = labelVisibleRows.some((row) => !row.settlement_confirmed);
@@ -3709,6 +3729,11 @@ function selectLabelOrder(orderId) {
 
 function selectVisiblePendingLabels() {
   labelVisibleRows.filter((row) => !row.settlement_confirmed).forEach((row) => labelSelectedItems.add(row.id));
+  updateLabelSelectionUi();
+}
+
+function selectVisibleLabels() {
+  labelVisibleRows.forEach((row) => labelSelectedItems.add(row.id));
   updateLabelSelectionUi();
 }
 
@@ -3994,8 +4019,31 @@ async function exportWashLabels() {
   const { rows, error } = await loadWashLabelRows(5000, batchDate);
   if (error) return alert(`读取水洗标失败：${error.message}`);
   if (!rows.length) return alert(`当前 ${batchDate} 批次暂无水洗标可导出`);
-  const exportRows = rows.map((row) => ({
-    序号: row.序号,
+  writeWashLabelExport(rows, `${batchDate}批次`, `事事通水洗标清单-${batchDate}批次.xlsx`);
+}
+
+async function exportSelectedWashLabels() {
+  if (labelExportBusy || !requireClient()) return;
+  if (!currentUser) return alert("请先登录后台账号");
+  const rows = labelVisibleRows.filter((row) => labelSelectedItems.has(row.id));
+  if (!rows.length) return setMessage("labelReviewMessage", "请先勾选需要补打的水洗标。", "warn");
+  labelExportBusy = true;
+  updateLabelSelectionUi();
+  try {
+    await ensureXlsx();
+    writeWashLabelExport(rows, "所选水洗标", `事事通水洗标清单-所选${rows.length}个-${todayDate()}.xlsx`);
+    setMessage("labelReviewMessage", `已导出所选 ${rows.length} 个水洗标，可使用原打印模板补打。`, "success");
+  } catch (error) {
+    setMessage("labelReviewMessage", `导出失败：${error?.message || "请稍后重试"}`, "warn");
+  } finally {
+    labelExportBusy = false;
+    updateLabelSelectionUi();
+  }
+}
+
+function writeWashLabelExport(rows, sheetName, fileName) {
+  const exportRows = rows.map((row, index) => ({
+    序号: index + 1,
     批次: `${row.batch_date}（${row.batch_label}）`,
     条形编码: row.条形编码,
     所属商家: row.所属商家,
@@ -4011,8 +4059,8 @@ async function exportWashLabels() {
   }));
   const sheet = XLSX.utils.json_to_sheet(exportRows);
   const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, sheet, `${batchDate}批次`);
-  XLSX.writeFile(workbook, `事事通水洗标清单-${batchDate}批次.xlsx`);
+  XLSX.utils.book_append_sheet(workbook, sheet, sheetName);
+  XLSX.writeFile(workbook, fileName);
 }
 
 async function showOrderDetail(orderId) {
@@ -6839,6 +6887,8 @@ function bindEvents() {
     if (settlementSaveBtn) saveSettlementCategoryFromRow(settlementSaveBtn.dataset.saveSettlement);
     const selectLabelOrderBtn = event.target.closest("[data-select-label-order]");
     if (selectLabelOrderBtn) selectLabelOrder(selectLabelOrderBtn.dataset.selectLabelOrder);
+    if (event.target.closest("[data-select-label-visible]")) selectVisibleLabels();
+    if (event.target.closest("[data-export-selected-labels]")) exportSelectedWashLabels();
     if (event.target.closest("[data-select-label-pending]")) selectVisiblePendingLabels();
     if (event.target.closest("[data-clear-label-selection]")) clearLabelSelection();
     if (event.target.closest("[data-apply-label-category]")) applyCategoryToSelectedLabels();
@@ -6964,7 +7014,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=78", { updateViaCache: "none" })
+    .register("./sw.js?v=79", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
