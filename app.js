@@ -165,6 +165,10 @@ let labelVisibleRows = [];
 const labelSelectedItems = new Set();
 let labelExportBusy = false;
 let labelBulkSaveBusy = false;
+const mergeWashLabelDates = new Set();
+const mergeWashLabelExcluded = new Set();
+let mergeWashLabelRows = [];
+let mergeWashLabelExportBusy = false;
 
 const $ = (id) => document.getElementById(id);
 const on = (id, eventName, handler) => $(id)?.addEventListener(eventName, handler);
@@ -3584,6 +3588,7 @@ async function loadWashLabelRows(limit = 1000, batchDate = "") {
       order_id: order.id,
       batch_date: itemBatchDate,
       batch_label: itemBatchDate ? businessBatchLabel(itemBatchDate) : "未识别批次",
+      route: orderRouteParts(order),
     };
   }).filter((row) => !batchDate || row.batch_date === batchDate);
   rows.forEach((row, index) => {
@@ -3622,6 +3627,7 @@ async function loadLabels() {
       <p class="hint">批次规则：昨天 18:00 之后到当天 18:00 之前付款/下单的订单，归为当天批次。<span id="labelSearchScope">未输入搜索词时仅显示当前批次；输入后搜索全部批次。</span></p>
       <div class="settlement-summary"><strong>结算品类：</strong><span class="success">已确认 ${confirmedCount}</span><span class="warn">待确认 ${pendingCount}</span></div>
       <div class="toolbar wrap" aria-label="水洗标补打导出">
+        <button id="openMergeWashLabelsBtn" class="ghost" type="button" ${batchDates.length ? "" : "disabled"}>合并批次打印</button>
         <button class="ghost small" type="button" data-select-label-visible>全选当前批次</button>
         <button type="button" data-export-selected-labels disabled>导出所选水洗标（0）</button>
         <span class="hint">勾选后按列表顺序导出 Excel，可用于重新打印水洗标。</span>
@@ -3651,6 +3657,7 @@ async function loadLabels() {
       </div>
     </section>`;
   $("washBatchSelect")?.addEventListener("change", loadLabels);
+  $("openMergeWashLabelsBtn")?.addEventListener("click", openMergeWashLabelDialog);
   $("confirmSuggestedSettlementBtn")?.addEventListener("click", () => confirmSuggestedSettlementCategories(suggestedRows));
   $("labelSearch")?.addEventListener("input", () => {
     const keyword = text($("labelSearch").value).toLowerCase();
@@ -4009,6 +4016,106 @@ async function confirmSuggestedSettlementCategories(rows) {
   }
   await loadLabels();
   setMessage("labelReviewMessage", failed ? `已确认 ${succeeded} 个，失败 ${failed} 个，请逐项重试。` : `已确认 ${succeeded} 个系统建议。`, failed ? "warn" : "success");
+}
+
+function openMergeWashLabelDialog() {
+  const dialog = $("mergeWashLabelDialog");
+  if (!dialog || dialog.open || mergeWashLabelExportBusy || APP_MODE !== "admin" || currentProfile?.role !== "admin" || !currentUser || !requireClient()) return;
+  mergeWashLabelDates.clear();
+  const currentBatch = $("washBatchSelect")?.value;
+  if (currentBatch) mergeWashLabelDates.add(currentBatch);
+  mergeWashLabelExcluded.clear();
+  $("mergeWashLabelPendingOnly").checked = true;
+  $("mergeWashLabelMessage").replaceChildren();
+  renderMergeWashLabelBatches();
+  renderMergeWashLabelPreview();
+  dialog.showModal();
+}
+
+function renderMergeWashLabelBatches() {
+  const counts = new Map([...mergeWashLabelDates].map((date) => [date, 0]));
+  for (const row of labelReviewRows) {
+    if (row.batch_date) counts.set(row.batch_date, (counts.get(row.batch_date) || 0) + 1);
+  }
+  $("mergeWashLabelBatches").innerHTML = [...counts.keys()].sort().reverse().map((date) => `
+    <label class="merge-wash-label-batch">
+      <input type="checkbox" data-merge-label-batch="${escapeHtml(date)}" ${mergeWashLabelDates.has(date) ? "checked" : ""} />
+      <span>${escapeHtml(date)} 批次</span><small class="hint">${counts.get(date)} 个</small>
+    </label>`).join("") || '<p class="hint">暂无可选批次。</p>';
+}
+
+function selectMondayWashLabelBatches() {
+  const now = new Date();
+  const monday = addDays(now, 1 - now.getDay());
+  mergeWashLabelDates.clear();
+  mergeWashLabelDates.add(dateOnly(addDays(monday, -1)));
+  mergeWashLabelDates.add(dateOnly(monday));
+  renderMergeWashLabelBatches();
+  renderMergeWashLabelPreview();
+}
+
+function mergeWashLabelNeedsRouteReview(row) {
+  return !isDormComplete(row.route) || /未识别/.test(row.route.building);
+}
+
+function renderMergeWashLabelPreview() {
+  const pendingOnly = $("mergeWashLabelPendingOnly").checked;
+  const filtered = labelReviewRows.filter((row) => mergeWashLabelDates.has(row.batch_date)
+    && (!pendingOnly || (UNPICKED_ITEM_STATUSES.has(row.item_status) && !washDecisionIsReturn(row))));
+  mergeWashLabelRows = [...new Map(filtered.map((row) => [row.id, row])).values()].sort((left, right) =>
+    Number(mergeWashLabelNeedsRouteReview(left)) - Number(mergeWashLabelNeedsRouteReview(right))
+    || compareOrderRoute(left.route, right.route)
+    || compareNaturalText(left.条形编码, right.条形编码));
+  $("mergeWashLabelMessage").replaceChildren();
+  $("mergeWashLabelRows").innerHTML = mergeWashLabelRows.map((row) => `
+    <tr>
+      <td><input type="checkbox" data-merge-label-checkbox="${escapeHtml(row.id)}" ${mergeWashLabelExcluded.has(row.id) ? "" : "checked"} aria-label="选择水洗标 ${escapeHtml(row.条形编码)}" /></td>
+      <td>${escapeHtml(row.batch_date)}</td>
+      <td>${escapeHtml(`${row.route.school} / ${row.route.campus} / ${row.route.building}`)}${mergeWashLabelNeedsRouteReview(row) ? ' <small class="warn">地址待核对</small>' : ""}</td>
+      <td>${escapeHtml(row.条形编码)}</td>
+      <td>${escapeHtml(row.姓名)}</td>
+      <td>${escapeHtml(row.物品)}</td>
+      <td>${escapeHtml(row.item_status)}</td>
+    </tr>`).join("") || '<tr><td colspan="7">所选批次没有符合条件的水洗标。</td></tr>';
+  updateMergeWashLabelSelection();
+}
+
+function updateMergeWashLabelSelection() {
+  const count = mergeWashLabelRows.filter((row) => !mergeWashLabelExcluded.has(row.id)).length;
+  $("mergeWashLabelSummary").textContent = `已选 ${mergeWashLabelDates.size} 批 · 符合条件 ${mergeWashLabelRows.length} 个 · 勾选 ${count} 个`;
+  const button = $("mergeWashLabelExportBtn");
+  button.disabled = !count || mergeWashLabelExportBusy;
+  button.textContent = mergeWashLabelExportBusy ? "正在导出…" : `导出所选水洗标（${count}）`;
+  $("mergeWashLabelSelectAllBtn").disabled = !mergeWashLabelRows.length || count === mergeWashLabelRows.length;
+  $("mergeWashLabelClearBtn").disabled = !count;
+}
+
+function setMergeWashLabelSelection(selected) {
+  for (const row of mergeWashLabelRows) {
+    if (selected) mergeWashLabelExcluded.delete(row.id);
+    else mergeWashLabelExcluded.add(row.id);
+  }
+  $("mergeWashLabelRows").querySelectorAll("[data-merge-label-checkbox]").forEach((checkbox) => { checkbox.checked = selected; });
+  updateMergeWashLabelSelection();
+}
+
+async function exportMergedWashLabels() {
+  if (mergeWashLabelExportBusy || APP_MODE !== "admin" || currentProfile?.role !== "admin" || !currentUser || !requireClient()) return;
+  const rows = mergeWashLabelRows.filter((row) => !mergeWashLabelExcluded.has(row.id));
+  if (!rows.length) return;
+  mergeWashLabelExportBusy = true;
+  updateMergeWashLabelSelection();
+  try {
+    await ensureXlsx();
+    const batchCount = new Set(rows.map((row) => row.batch_date)).size;
+    writeWashLabelExport(rows, "合并批次", `事事通水洗标清单-合并${batchCount}批-${todayDate()}-${rows.length}个.xlsx`);
+    setMessage("mergeWashLabelMessage", `已导出 ${batchCount} 批、${rows.length} 个水洗标，可使用原打印模板。`, "success");
+  } catch (error) {
+    setMessage("mergeWashLabelMessage", `导出失败：${error?.message || "请稍后重试"}`, "warn");
+  } finally {
+    mergeWashLabelExportBusy = false;
+    updateMergeWashLabelSelection();
+  }
 }
 
 async function exportWashLabels() {
@@ -6752,6 +6859,26 @@ function bindEvents() {
   on("signOutBtn", "click", signOut);
   on("fileInput", "change", handleImport);
   on("exportWashLabelsBtn", "click", exportWashLabels);
+  on("mergeWashLabelCloseBtn", "click", () => $("mergeWashLabelDialog")?.close());
+  on("mergeWashLabelMondayBtn", "click", selectMondayWashLabelBatches);
+  on("mergeWashLabelPendingOnly", "change", renderMergeWashLabelPreview);
+  on("mergeWashLabelBatches", "change", (event) => {
+    const date = event.target.dataset.mergeLabelBatch;
+    if (!date) return;
+    if (event.target.checked) mergeWashLabelDates.add(date);
+    else mergeWashLabelDates.delete(date);
+    renderMergeWashLabelPreview();
+  });
+  on("mergeWashLabelRows", "change", (event) => {
+    const id = event.target.dataset.mergeLabelCheckbox;
+    if (!id) return;
+    if (event.target.checked) mergeWashLabelExcluded.delete(id);
+    else mergeWashLabelExcluded.add(id);
+    updateMergeWashLabelSelection();
+  });
+  on("mergeWashLabelSelectAllBtn", "click", () => setMergeWashLabelSelection(true));
+  on("mergeWashLabelClearBtn", "click", () => setMergeWashLabelSelection(false));
+  on("mergeWashLabelExportBtn", "click", exportMergedWashLabels);
   on("refreshAdminBtn", "click", refreshAll);
   on("refreshCourierBtn", "click", refreshAll);
   on("refreshFactoryBtn", "click", refreshAll);
@@ -7014,7 +7141,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=79", { updateViaCache: "none" })
+    .register("./sw.js?v=82", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }

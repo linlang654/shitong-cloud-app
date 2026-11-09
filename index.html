@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#f26a1b" />
     <title>事事通校园配送系统</title>
     <link rel="manifest" href="./manifest.webmanifest" />
-    <link rel="stylesheet" href="./styles.css?v=78" />
+    <link rel="stylesheet" href="./styles.css?v=82" />
     <script src="./vendor/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   </head>
@@ -386,6 +386,34 @@
       <div id="orderDialogBody" class="stack"></div>
     </dialog>
 
-    <script src="./app.js?v=79"></script>
+    <dialog id="mergeWashLabelDialog" class="modal" aria-labelledby="mergeWashLabelTitle">
+      <div class="modal-head">
+        <h2 id="mergeWashLabelTitle">合并批次打印</h2>
+        <button id="mergeWashLabelCloseBtn" class="ghost" type="button">关闭</button>
+      </div>
+      <div class="stack merge-wash-label-body">
+        <p class="hint">勾选多个批次，按学校、校区和楼栋排成一份打印清单。原批次和条码不变。</p>
+        <div class="toolbar wrap">
+          <button id="mergeWashLabelMondayBtn" class="ghost" type="button">周日＋周一</button>
+          <label class="merge-wash-label-batch"><input id="mergeWashLabelPendingOnly" type="checkbox" checked /> 仅未取件（含待补取、未找到）</label>
+        </div>
+        <div id="mergeWashLabelBatches" class="merge-wash-label-batches" role="group" aria-label="选择打印批次"></div>
+        <p id="mergeWashLabelSummary" class="hint" aria-live="polite"></p>
+        <div class="toolbar wrap">
+          <button id="mergeWashLabelSelectAllBtn" class="ghost small" type="button">全选清单</button>
+          <button id="mergeWashLabelClearBtn" class="ghost small" type="button">清空勾选</button>
+          <button id="mergeWashLabelExportBtn" type="button" disabled>导出所选水洗标（0）</button>
+        </div>
+        <div id="mergeWashLabelMessage" aria-live="polite"></div>
+        <div class="table-wrap merge-wash-label-preview">
+          <table>
+            <thead><tr><th>选择</th><th>原批次</th><th>取件楼栋</th><th>水洗标</th><th>姓名</th><th>物品</th><th>状态</th></tr></thead>
+            <tbody id="mergeWashLabelRows"></tbody>
+          </table>
+        </div>
+      </div>
+    </dialog>
+
+    <script src="./app.js?v=82"></script>
   </body>
 </html>

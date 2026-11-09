@@ -2430,6 +2430,40 @@ button.danger,
   font-size: 18px;
 }
 
+.merge-wash-label-body {
+  padding: 12px;
+}
+
+.merge-wash-label-body > p {
+  margin: 0;
+}
+
+.merge-wash-label-batches {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+  gap: 6px;
+  max-height: 160px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.merge-wash-label-batch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.merge-wash-label-batch > small {
+  margin-left: auto;
+}
+
+.merge-wash-label-preview table {
+  min-width: 660px;
+}
+
 .return-delivery-dialog {
   width: min(440px, calc(100vw - 20px));
   padding-bottom: 12px;
