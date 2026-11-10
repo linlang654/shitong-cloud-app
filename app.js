@@ -386,6 +386,12 @@ function pad(value, size = 2) {
   return String(value).padStart(size, "0");
 }
 
+function normalizeOrderMobile(value) {
+  const formatted = String(value ?? "").normalize("NFKC").replace(/[\s()-]/g, "");
+  const phone = formatted.replace(/^(?:\+86|0086|86)(?=1[3-9]\d{9}$)/, "");
+  return /^1[3-9]\d{9}$/.test(phone) ? phone : "";
+}
+
 function parseDate(value) {
   if (!value && value !== 0) return null;
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
@@ -3678,7 +3684,7 @@ function renderLabelRows(rows) {
   return rows.map((row) => `
     <tr data-label-row="${escapeHtml(row.id)}" class="${labelSelectedItems.has(row.id) ? "selected" : ""}">
       <td><label class="label-select-cell"><input type="checkbox" data-label-checkbox="${escapeHtml(row.id)}" ${labelSelectedItems.has(row.id) ? "checked" : ""} aria-label="选择水洗标 ${escapeHtml(row.条形编码)}" /></label></td>
-      <td>${escapeHtml(row.条形编码)}</td><td>${escapeHtml(row.所属商家)}</td><td>${escapeHtml(row.姓名)}</td><td>${escapeHtml(row.电话)}</td><td>${escapeHtml(row.校区)}</td><td>${escapeHtml(row.物品)}</td>
+      <td>${escapeHtml(row.条形编码)}</td><td>${escapeHtml(row.所属商家)}</td><td>${escapeHtml(row.姓名)}</td><td data-label-phone-order="${escapeHtml(row.order_id)}">${escapeHtml(row.电话)}</td><td>${escapeHtml(row.校区)}</td><td>${escapeHtml(row.物品)}</td>
       <td><div class="settlement-editor">
         <select class="input settlement-category-select" data-settlement-select="${escapeHtml(row.id)}" ${settlementSchemaAvailable ? "" : "disabled"}>${settlementCategoryOptions(row.settlement_selected_key)}</select>
         <div class="settlement-other-fields ${row.settlement_selected_key === SETTLEMENT_OTHER ? "" : "hidden"}" data-settlement-other-fields="${escapeHtml(row.id)}">
@@ -4108,7 +4114,7 @@ async function exportMergedWashLabels() {
   try {
     await ensureXlsx();
     const batchCount = new Set(rows.map((row) => row.batch_date)).size;
-    writeWashLabelExport(rows, "合并批次", `事事通水洗标清单-合并${batchCount}批-${todayDate()}-${rows.length}个.xlsx`);
+    writeWashLabelExport(await withLatestWashLabelPhones(rows), "合并批次", `事事通水洗标清单-合并${batchCount}批-${todayDate()}-${rows.length}个.xlsx`);
     setMessage("mergeWashLabelMessage", `已导出 ${batchCount} 批、${rows.length} 个水洗标，可使用原打印模板。`, "success");
   } catch (error) {
     setMessage("mergeWashLabelMessage", `导出失败：${error?.message || "请稍后重试"}`, "warn");
@@ -4138,7 +4144,7 @@ async function exportSelectedWashLabels() {
   updateLabelSelectionUi();
   try {
     await ensureXlsx();
-    writeWashLabelExport(rows, "所选水洗标", `事事通水洗标清单-所选${rows.length}个-${todayDate()}.xlsx`);
+    writeWashLabelExport(await withLatestWashLabelPhones(rows), "所选水洗标", `事事通水洗标清单-所选${rows.length}个-${todayDate()}.xlsx`);
     setMessage("labelReviewMessage", `已导出所选 ${rows.length} 个水洗标，可使用原打印模板补打。`, "success");
   } catch (error) {
     setMessage("labelReviewMessage", `导出失败：${error?.message || "请稍后重试"}`, "warn");
@@ -4146,6 +4152,18 @@ async function exportSelectedWashLabels() {
     labelExportBusy = false;
     updateLabelSelectionUi();
   }
+}
+
+async function withLatestWashLabelPhones(rows) {
+  const orderIds = [...new Set(rows.map((row) => row.order_id))];
+  const phones = new Map();
+  for (const group of chunkArray(orderIds, 80)) {
+    const { data, error } = await sb.from("orders").select("id,phone").in("id", group);
+    if (error) throw error;
+    for (const order of data || []) phones.set(order.id, order.phone || "");
+  }
+  if (orderIds.some((id) => !phones.has(id))) throw new Error("部分订单已移除或不可读取，请刷新水洗标后重试。");
+  return rows.map((row) => ({ ...row, 电话: phones.get(row.order_id) }));
 }
 
 function writeWashLabelExport(rows, sheetName, fileName) {
@@ -4185,11 +4203,19 @@ async function showOrderDetail(orderId) {
   $("orderDialogTitle").textContent = `订单详情：${order.order_no}`;
   $("orderDialogBody").innerHTML = `
     <section class="panel">
-      <h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3>
+      <h3>${escapeHtml(order.customer_name)} · <span data-order-phone-display>${escapeHtml(order.phone)}</span></h3>
       <p>${escapeHtml(order.address || "")}</p>
       <p>宿舍：${escapeHtml(`${order.school || ""}${orderCampusName(order)}${order.building || ""}`)}</p>
       <p>状态：${escapeHtml(order.order_status || "")}　金额：${escapeHtml(order.paid_amount ?? "")}</p>
       ${order.exception_note ? `<p class="warn">异常：${escapeHtml(order.exception_note)}</p>` : ""}
+      ${canEditOrderPhone() ? `<details class="order-address-editor">
+        <summary>编辑联系电话</summary>
+        <form data-order-phone-form>
+          <label class="field-group"><span>客户手机号</span><input class="input" name="phone" type="tel" inputmode="tel" autocomplete="tel" maxlength="24" value="${escapeHtml(order.phone)}" placeholder="11 位手机号" /></label>
+          <div class="actions"><button type="submit">保存手机号</button></div>
+          <div data-order-phone-message aria-live="polite"></div>
+        </form>
+      </details>` : ""}
       ${canEditAddress ? `<details class="order-address-editor">
         <summary>编辑订单地址</summary>
         <div class="edit-grid order-address-grid">
@@ -4237,6 +4263,7 @@ async function showOrderDetail(orderId) {
         </li>`;
       }).join("") || '<li class="order-timeline-empty">暂无记录</li>'}</ul>
     </section>`;
+  $("orderDialogBody").querySelector("[data-order-phone-form]")?.addEventListener("submit", (event) => saveOrderPhoneFromDialog(event, order));
   if (!$("orderDialog").open) $("orderDialog").showModal();
 }
 
@@ -4324,6 +4351,63 @@ async function uploadOrderPhotosFromDialog(orderId) {
     if (button) button.disabled = false;
     if (input) input.disabled = false;
   }
+}
+
+function canEditOrderPhone() {
+  return APP_MODE === "admin" && currentProfile?.role === "admin"
+    && loadConfig().url.replace(/\/+$/, "") === TEMP_SUPABASE_CONFIG.url;
+}
+
+const orderPhoneEditsBusy = new Set();
+
+async function saveOrderPhoneFromDialog(event, order) {
+  event.preventDefault();
+  if (!sb || !currentUser || !canEditOrderPhone() || orderPhoneEditsBusy.has(order.id)) return;
+  const form = event.currentTarget;
+  const input = form.elements.namedItem("phone");
+  const button = form.querySelector('button[type="submit"]');
+  const message = form.querySelector("[data-order-phone-message]");
+  const showMessage = (value, tone = "hint") => {
+    message.className = tone;
+    message.textContent = value;
+  };
+  const phone = normalizeOrderMobile(input.value);
+  if (!phone) return showMessage("请输入正确的 11 位手机号。", "warn");
+  if (phone === order.phone) return showMessage("手机号没有变化。");
+
+  orderPhoneEditsBusy.add(order.id);
+  input.disabled = button.disabled = true;
+  showMessage("正在保存手机号…");
+  let saved;
+  try {
+    const update = sb.from("orders").update({ phone, updated_at: new Date().toISOString() }).eq("id", order.id);
+    const { data, error } = await (order.phone == null ? update.is("phone", null) : update.eq("phone", order.phone))
+      .select("id,phone,updated_at").maybeSingle();
+    if (error) throw error;
+    if (!data) return showMessage("手机号已被修改或订单不可编辑，请重新打开详情核对。", "warn");
+    saved = data;
+  } catch (error) {
+    return showMessage(`未能确认保存，请重新打开详情核对。${error?.message ? ` ${error.message}` : ""}`, "warn");
+  } finally {
+    orderPhoneEditsBusy.delete(order.id);
+    input.disabled = button.disabled = false;
+  }
+  Object.assign(order, saved);
+  input.value = saved.phone;
+  form.closest("section").querySelector("[data-order-phone-display]").textContent = saved.phone;
+  const cachedOrder = orderManagementRows.find((row) => row.id === order.id);
+  if (cachedOrder) {
+    Object.assign(cachedOrder, saved);
+    applyOrderFilters();
+  }
+  for (const row of labelReviewRows) {
+    if (row.order_id === order.id) row.电话 = saved.phone;
+  }
+  for (const cell of document.querySelectorAll("[data-label-phone-order]")) {
+    if (cell.dataset.labelPhoneOrder === order.id) cell.textContent = saved.phone;
+  }
+  showMessage("手机号已保存。客户可用新号码查单，配送员刷新后可看到新号码。", "success");
+  await insertLog({ orderId: order.id, status: "后台修改联系电话", note: "已更正订单联系电话。" }).catch(() => {});
 }
 
 async function saveOrderAddressFromDialog(orderId) {
@@ -7141,7 +7225,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=82", { updateViaCache: "none" })
+    .register("./sw.js?v=83", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
