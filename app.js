@@ -615,6 +615,7 @@ async function signOut() {
   $("manualOrderMessage")?.replaceChildren();
   $("adminManualOrderStatus")?.replaceChildren();
   $("orderManualOrderStatus")?.replaceChildren();
+  $("adminOrderDeleteStatus")?.replaceChildren();
   $("manualOrderDialog")?.close();
   if ($("sessionLabel")) $("sessionLabel").textContent = "已连接，未登录";
   $("signOutBtn")?.classList.add("hidden");
@@ -4427,6 +4428,50 @@ function writeWashLabelExport(rows, sheetName, fileName) {
   XLSX.writeFile(workbook, fileName);
 }
 
+function canDeleteOrder() {
+  return APP_MODE === "admin" && currentProfile?.role === "admin" && Boolean(currentUser) && isWashLabelBusinessProject();
+}
+
+const orderDeletesBusy = new Set();
+
+async function deleteOrderFromDialog(order, button) {
+  if (!sb || !canDeleteOrder() || !order.id || orderDeletesBusy.has(order.id)) return;
+  const voucherNotice = order.source === "douyin" ? "\n此订单的抖音券码仍会保留登记记录。" : "";
+  if (!confirm(`确定永久删除订单 ${order.order_no}？\n此订单的物品、水洗标、取送任务和相关记录会一起删除。此操作无法撤销。${voucherNotice}`)) return;
+
+  const dialog = $("orderDialog");
+  const activeDeleteButton = () => {
+    const current = dialog?.querySelector("[data-delete-order]");
+    return dialog?.open && current?.dataset.deleteOrder === order.id ? current : null;
+  };
+  orderDeletesBusy.add(order.id);
+  button.disabled = true;
+  setMessage("orderDeleteMessage", "正在删除订单…");
+  try {
+    const { data, error } = await sb.from("orders").delete().eq("id", order.id).select("id").maybeSingle();
+    if (error) throw error;
+    if (data?.id !== order.id) throw new Error("未找到可删除的订单，请刷新后核对。");
+  } catch (error) {
+    const messageId = activeDeleteButton() ? "orderDeleteMessage" : "adminOrderDeleteStatus";
+    setMessage(messageId, `未确认删除：${error?.message || "请刷新后核对。"}`, "warn");
+    return;
+  } finally {
+    orderDeletesBusy.delete(order.id);
+    button.disabled = false;
+    const current = activeDeleteButton();
+    if (current) current.disabled = false;
+  }
+
+  if (activeDeleteButton()) dialog.close();
+  setMessage("adminOrderDeleteStatus", `已删除订单 ${order.order_no}。`, "success");
+  try {
+    await refreshAll();
+  } catch (error) {
+    console.error(error);
+    setMessage("adminOrderDeleteStatus", `已删除订单 ${order.order_no}，列表刷新失败，请手动刷新。`, "warn");
+  }
+}
+
 async function showOrderDetail(orderId) {
   const [orderResult, itemResult, logResult] = await Promise.all([
     sb.from("orders").select("*").eq("id", orderId).maybeSingle(),
@@ -4467,6 +4512,8 @@ async function showOrderDetail(orderId) {
         <div class="actions"><button type="button" data-save-order-address="${escapeHtml(order.id)}">保存地址</button></div>
         <div data-order-address-message="${escapeHtml(order.id)}" aria-live="polite"></div>
       </details>` : ""}
+      ${canDeleteOrder() ? `<div class="actions"><button class="ghost danger" type="button" data-delete-order="${escapeHtml(order.id)}" ${orderDeletesBusy.has(order.id) ? "disabled" : ""}>删除订单</button></div>
+      <div id="orderDeleteMessage" aria-live="polite"></div>` : ""}
     </section>
     <section class="panel">
       <h3>订单图片（${orderImages.length}）</h3>
@@ -4504,6 +4551,7 @@ async function showOrderDetail(orderId) {
       }).join("") || '<li class="order-timeline-empty">暂无记录</li>'}</ul>
     </section>`;
   $("orderDialogBody").querySelector("[data-order-phone-form]")?.addEventListener("submit", (event) => saveOrderPhoneFromDialog(event, order));
+  $("orderDialogBody").querySelector("[data-delete-order]")?.addEventListener("click", (event) => deleteOrderFromDialog(order, event.currentTarget));
   if (!$("orderDialog").open) $("orderDialog").showModal();
 }
 
@@ -7480,7 +7528,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=86", { updateViaCache: "none" })
+    .register("./sw.js?v=87", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
