@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#f26a1b" />
     <title>事事通校园配送系统</title>
     <link rel="manifest" href="./manifest.webmanifest" />
-    <link rel="stylesheet" href="./styles.css?v=83" />
+    <link rel="stylesheet" href="./styles.css?v=84" />
     <script src="./vendor/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   </head>
@@ -392,7 +392,7 @@
         <button id="mergeWashLabelCloseBtn" class="ghost" type="button">关闭</button>
       </div>
       <div class="stack merge-wash-label-body">
-        <p class="hint">勾选多个批次，按学校、校区和楼栋排成一份打印清单。原批次和条码不变。</p>
+        <p class="hint">勾选多个批次，按学校、校区和楼栋排成一份清单。请在同一取件日期的订单导入齐全后首次导出。已编号的水洗标沿用原条码。</p>
         <div class="toolbar wrap">
           <button id="mergeWashLabelMondayBtn" class="ghost" type="button">周日＋周一</button>
           <label class="merge-wash-label-batch"><input id="mergeWashLabelPendingOnly" type="checkbox" checked /> 仅未取件（含待补取、未找到）</label>
@@ -414,6 +414,6 @@
       </div>
     </dialog>
 
-    <script src="./app.js?v=83"></script>
+    <script src="./app.js?v=84"></script>
   </body>
 </html>

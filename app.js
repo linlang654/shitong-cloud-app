@@ -163,6 +163,7 @@ let activeWashAdjustmentRow = null;
 let activeWashAdjustmentSelect = null;
 let labelVisibleRows = [];
 const labelSelectedItems = new Set();
+let washOrderImportBusy = false;
 let labelExportBusy = false;
 let labelBulkSaveBusy = false;
 const mergeWashLabelDates = new Set();
@@ -1476,6 +1477,29 @@ function nextBarcode(counters, prefix) {
   return `${prefix}${pad(counters[prefix], 3)}`;
 }
 
+function pendingWashLabelPrefix(barcode) {
+  return /^pending:(\d{6}):/.exec(barcode)?.[1] || "";
+}
+
+function displayWashLabelBarcode(barcode, fallback = "") {
+  return pendingWashLabelPrefix(barcode) ? "待编号" : barcode || fallback;
+}
+
+function isWashLabelBusinessProject() {
+  return loadConfig().url.replace(/\/+$/, "") === TEMP_SUPABASE_CONFIG.url;
+}
+
+async function requestWashLabelBarcodes(prefixes, rows) {
+  const { data, error } = await sb.rpc("issue_wash_label_barcodes", {
+    p_prefixes: prefixes,
+    p_ordered_item_ids: rows.map((row) => row.id),
+    p_route_snapshots: Object.fromEntries(rows.map((row) => [row.id, row.route_snapshot])),
+  });
+  if (error?.code === "PGRST202") throw new Error("请先在当前业务库执行水洗标首次编号迁移，再导入或导出。");
+  if (error) throw new Error(error.message);
+  return data || [];
+}
+
 function rowsToWorkItems(rows) {
   const valid = [];
   const seen = new Set();
@@ -1683,13 +1707,17 @@ function buildItemPayload(orderId, row, barcode, sourceKey, index) {
 }
 
 async function handleImport(event) {
+  if (washOrderImportBusy) return;
   if (!requireClient()) return;
   if (!currentUser) return alert("请先用后台账号登录");
-  await detectSettlementSchemaAvailability(true);
   const files = [...event.target.files];
   if (!files.length) return;
+  washOrderImportBusy = true;
   setMessage("adminImportStatus", "正在读取 Excel 并写入 Supabase...");
   try {
+    await detectSettlementSchemaAvailability(true);
+    const deferBarcodes = isWashLabelBusinessProject();
+    if (deferBarcodes) await requestWashLabelBarcodes([], []);
     await loadRecognitionRules();
     const allRows = [];
     for (const file of files) allRows.push(...await readWorkbook(file));
@@ -1701,7 +1729,7 @@ async function handleImport(event) {
     }
     const batch = await createImportBatch(files, diagnosis);
     setMessage("adminImportStatus", `正在导入：${workItems.length} 件物品，正在批量写入订单...`);
-    const counters = await loadBarcodeCounters(workItems.map((item) => item.prefix));
+    const counters = deferBarcodes ? null : await loadBarcodeCounters(workItems.map((item) => item.prefix));
     const orderWorkItems = new Map();
     workItems.forEach((workItem) => {
       const row = workItem.row;
@@ -1736,19 +1764,25 @@ async function handleImport(event) {
       }
       const orderNo = text(field(workItem.row, ["订单号", "订单编号"]));
       const order = orderCache.get(orderNo);
-      const payload = buildItemPayload(order.id, workItem.row, nextBarcode(counters, workItem.prefix), sourceKey, workItem.index);
+      const barcode = deferBarcodes
+        ? `pending:${workItem.prefix}:${crypto.randomUUID()}`
+        : nextBarcode(counters, workItem.prefix);
+      const payload = buildItemPayload(order.id, workItem.row, barcode, sourceKey, workItem.index);
       itemPayloads.push(payload);
       itemMeta.set(sourceKey, { orderId: order.id, note: workItem.dorm.note || "Excel 导入生成水洗标" });
     });
 
-    setMessage("adminImportStatus", `正在导入：${workItems.length} 件物品，正在批量生成水洗标...`);
-    const createdItemRows = itemPayloads.length ? await batchUpsert("order_items", itemPayloads, { onConflict: "source_key" }, 200) : [];
+    setMessage("adminImportStatus", `正在导入：${workItems.length} 件物品，正在保存物品记录...`);
+    const createdItemRows = itemPayloads.length ? await batchUpsert("order_items", itemPayloads, {
+      onConflict: "source_key",
+      ignoreDuplicates: true,
+    }, 200) : [];
     const logs = createdItemRows.map((item) => {
       const meta = itemMeta.get(item.source_key) || {};
       return {
         order_id: item.order_id || meta.orderId,
         item_id: item.id,
-        barcode: item.barcode,
+        barcode: pendingWashLabelPrefix(item.barcode) ? null : item.barcode,
         status: "待取件",
         note: meta.note || "Excel 导入生成水洗标",
         operator_id: currentProfile?.id || null,
@@ -1756,16 +1790,19 @@ async function handleImport(event) {
     });
     if (logs.length) await batchInsert("status_logs", logs, 300);
     const createdItems = createdItemRows.length;
+    skippedItems += itemPayloads.length - createdItems;
+    const labelNotice = deferBarcodes && createdItems ? "请先导入同一取件日期的全部订单，再导出水洗标统一编号。" : "";
     await updateImportBatch(batch.id, orderCache.size, createdItems);
     await refreshAll();
     $("adminImportStatus").innerHTML = renderImportDiagnosis(
       diagnosis,
-      `导入完成：${orderCache.size} 个订单，新增 ${createdItems} 件物品，跳过重复 ${skippedItems} 件。地址识别：自动通过 ${recognitionSummary.high} 单，快速确认 ${recognitionSummary.confirm} 单，需补充信息 ${recognitionSummary.review} 单。`,
+      `导入完成：${orderCache.size} 个订单，新增 ${createdItems} 件物品，跳过重复 ${skippedItems} 件。地址识别：自动通过 ${recognitionSummary.high} 单，快速确认 ${recognitionSummary.confirm} 单，需补充信息 ${recognitionSummary.review} 单。${labelNotice}`,
     );
   } catch (error) {
     console.error(error);
     setMessage("adminImportStatus", `导入失败：${error.message || error}`, "warn");
   } finally {
+    washOrderImportBusy = false;
     event.target.value = "";
   }
 }
@@ -1824,7 +1861,14 @@ async function upsertPickupTask(orderId, pickupDate) {
 }
 
 async function insertLog({ orderId, itemId = null, barcode = "", status, note = "" }) {
-  await sb.from("status_logs").insert({ order_id: orderId, item_id: itemId, barcode, status, note, operator_id: currentProfile?.id || null });
+  await sb.from("status_logs").insert({
+    order_id: orderId,
+    item_id: itemId,
+    barcode: pendingWashLabelPrefix(barcode) ? null : barcode,
+    status,
+    note,
+    operator_id: currentProfile?.id || null,
+  });
 }
 
 async function refreshAll() {
@@ -2655,7 +2699,7 @@ function exceptionStatusClass(status) {
 function renderExceptionTicketCard(ticket) {
   const order = relationOne(ticket.orders);
   const item = relationOne(ticket.order_items);
-  const barcode = ticket.barcode || item.barcode || "未绑定水洗标";
+  const barcode = displayWashLabelBarcode(ticket.barcode || item.barcode, "未绑定水洗标");
   const resolved = !EXCEPTION_OPEN_STATUSES.includes(ticket.status);
   const evidenceKey = `exception-ticket-${ticket.id}`;
   const evidenceUrls = ticket.evidenceUrls || [];
@@ -2742,13 +2786,13 @@ function openExceptionTicketDialog(item = null, context = null) {
   const selectedItem = item || items[0] || null;
   exceptionTicketContext = context ? { ...context, items } : null;
   $("exceptionTicketItemId").value = selectedItem?.id || "";
-  $("exceptionTicketBarcode").value = selectedItem?.barcode || "";
+  $("exceptionTicketBarcode").value = displayWashLabelBarcode(selectedItem?.barcode);
   $("exceptionTicketBarcode").readOnly = Boolean(selectedItem?.barcode);
   const itemChoice = $("exceptionTicketItemChoice");
   const itemSelect = $("exceptionTicketItemSelect");
   if (itemChoice && itemSelect) {
     itemChoice.classList.toggle("hidden", items.length <= 1);
-    itemSelect.innerHTML = items.map((row) => `<option value="${escapeHtml(row.id || "")}" data-barcode="${escapeHtml(row.barcode || "")}">${escapeHtml(`${row.barcode || "无条码"}｜${row.spec || row.product_name || "物品未填写"}`)}</option>`).join("");
+    itemSelect.innerHTML = items.map((row) => `<option value="${escapeHtml(row.id || "")}" data-barcode="${escapeHtml(displayWashLabelBarcode(row.barcode))}">${escapeHtml(`${displayWashLabelBarcode(row.barcode, "无条码")}｜${row.spec || row.product_name || "物品未填写"}`)}</option>`).join("");
     itemSelect.value = selectedItem?.id || items[0]?.id || "";
   }
   $("exceptionTicketType").value = "原有破损";
@@ -2908,7 +2952,7 @@ async function submitExceptionTicket() {
     const payload = {
       order_id: item.order_id,
       item_id: item.id,
-      barcode: item.barcode,
+      barcode: pendingWashLabelPrefix(item.barcode) ? "" : item.barcode,
       ticket_type: ticketType,
       description,
       proposed_solution: text($("exceptionTicketSolution")?.value),
@@ -3529,39 +3573,36 @@ function washItemCategoryKey(item) {
   return "other";
 }
 
-async function loadWashLabelRows(limit = 1000, batchDate = "") {
+function washLabelSortKey(row) {
+  return pendingWashLabelPrefix(row.条形编码) && row.source_key ? row.source_key : row.条形编码;
+}
+
+function compareWashLabelRows(left, right) {
+  return compareOrderRoute(left.route, right.route)
+    || compareNaturalText(washLabelSortKey(left), washLabelSortKey(right));
+}
+
+async function loadWashLabelRows() {
   // 水洗标管理既用于按批次作业，也需要能追溯历史水洗标。分页取数避免
   // Supabase 单次查询上限导致“全库搜索”只命中前一部分记录。
-  const numericLimit = Number(limit);
-  const maxRows = limit === null || limit === undefined || limit === ""
-    ? null
-    : Number.isFinite(numericLimit) ? Math.max(1, Math.floor(numericLimit)) : null;
   const pageSize = 1000;
   const data = [];
-  for (let from = 0; !maxRows || data.length < maxRows; from += pageSize) {
-    const size = maxRows ? Math.min(pageSize, maxRows - data.length) : pageSize;
+  for (let from = 0; ; from += pageSize) {
     const { data: page, error } = await sb
       .from("order_items")
       .select("*, orders(*)")
-      .order("barcode", { ascending: true })
-      .range(from, from + size - 1);
+      .order("id", { ascending: true })
+      .range(from, from + pageSize - 1);
     if (error) return { rows: [], error };
     const pageRows = page || [];
     data.push(...pageRows);
-    if (pageRows.length < size) break;
+    if (pageRows.length < pageSize) break;
   }
-  const sortedItems = [...(data || [])].sort((left, right) => {
-    const leftOrder = Array.isArray(left.orders) ? left.orders[0] || {} : left.orders || {};
-    const rightOrder = Array.isArray(right.orders) ? right.orders[0] || {} : right.orders || {};
-    return compareOrderRoute(leftOrder, rightOrder)
-      || compareNaturalText(left.barcode, right.barcode);
-  });
-  const rows = sortedItems.map((item, index) => {
+  const rows = data.map((item) => {
     const order = Array.isArray(item.orders) ? item.orders[0] || {} : item.orders || {};
     const itemBatchDate = businessBatchDateFromOrder(order);
     const settlement = resolvedSettlementCategory(item);
     return {
-      序号: index + 1,
       条形编码: item.barcode || "",
       所属商家: order.merchant || "",
       订单号: order.order_no || "",
@@ -3595,17 +3636,16 @@ async function loadWashLabelRows(limit = 1000, batchDate = "") {
       batch_date: itemBatchDate,
       batch_label: itemBatchDate ? businessBatchLabel(itemBatchDate) : "未识别批次",
       route: orderRouteParts(order),
+      route_snapshot: [order.school ?? null, order.campus ?? null, order.building ?? null],
+      source_key: item.source_key,
     };
-  }).filter((row) => !batchDate || row.batch_date === batchDate);
-  rows.forEach((row, index) => {
-    row.序号 = index + 1;
-  });
+  }).sort(compareWashLabelRows);
   return { rows, error: null };
 }
 
 async function loadLabels() {
   await Promise.all([detectSettlementSchemaAvailability(), detectWashAdjustmentSchemaAvailability()]);
-  const allResult = await loadWashLabelRows(null);
+  const allResult = await loadWashLabelRows();
   const rows = allResult.rows;
   const error = allResult.error;
   if (error) return setMessage("adminLabels", error.message, "warn");
@@ -3636,7 +3676,7 @@ async function loadLabels() {
         <button id="openMergeWashLabelsBtn" class="ghost" type="button" ${batchDates.length ? "" : "disabled"}>合并批次打印</button>
         <button class="ghost small" type="button" data-select-label-visible>全选当前批次</button>
         <button type="button" data-export-selected-labels disabled>导出所选水洗标（0）</button>
-        <span class="hint">勾选后按列表顺序导出 Excel，可用于重新打印水洗标。</span>
+        <span class="hint">请先导入同一取件日期的全部订单。首次导出会按楼栋统一编号，补打沿用原条码。</span>
       </div>
       <div class="settlement-bulk-bar">
         <div class="settlement-bulk-copy">
@@ -3683,8 +3723,8 @@ async function loadLabels() {
 function renderLabelRows(rows) {
   return rows.map((row) => `
     <tr data-label-row="${escapeHtml(row.id)}" class="${labelSelectedItems.has(row.id) ? "selected" : ""}">
-      <td><label class="label-select-cell"><input type="checkbox" data-label-checkbox="${escapeHtml(row.id)}" ${labelSelectedItems.has(row.id) ? "checked" : ""} aria-label="选择水洗标 ${escapeHtml(row.条形编码)}" /></label></td>
-      <td>${escapeHtml(row.条形编码)}</td><td>${escapeHtml(row.所属商家)}</td><td>${escapeHtml(row.姓名)}</td><td data-label-phone-order="${escapeHtml(row.order_id)}">${escapeHtml(row.电话)}</td><td>${escapeHtml(row.校区)}</td><td>${escapeHtml(row.物品)}</td>
+      <td><label class="label-select-cell"><input type="checkbox" data-label-checkbox="${escapeHtml(row.id)}" ${labelSelectedItems.has(row.id) ? "checked" : ""} aria-label="选择水洗标 ${escapeHtml(displayWashLabelBarcode(row.条形编码))}" /></label></td>
+      <td data-wash-label-barcode="${escapeHtml(row.id)}">${escapeHtml(displayWashLabelBarcode(row.条形编码))}</td><td>${escapeHtml(row.所属商家)}</td><td>${escapeHtml(row.姓名)}</td><td data-label-phone-order="${escapeHtml(row.order_id)}">${escapeHtml(row.电话)}</td><td>${escapeHtml(row.校区)}</td><td>${escapeHtml(row.物品)}</td>
       <td><div class="settlement-editor">
         <select class="input settlement-category-select" data-settlement-select="${escapeHtml(row.id)}" ${settlementSchemaAvailable ? "" : "disabled"}>${settlementCategoryOptions(row.settlement_selected_key)}</select>
         <div class="settlement-other-fields ${row.settlement_selected_key === SETTLEMENT_OTHER ? "" : "hidden"}" data-settlement-other-fields="${escapeHtml(row.id)}">
@@ -4064,21 +4104,23 @@ function mergeWashLabelNeedsRouteReview(row) {
   return !isDormComplete(row.route) || /未识别/.test(row.route.building);
 }
 
+function compareMergedWashLabelRows(left, right) {
+  return Number(mergeWashLabelNeedsRouteReview(left)) - Number(mergeWashLabelNeedsRouteReview(right))
+    || compareWashLabelRows(left, right);
+}
+
 function renderMergeWashLabelPreview() {
   const pendingOnly = $("mergeWashLabelPendingOnly").checked;
   const filtered = labelReviewRows.filter((row) => mergeWashLabelDates.has(row.batch_date)
     && (!pendingOnly || (UNPICKED_ITEM_STATUSES.has(row.item_status) && !washDecisionIsReturn(row))));
-  mergeWashLabelRows = [...new Map(filtered.map((row) => [row.id, row])).values()].sort((left, right) =>
-    Number(mergeWashLabelNeedsRouteReview(left)) - Number(mergeWashLabelNeedsRouteReview(right))
-    || compareOrderRoute(left.route, right.route)
-    || compareNaturalText(left.条形编码, right.条形编码));
+  mergeWashLabelRows = [...new Map(filtered.map((row) => [row.id, row])).values()].sort(compareMergedWashLabelRows);
   $("mergeWashLabelMessage").replaceChildren();
   $("mergeWashLabelRows").innerHTML = mergeWashLabelRows.map((row) => `
     <tr>
-      <td><input type="checkbox" data-merge-label-checkbox="${escapeHtml(row.id)}" ${mergeWashLabelExcluded.has(row.id) ? "" : "checked"} aria-label="选择水洗标 ${escapeHtml(row.条形编码)}" /></td>
+      <td><input type="checkbox" data-merge-label-checkbox="${escapeHtml(row.id)}" ${mergeWashLabelExcluded.has(row.id) ? "" : "checked"} aria-label="选择水洗标 ${escapeHtml(displayWashLabelBarcode(row.条形编码))}" /></td>
       <td>${escapeHtml(row.batch_date)}</td>
       <td>${escapeHtml(`${row.route.school} / ${row.route.campus} / ${row.route.building}`)}${mergeWashLabelNeedsRouteReview(row) ? ' <small class="warn">地址待核对</small>' : ""}</td>
-      <td>${escapeHtml(row.条形编码)}</td>
+      <td data-wash-label-barcode="${escapeHtml(row.id)}">${escapeHtml(displayWashLabelBarcode(row.条形编码))}</td>
       <td>${escapeHtml(row.姓名)}</td>
       <td>${escapeHtml(row.物品)}</td>
       <td>${escapeHtml(row.item_status)}</td>
@@ -4105,16 +4147,51 @@ function setMergeWashLabelSelection(selected) {
   updateMergeWashLabelSelection();
 }
 
+async function withIssuedWashLabelBarcodes(rows, compareRows, allRows) {
+  if (!rows.some((row) => pendingWashLabelPrefix(row.条形编码))) return rows;
+  if (washOrderImportBusy) throw new Error("请等订单导入完成后再导出水洗标。");
+  if (!isWashLabelBusinessProject()) throw new Error("请切换到当前业务库后再生成水洗标条码。");
+
+  if (!allRows) {
+    const latest = await loadWashLabelRows();
+    if (latest.error) throw new Error(latest.error.message);
+    allRows = latest.rows;
+  }
+  const latestById = new Map(allRows.map((row) => [row.id, row]));
+  const selected = rows.map((row) => latestById.get(row.id));
+  if (selected.some((row) => !row)) throw new Error("部分水洗标已移除，请刷新后重新选择。");
+
+  const prefixes = new Set(selected.map((row) => pendingWashLabelPrefix(row.条形编码)).filter(Boolean));
+  const pending = allRows.filter((row) => prefixes.has(pendingWashLabelPrefix(row.条形编码))).sort(compareRows);
+  const issued = pending.length ? await requestWashLabelBarcodes([...prefixes], pending) : [];
+  const barcodes = new Map(issued.map((item) => [item.item_id, item.barcode]));
+  const readyRows = selected.map((row) => ({ ...row, 条形编码: barcodes.get(row.id) || row.条形编码 }));
+  if (readyRows.some((row) => pendingWashLabelPrefix(row.条形编码))) {
+    throw new Error("请刷新水洗标列表后重新导出，以读取已生成的条码。");
+  }
+
+  readyRows.forEach((row) => barcodes.set(row.id, row.条形编码));
+  for (const row of labelReviewRows) {
+    if (barcodes.has(row.id)) row.条形编码 = barcodes.get(row.id);
+  }
+  document.querySelectorAll("[data-wash-label-barcode]").forEach((cell) => {
+    const barcode = barcodes.get(cell.dataset.washLabelBarcode);
+    if (barcode) cell.textContent = barcode;
+  });
+  return readyRows.sort(compareRows);
+}
+
 async function exportMergedWashLabels() {
   if (mergeWashLabelExportBusy || APP_MODE !== "admin" || currentProfile?.role !== "admin" || !currentUser || !requireClient()) return;
-  const rows = mergeWashLabelRows.filter((row) => !mergeWashLabelExcluded.has(row.id));
+  const rows = mergeWashLabelRows.filter((row) => !mergeWashLabelExcluded.has(row.id)).sort(compareMergedWashLabelRows);
   if (!rows.length) return;
   mergeWashLabelExportBusy = true;
   updateMergeWashLabelSelection();
   try {
     await ensureXlsx();
     const batchCount = new Set(rows.map((row) => row.batch_date)).size;
-    writeWashLabelExport(await withLatestWashLabelPhones(rows), "合并批次", `事事通水洗标清单-合并${batchCount}批-${todayDate()}-${rows.length}个.xlsx`);
+    const numbered = await withIssuedWashLabelBarcodes(rows, compareMergedWashLabelRows);
+    writeWashLabelExport(await withLatestWashLabelPhones(numbered), "合并批次", `事事通水洗标清单-合并${batchCount}批-${todayDate()}-${rows.length}个.xlsx`);
     setMessage("mergeWashLabelMessage", `已导出 ${batchCount} 批、${rows.length} 个水洗标，可使用原打印模板。`, "success");
   } catch (error) {
     setMessage("mergeWashLabelMessage", `导出失败：${error?.message || "请稍后重试"}`, "warn");
@@ -4127,24 +4204,36 @@ async function exportMergedWashLabels() {
 async function exportWashLabels() {
   if (!requireClient()) return;
   if (!currentUser) return alert("请先登录后台账号");
-  await ensureXlsx();
-  const batchDate = $("washBatchSelect")?.value || currentBusinessBatchDate();
-  const { rows, error } = await loadWashLabelRows(5000, batchDate);
-  if (error) return alert(`读取水洗标失败：${error.message}`);
-  if (!rows.length) return alert(`当前 ${batchDate} 批次暂无水洗标可导出`);
-  writeWashLabelExport(rows, `${batchDate}批次`, `事事通水洗标清单-${batchDate}批次.xlsx`);
+  const button = $("exportWashLabelsBtn");
+  if (button?.disabled) return;
+  if (button) button.disabled = true;
+  try {
+    await ensureXlsx();
+    const batchDate = $("washBatchSelect")?.value || currentBusinessBatchDate();
+    const { rows: allRows, error } = await loadWashLabelRows();
+    if (error) throw new Error(error.message);
+    const rows = allRows.filter((row) => row.batch_date === batchDate);
+    if (!rows.length) return alert(`当前 ${batchDate} 批次暂无水洗标可导出`);
+    const numbered = await withIssuedWashLabelBarcodes(rows, compareWashLabelRows, allRows);
+    writeWashLabelExport(numbered, `${batchDate}批次`, `事事通水洗标清单-${batchDate}批次.xlsx`);
+  } catch (error) {
+    alert(`导出水洗标失败：${error?.message || "请稍后重试"}`);
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 async function exportSelectedWashLabels() {
   if (labelExportBusy || !requireClient()) return;
   if (!currentUser) return alert("请先登录后台账号");
-  const rows = labelVisibleRows.filter((row) => labelSelectedItems.has(row.id));
+  const rows = labelVisibleRows.filter((row) => labelSelectedItems.has(row.id)).sort(compareWashLabelRows);
   if (!rows.length) return setMessage("labelReviewMessage", "请先勾选需要补打的水洗标。", "warn");
   labelExportBusy = true;
   updateLabelSelectionUi();
   try {
     await ensureXlsx();
-    writeWashLabelExport(await withLatestWashLabelPhones(rows), "所选水洗标", `事事通水洗标清单-所选${rows.length}个-${todayDate()}.xlsx`);
+    const numbered = await withIssuedWashLabelBarcodes(rows, compareWashLabelRows);
+    writeWashLabelExport(await withLatestWashLabelPhones(numbered), "所选水洗标", `事事通水洗标清单-所选${rows.length}个-${todayDate()}.xlsx`);
     setMessage("labelReviewMessage", `已导出所选 ${rows.length} 个水洗标，可使用原打印模板补打。`, "success");
   } catch (error) {
     setMessage("labelReviewMessage", `导出失败：${error?.message || "请稍后重试"}`, "warn");
@@ -4167,6 +4256,9 @@ async function withLatestWashLabelPhones(rows) {
 }
 
 function writeWashLabelExport(rows, sheetName, fileName) {
+  if (rows.some((row) => pendingWashLabelPrefix(row.条形编码))) {
+    throw new Error("有水洗标尚未分配正式条码，请重新导出。");
+  }
   const exportRows = rows.map((row, index) => ({
     序号: index + 1,
     批次: `${row.batch_date}（${row.batch_label}）`,
@@ -4240,7 +4332,7 @@ async function showOrderDetail(orderId) {
     <section class="panel table-panel">
       <h3>物品 / 水洗标</h3>
       ${canEditItemStatus ? '<p class="hint">这里修改只影响当前水洗标；整单状态会按该订单下所有水洗标的最慢进度自动汇总。</p>' : ""}
-    <div class="table-wrap"><table><thead><tr><th>水洗标</th><th>商品</th><th>规格</th><th>结算品类</th><th>状态</th><th>图片</th>${canEditItemStatus ? "<th>操作</th>" : ""}</tr></thead><tbody>${(itemResult.data || []).map((item) => `<tr><td>${escapeHtml(item.barcode)}</td><td>${escapeHtml(item.product_name)}</td><td>${escapeHtml(item.spec)}</td><td>${escapeHtml(settlementDisplayLabel(item))}${resolvedSettlementCategory(item).confirmed ? "" : "（待确认）"}</td><td>${canEditItemStatus ? `<select class="input compact-input" data-order-item-status="${escapeHtml(item.id)}" data-order-id="${escapeHtml(order.id)}" data-item-barcode="${escapeHtml(item.barcode)}" data-original-status="${escapeHtml(item.item_status)}">${item.item_status === "待补取" ? '<option value="待补取" selected disabled>待补取（由补取任务控制）</option>' : ""}${ITEM_EDITABLE_STATUSES.map((status) => `<option value="${escapeHtml(status)}" ${status === item.item_status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}</select>` : escapeHtml(item.item_status)}</td><td>${item.image_links ? `<a href="${escapeHtml(item.image_links.split("\n")[0])}" target="_blank">查看</a>` : ""}</td>${canEditItemStatus ? `<td>${["待取件", "未找到", "待补取", "已取件"].includes(item.item_status) ? `<button class="ghost small-btn" type="button" data-schedule-retry-item="${escapeHtml(item.id)}" data-retry-order="${escapeHtml(order.id)}">安排补取</button>` : "—"}</td>` : ""}</tr>`).join("")}</tbody></table></div>
+    <div class="table-wrap"><table><thead><tr><th>水洗标</th><th>商品</th><th>规格</th><th>结算品类</th><th>状态</th><th>图片</th>${canEditItemStatus ? "<th>操作</th>" : ""}</tr></thead><tbody>${(itemResult.data || []).map((item) => `<tr><td>${escapeHtml(displayWashLabelBarcode(item.barcode))}</td><td>${escapeHtml(item.product_name)}</td><td>${escapeHtml(item.spec)}</td><td>${escapeHtml(settlementDisplayLabel(item))}${resolvedSettlementCategory(item).confirmed ? "" : "（待确认）"}</td><td>${canEditItemStatus ? `<select class="input compact-input" data-order-item-status="${escapeHtml(item.id)}" data-order-id="${escapeHtml(order.id)}" data-item-barcode="${escapeHtml(item.barcode)}" data-original-status="${escapeHtml(item.item_status)}">${item.item_status === "待补取" ? '<option value="待补取" selected disabled>待补取（由补取任务控制）</option>' : ""}${ITEM_EDITABLE_STATUSES.map((status) => `<option value="${escapeHtml(status)}" ${status === item.item_status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}</select>` : escapeHtml(item.item_status)}</td><td>${item.image_links ? `<a href="${escapeHtml(item.image_links.split("\n")[0])}" target="_blank">查看</a>` : ""}</td>${canEditItemStatus ? `<td>${["待取件", "未找到", "待补取", "已取件"].includes(item.item_status) ? `<button class="ghost small-btn" type="button" data-schedule-retry-item="${escapeHtml(item.id)}" data-retry-order="${escapeHtml(order.id)}">安排补取</button>` : "—"}</td>` : ""}</tr>`).join("")}</tbody></table></div>
     </section>
     <section class="panel">
       <h3>状态时间线</h3>
@@ -4655,7 +4747,7 @@ function renderPickupCard(record, processed = false) {
     <div class="card-head"><h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3><span>${escapeHtml(isBusy ? "提交中…" : task.status)}</span></div>
     <p class="pickup-card-route">${isRetry ? `<b class="pickup-retry-tag">补取第 ${escapeHtml(task.attempt_no || 1)} 次</b>　${escapeHtml(task.pickup_date || "")}` : `本单 ${items.length} 件`}</p>
     <div class="courier-card-address courier-pickup-address"><span>取件地址</span><p>${escapeHtml(order.address || "未填写完整地址")}</p></div>
-    <ul class="courier-item-list pickup-label-list">${items.map((item) => `<li><strong>${escapeHtml(item.barcode || "无条码")}</strong><span>${escapeHtml(item.spec || item.product_name || "物品未填写")}</span><em>${escapeHtml(item.item_status || task.status)}</em></li>`).join("") || "<li><span>该订单尚未生成水洗标</span></li>"}</ul>
+    <ul class="courier-item-list pickup-label-list">${items.map((item) => `<li><strong>${escapeHtml(displayWashLabelBarcode(item.barcode, "无条码"))}</strong><span>${escapeHtml(item.spec || item.product_name || "物品未填写")}</span><em>${escapeHtml(item.item_status || task.status)}</em></li>`).join("") || "<li><span>该订单尚未生成水洗标</span></li>"}</ul>
     ${order.exception_note ? `<p class="warn">备注：${escapeHtml(order.exception_note)}</p>` : ""}
     <div class="pickup-primary-tools">
       ${images.length ? `<button class="pickup-photo-button" type="button" data-preview-images="${escapeHtml(previewKey)}">看图片（${images.length}）</button>` : '<button class="ghost pickup-photo-button" type="button" disabled>暂无图片</button>'}
@@ -4855,7 +4947,7 @@ function renderCourierReturnCard(group, processed = false) {
       const itemBusy = courierReturnBusyTaskId === task.id;
       const finished = COURIER_RETURN_FINISHED_STATUSES.has(task.status);
       return `<li class="courier-return-item ${task.status === "已送达" ? "done" : task.status === "异常" ? "alert" : ""}">
-        <div class="courier-return-item-main"><strong>${escapeHtml(item.barcode || "无条码")}</strong><span>${washDecisionIsReturn(item) ? '<b class="wash-return-tag">退洗</b>' : ""}${escapeHtml(item.spec || item.product_name || "物品未填写")}</span><em>${escapeHtml(itemBusy ? "提交中…" : task.status || "待送回")}</em></div>
+        <div class="courier-return-item-main"><strong>${escapeHtml(displayWashLabelBarcode(item.barcode, "无条码"))}</strong><span>${washDecisionIsReturn(item) ? '<b class="wash-return-tag">退洗</b>' : ""}${escapeHtml(item.spec || item.product_name || "物品未填写")}</span><em>${escapeHtml(itemBusy ? "提交中…" : task.status || "待送回")}</em></div>
         ${finished ? "" : `<div class="courier-return-item-actions"><button class="ghost danger" type="button" data-report-return-exception="${escapeHtml(task.id)}" data-item="${escapeHtml(item.id)}" data-order="${escapeHtml(order.id)}" ${itemBusy || groupBusy ? "disabled" : ""}>此件异常</button></div>`}
       </li>`;
     }).join("")}</ul>
@@ -5211,7 +5303,7 @@ function renderFactoryPendingItems() {
     const decisionTag = item.wash_decision && item.wash_decision !== WASH_DECISION_NORMAL
       ? `<p class="factory-wash-decision ${escapeHtml(item.wash_decision)}">${escapeHtml(washDecisionLabel(item))}${numberValue(item.price_adjustment_amount) > 0 ? ` · ¥${escapeHtml(numberValue(item.price_adjustment_amount))}` : ""}</p>`
       : "";
-    return `<article class="task-card compact"><div class="card-head"><h3>${escapeHtml(item.barcode)}</h3><span>${escapeHtml(item.item_status)}</span></div><p>${escapeHtml(order.customer_name || "")} · ${escapeHtml(order.phone || "")}</p><p>${escapeHtml(`${order.school || ""}${orderCampusName(order)}${order.building || ""}`)}</p><p>${escapeHtml(item.spec || item.product_name || "")}</p>${decisionTag}<div class="actions factory-item-actions"><button class="ghost danger" type="button" data-report-exception="${escapeHtml(item.id)}">上报异常</button></div></article>`;
+    return `<article class="task-card compact"><div class="card-head"><h3>${escapeHtml(displayWashLabelBarcode(item.barcode))}</h3><span>${escapeHtml(item.item_status)}</span></div><p>${escapeHtml(order.customer_name || "")} · ${escapeHtml(order.phone || "")}</p><p>${escapeHtml(`${order.school || ""}${orderCampusName(order)}${order.building || ""}`)}</p><p>${escapeHtml(item.spec || item.product_name || "")}</p>${decisionTag}<div class="actions factory-item-actions"><button class="ghost danger" type="button" data-report-exception="${escapeHtml(item.id)}">上报异常</button></div></article>`;
   }).join("") || `<p class="factory-pending-empty">${factoryPendingView ? "当前作业类型暂无待处理物品" : "暂不展示全部物品，避免列表过长。"}</p>`;
 }
 
@@ -5290,7 +5382,7 @@ function renderFactoryOrderSearchResults() {
         <div class="factory-order-search-tags"><span class="status-tag">${escapeHtml(order.order_status || "状态待更新")}</span><span class="count-tag">共${items.length}件</span></div>
       </div>
       <p class="factory-search-order-no">订单号　${escapeHtml(order.order_no || "—")}</p>
-      <div class="factory-search-item-list">${items.map((item) => `<div><strong>${escapeHtml(item.barcode || "未生成条码")}</strong><span>${escapeHtml(item.spec || item.product_name || "物品未填写")}</span><b>${escapeHtml(item.item_status || "状态待更新")}</b></div>`).join("") || '<p class="hint">订单暂无水洗标</p>'}</div>
+      <div class="factory-search-item-list">${items.map((item) => `<div><strong>${escapeHtml(displayWashLabelBarcode(item.barcode, "未生成条码"))}</strong><span>${escapeHtml(item.spec || item.product_name || "物品未填写")}</span><b>${escapeHtml(item.item_status || "状态待更新")}</b></div>`).join("") || '<p class="hint">订单暂无水洗标</p>'}</div>
       <div class="factory-search-actions">
         <button class="ghost" type="button" data-factory-search-detail="${escapeHtml(order.id)}">订单详情</button>
         <button class="ghost image-action" type="button" ${images.length ? `data-factory-search-images="${escapeHtml(previewKey)}"` : "disabled"}>${images.length ? "查看图片" : "暂无图片"}</button>
@@ -5488,7 +5580,7 @@ function renderFactoryDailyItems(group) {
     const item = record.item || {};
     const scannedAt = text(record.created_at || item.updated_at);
     return `<div class="factory-daily-item">
-      <code>${escapeHtml(record.barcode || item.barcode || "")}</code>
+      <code>${escapeHtml(displayWashLabelBarcode(record.barcode || item.barcode))}</code>
       <span>${escapeHtml(item.spec || item.product_name || "物品未填写")}</span>
       <time datetime="${escapeHtml(scannedAt)}">${escapeHtml(factoryDailyTime(scannedAt))}</time>
     </div>`;
@@ -5753,6 +5845,7 @@ async function queueFactoryBarcode(value, source = "扫码") {
   const barcode = text(value);
   if (!factoryScanMode) return factoryScanFailure(barcode, "请先选择批量入库或批量出库模式");
   if (!barcode) return factoryScanFailure("", "没有识别到水洗标");
+  if (pendingWashLabelPrefix(barcode)) return factoryScanFailure("", "请先由后台生成正式水洗标。");
   if (factoryScanBusy) return false;
   if (factoryProcessedBarcodes.has(barcode)) {
     return factoryScanFailure(barcode, "已经在本批次中，请继续扫描下一件");
@@ -6536,6 +6629,7 @@ async function factoryScan(scanType, suppliedBarcode = "", options = {}) {
   }
   const barcode = text(suppliedBarcode || $("barcodeInput")?.value);
   if (!barcode) return factoryScanFailure("", "请先扫码或输入水洗标");
+  if (pendingWashLabelPrefix(barcode)) return factoryScanFailure("", "请先由后台生成正式水洗标。");
   if (!["factory_in", "factory_out"].includes(scanType)) return factoryScanFailure(barcode, "请先选择入库或出库模式");
   if (factoryScanBusy && !options.batchCommit) return false;
 
@@ -6857,7 +6951,7 @@ function renderStudentOrder(order) {
     </div>
     <p>${escapeHtml(`${order.school || ""}｜${orderCampusName(order)}｜${order.building || ""}`)}</p>
     <div class="student-items">
-      ${uniqueItems.map((item) => `<p>水洗标：${escapeHtml(item.barcode || "未生成")}｜${escapeHtml(item.spec || item.product_name || "")}｜${escapeHtml(item.item_status || "")}</p>`).join("")}
+      ${uniqueItems.map((item) => `<p>水洗标：${escapeHtml(displayWashLabelBarcode(item.barcode, "未生成"))}｜${escapeHtml(item.spec || item.product_name || "")}｜${escapeHtml(item.item_status || "")}</p>`).join("")}
     </div>
     ${renderStudentTimeline(order)}
     ${order.latest_note ? `<p class="hint">最新记录：${escapeHtml(order.latest_note)}</p>` : ""}
@@ -7225,7 +7319,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=83", { updateViaCache: "none" })
+    .register("./sw.js?v=84", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
