@@ -130,6 +130,8 @@ let factoryDashboardFilter = "";
 let courierPickupTaskRows = [];
 let courierRetryTaskRows = [];
 let courierReturnTaskRows = [];
+let courierTaskLoadVersion = 0;
+let courierTaskLoadErrors = [];
 let courierActivePickupAreaKey = "";
 let courierPickupDateInitialized = false;
 let courierPickupBusyTaskId = "";
@@ -4893,21 +4895,52 @@ function resetCourierPickupDate() {
   courierActivePickupAreaKey = "";
   const input = $("courierPickupDate");
   if (input) input.value = "";
+  const search = $("courierSearch");
+  if (search) search.value = "";
   loadCourierTasks();
 }
 
+async function loadCourierTaskPages(client, table, columns) {
+  const pageSize = 300;
+  const rows = [];
+  let lastId;
+  try {
+    for (;;) {
+      let query = client.from(table).select(columns).order("id", { ascending: true }).limit(pageSize);
+      if (lastId) query = query.gt("id", lastId);
+      const { data, error } = await query;
+      if (error) throw error;
+      const page = data || [];
+      rows.push(...page);
+      if (page.length < pageSize) return { data: rows, error: null };
+      lastId = page.at(-1).id;
+    }
+  } catch (error) {
+    return { data: [], error };
+  }
+}
+
 async function loadCourierTasks() {
+  if (!sb) return;
+  const client = sb;
+  const userId = currentUser?.id;
+  const version = ++courierTaskLoadVersion;
+  const list = $("courierRouteTaskList");
+  if (list && !list.innerHTML) setMessage("courierRouteTaskList", "正在读取配送任务…");
   const [pickup, retries, returns] = await Promise.all([
-    sb
-      .from("pickup_tasks")
-      .select("*, orders(*, order_items(id,barcode,image_links,product_name,spec,item_status))")
-      .order("pickup_date", { ascending: true })
-      .limit(800),
+    loadCourierTaskPages(client, "pickup_tasks", "*, orders(*, order_items(id,barcode,image_links,product_name,spec,item_status))"),
     retryPickupSchemaAvailable
-      ? sb.from("pickup_retry_tasks").select("*, order_items(id,order_id,barcode,image_links,product_name,spec,item_status,orders(*))").order("pickup_date", { ascending: true }).limit(800)
+      ? loadCourierTaskPages(client, "pickup_retry_tasks", "*, order_items(id,order_id,barcode,image_links,product_name,spec,item_status,orders(*))")
       : Promise.resolve({ data: [], error: null }),
-    sb.from("return_tasks").select("*, order_items(*, orders(*))").order("outbound_date", { ascending: false }),
+    loadCourierTaskPages(client, "return_tasks", "*, order_items(*, orders(*))"),
   ]);
+  if (version !== courierTaskLoadVersion || client !== sb || userId !== currentUser?.id) return;
+  courierTaskLoadErrors = [];
+  for (const [label, result] of [["取件", pickup], ["补取", retries], ["送回", returns]]) {
+    if (!result.error) continue;
+    courierTaskLoadErrors.push(label);
+    console.error(`配送员端${label}任务加载失败`, result.error);
+  }
   let pickupRows = pickup.data || [];
   let retryRows = retries.data || [];
   let returnRows = returns.data || [];
@@ -5014,9 +5047,9 @@ function courierPickupRecordOpen(record) {
     : PICKUP_OPEN_STATUSES.has(text(record.task?.status));
 }
 
-function courierPickupRecordDue(record) {
+function courierPickupRecordDue(record, today = todayDate()) {
   const dueDate = text(record.task?.pickup_date);
-  return !dueDate || dueDate <= todayDate();
+  return !dueDate || dueDate <= today;
 }
 
 function courierPickupRecordFinishedOnDate(record, dateText) {
@@ -5077,27 +5110,29 @@ function courierRouteBuildingCounts(area, processed = false) {
   return `${prefix}送回 ${area.returns.length}单｜${prefix}取件 ${area.pickups.length}单`;
 }
 
-function renderCourierRouteCockpit(pendingPickups, pendingReturns, processedPickups, processedReturns, areas, activeArea) {
+function renderCourierRouteCockpit(pendingPickups, futurePickups, pendingReturns, processedPickups, processedReturns, areas, activeArea) {
   const completed = processedPickups.length + processedReturns.length;
   const pending = pendingPickups.length + pendingReturns.length;
   const total = completed + pending;
   const percent = total ? Math.round((completed / total) * 100) : 100;
   const activeIndex = activeArea ? areas.findIndex((area) => area.key === activeArea.key) : -1;
   const nextArea = activeIndex >= 0 ? areas[activeIndex + 1] : null;
-  const retryCount = pendingPickups.filter((record) => record.isRetry).length;
+  const allOpenPickups = pendingPickups.concat(futurePickups);
+  const retryCount = allOpenPickups.filter((record) => record.isRetry).length;
   return `<section class="pickup-cockpit courier-route-cockpit ${pending ? "" : "complete"}">
     <div class="pickup-cockpit-head">
       <div><span class="pickup-eyebrow">当前楼栋</span><strong>${activeArea ? escapeHtml(pickupAreaLabel(activeArea)) : "今日路线已完成"}</strong></div>
       <span class="pickup-current-count">${activeArea ? escapeHtml(courierRouteBuildingCounts(activeArea)) : "全部完成"}</span>
     </div>
     <div class="courier-route-stats">
-      <div><strong>${pendingPickups.length}</strong><span>全部待取</span></div>
+      <div><strong>${allOpenPickups.length}</strong><span>全部待取</span></div>
       <div><strong>${retryCount}</strong><span>其中补取</span></div>
       <div><strong>${pendingReturns.length}</strong><span>待送回</span></div>
       <div><strong>${completed}</strong><span>今日已完成</span></div>
     </div>
+    ${futurePickups.length ? `<p>已到期取件 ${pendingPickups.length} · 未来预约 ${futurePickups.length}</p>` : ""}
     <div class="pickup-progress-track"><i style="width:${percent}%"></i></div>
-    <p>${nextArea ? `下一楼栋：${escapeHtml(pickupAreaLabel(nextArea))}` : pending ? "当前是最后一个待处理楼栋" : "所有任务均已处理，可在下方查看已处理记录"}</p>
+    <p>${nextArea ? `下一楼栋：${escapeHtml(pickupAreaLabel(nextArea))}` : pending ? "当前是最后一个待处理楼栋" : futurePickups.length ? "未来预约到期后会进入待办路线" : "所有任务均已处理，可在下方查看已处理记录"}</p>
   </section>`;
 }
 
@@ -5208,11 +5243,16 @@ function renderCourierRouteTree(areas, processed = false) {
 function renderCourierRouteTasks() {
   const target = $("courierRouteTaskList");
   if (!target) return;
+  const loadWarning = courierTaskLoadErrors.length
+    ? `<p class="warn" role="status">${courierTaskLoadErrors.join("、")}任务加载失败，列表可能不完整。请点「刷新任务」重试。</p>`
+    : "";
   const pickupRecords = filteredCourierPickupRecords();
-  const pendingPickups = pickupRecords.filter((record) => courierPickupRecordOpen(record) && courierPickupRecordDue(record));
-  const futurePickups = pickupRecords.filter((record) => courierPickupRecordOpen(record) && !courierPickupRecordDue(record));
+  const today = todayDate();
+  const openPickups = pickupRecords.filter(courierPickupRecordOpen);
+  const pendingPickups = openPickups.filter((record) => courierPickupRecordDue(record, today));
+  const futurePickups = openPickups.filter((record) => !courierPickupRecordDue(record, today));
   const selectedDate = selectedCourierPickupDate();
-  const activityDate = selectedDate || todayDate();
+  const activityDate = selectedDate || today;
   const hasSearch = Boolean(text($("courierSearch")?.value));
   const processedPickups = pickupRecords.filter((record) => !courierPickupRecordOpen(record) && (hasSearch || courierPickupRecordFinishedOnDate(record, activityDate)));
   const returnRecords = filteredCourierReturnRecords();
@@ -5220,20 +5260,23 @@ function renderCourierRouteTasks() {
   const pendingReturns = courierReturnOrderGroups.filter(courierReturnGroupHasPending);
   const processedReturns = courierReturnOrderGroups.filter((group) => !courierReturnGroupHasPending(group) && (hasSearch || courierReturnGroupFinishedOnDate(group, activityDate)));
   const availableKeys = new Set(pendingReturns.map((group) => group.key));
-  [...courierReturnProofFiles.keys()].forEach((key) => {
-    if (!availableKeys.has(key)) clearCourierReturnProof(key);
-  });
+  if (!courierTaskLoadErrors.includes("送回")) {
+    [...courierReturnProofFiles.keys()].forEach((key) => {
+      if (!availableKeys.has(key)) clearCourierReturnProof(key);
+    });
+  }
   const pendingAreas = buildCourierRouteAreas(pendingPickups, pendingReturns);
   const processedAreas = buildCourierRouteAreas(processedPickups, processedReturns);
   const activeArea = ensureCourierActivePickupArea(pendingAreas);
   const hasAnyTask = pendingPickups.length || futurePickups.length || processedPickups.length || pendingReturns.length || processedReturns.length;
   if (!hasAnyTask) {
-    target.innerHTML = `<p class="hint">当前没有未完成取件或送回任务${selectedDate ? `，${escapeHtml(selectedDate)} 也没有处理记录` : ""}。</p>`;
+    target.innerHTML = loadWarning || `<p class="hint">当前没有未完成取件或送回任务${selectedDate ? `，${escapeHtml(selectedDate)} 也没有处理记录` : ""}。</p>`;
     return;
   }
   const completed = processedPickups.length + processedReturns.length;
   target.innerHTML = `
-    ${renderCourierRouteCockpit(pendingPickups, pendingReturns, processedPickups, processedReturns, pendingAreas, activeArea)}
+    ${loadWarning}
+    ${renderCourierRouteCockpit(pendingPickups, futurePickups, pendingReturns, processedPickups, processedReturns, pendingAreas, activeArea)}
     <div class="courier-route-list">${pendingAreas.length ? renderCourierRouteTree(pendingAreas) : '<p class="success-note">当前没有到期的未完成任务。</p>'}</div>
     ${futurePickups.length ? `<details class="pickup-processed courier-future-pickups"><summary><strong>未来预约</strong><span>${futurePickups.length} 项</span></summary><div class="pickup-processed-body">${buildCourierRouteAreas(futurePickups, []).map((area) => `<p><strong>${escapeHtml(pickupAreaLabel(area))}</strong> · ${area.pickups.length} 项</p>`).join("")}</div></details>` : ""}
     ${completed ? `<details class="pickup-processed courier-route-processed" ${pendingAreas.length ? "" : "open"}>
@@ -7528,7 +7571,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=87", { updateViaCache: "none" })
+    .register("./sw.js?v=88", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
