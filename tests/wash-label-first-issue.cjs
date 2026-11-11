@@ -31,7 +31,7 @@ function item(id, date, building, barcode) {
   };
 }
 
-function setup(items, { date = '2026-11-10', issueError, original = false, staleSourceLookup = false } = {}) {
+function setup(items, { date = '2026-11-10', issueError, original = false } = {}) {
   const downloads = [], calls = [], alerts = [];
   const itemWrites = [], importLogs = [];
   const importedOrders = new Map();
@@ -62,11 +62,12 @@ function setup(items, { date = '2026-11-10', issueError, original = false, stale
             order: () => ({ range: async (from, to) => ({ data: items.slice(from, to + 1) }) }),
             in: async (key, keys) => {
               assert.equal(key, 'source_key');
-              return { data: staleSourceLookup ? [] : items.filter((row) => keys.includes(row.source_key)) };
+              if (!original) throw new Error('Business imports must not send source keys in a GET URL');
+              return { data: items.filter((row) => keys.includes(row.source_key)) };
             },
           }),
           upsert: (payloads, options) => ({ select: async () => {
-            itemWrites.push(structuredClone(options));
+            itemWrites.push({ ...options, size: payloads.length });
             const data = [];
             for (const payload of payloads) {
               const existing = items.find((row) => row.source_key === payload.source_key);
@@ -148,12 +149,12 @@ function labelColumns({ rows }) {
 }
 
 function importFile(orders) {
-  const rows = orders.map(([name, building]) => ({
+  const rows = orders.map(([name, building, spec = '1双']) => ({
     订单号: name,
     状态: '已支付',
     所属商家: '事事超级洗护',
     商品名称: '普通鞋',
-    规格: '1双',
+    规格: spec,
     姓名: name,
     电话: '13800000000',
     表单信息: `师大东区：${building}`,
@@ -167,7 +168,7 @@ function importFile(orders) {
 
 test('two imports defer numbering and a concurrent duplicate does not replace a staged item', async () => {
   const items = [];
-  const s = setup(items, { staleSourceLookup: true });
+  const s = setup(items);
   s.run(`
     detectSettlementSchemaAvailability = async () => false;
     loadRecognitionRules = async () => {};
@@ -184,12 +185,45 @@ test('two imports defer numbering and a concurrent duplicate does not replace a 
   assert.equal(items[0].barcode, firstBarcode);
   assert.ok(items.every((row) => /^pending:261110:/.test(row.barcode)));
   assert.deepEqual(s.calls.map((call) => call.ids), [[], []]);
-  assert.deepEqual(s.itemWrites, Array(2).fill({ onConflict: 'source_key', ignoreDuplicates: true }));
+  assert.deepEqual(s.itemWrites, [1, 2].map((size) => ({ onConflict: 'source_key', ignoreDuplicates: true, size })));
   assert.deepEqual(s.importLogs.map((log) => log.barcode), [null, null]);
 
   await s.context.exportWashLabels();
   assert.deepEqual(s.alerts, []);
   assert.deepEqual(labelColumns(s.downloads[0]), [[1, '261110001', 'two'], [2, '261110002', 'ten']]);
+});
+
+test('a large Excel import writes bounded batches and reimport preserves issued labels', async () => {
+  const items = [];
+  const s = setup(items);
+  s.run(`
+    detectSettlementSchemaAvailability = async () => false;
+    loadRecognitionRules = async () => {};
+    refreshAll = async () => {};
+  `);
+  const file = importFile(Array.from({ length: 130 }, (_, index) => [
+    `ORDER-LONG-SOURCE-KEY-${String(index + 1).padStart(24, '0')}`, `${index + 1}栋`, '2双',
+  ]));
+  const importWorkbook = () => s.context.handleImport({ target: { files: [file] } });
+  await importWorkbook();
+  assert.match(s.node('adminImportStatus').innerHTML, /130 个订单，新增 260 件物品，跳过重复 0 件/);
+  assert.equal(items.length, 260);
+  assert.equal(s.importLogs.length, 260);
+  assert.ok(items.every((row) => /^pending:261110:/.test(row.barcode)));
+
+  await s.context.exportWashLabels();
+  assert.deepEqual(s.alerts, []);
+  const issued = { id: items[0].id, barcode: items[0].barcode };
+  assert.match(issued.barcode, /^261110\d{3}$/);
+
+  await importWorkbook();
+  assert.match(s.node('adminImportStatus').innerHTML, /130 个订单，新增 0 件物品，跳过重复 260 件/);
+  assert.deepEqual(s.itemWrites, [200, 60, 200, 60].map((size) => ({
+    onConflict: 'source_key', ignoreDuplicates: true, size,
+  })));
+  assert.equal(items.length, 260);
+  assert.equal(s.importLogs.length, 260);
+  assert.equal(items.find((row) => row.id === issued.id).barcode, issued.barcode);
 });
 
 test('first full daily export assigns actual barcodes in natural building order', async () => {

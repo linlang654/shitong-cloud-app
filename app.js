@@ -1894,15 +1894,17 @@ async function handleImport(event) {
     }));
     await batchUpsert("pickup_tasks", pickupPayloads, { onConflict: "order_id" }, 200);
 
-    setMessage("adminImportStatus", `正在导入：${workItems.length} 件物品，正在检查重复水洗标...`);
-    const sourceKeys = workItems.map((workItem) => `${importKey(workItem.row)}|${workItem.index}`);
-    const existingSourceKeys = await fetchExistingSourceKeys(sourceKeys);
+    // The business project skips duplicates on insert. Looking up every source
+    // key first puts long Excel values in a GET URL and can exceed its limit.
+    const existingSourceKeys = deferBarcodes ? null : await fetchExistingSourceKeys(
+      workItems.map((workItem) => `${importKey(workItem.row)}|${workItem.index}`),
+    );
     const itemPayloads = [];
     const itemMeta = new Map();
     let skippedItems = 0;
     workItems.forEach((workItem) => {
       const sourceKey = `${importKey(workItem.row)}|${workItem.index}`;
-      if (existingSourceKeys.has(sourceKey)) {
+      if (existingSourceKeys?.has(sourceKey)) {
         skippedItems += 1;
         return;
       }
@@ -7478,7 +7480,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=85", { updateViaCache: "none" })
+    .register("./sw.js?v=86", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
