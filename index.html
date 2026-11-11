@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#f26a1b" />
     <title>事事通校园配送系统</title>
     <link rel="manifest" href="./manifest.webmanifest" />
-    <link rel="stylesheet" href="./styles.css?v=84" />
+    <link rel="stylesheet" href="./styles.css?v=85" />
     <script src="./vendor/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   </head>
@@ -59,9 +59,11 @@
                 导入订单 Excel
                 <input id="fileInput" type="file" accept=".xlsx" multiple />
               </label>
+              <button class="ghost hidden" type="button" data-new-manual-order>新增抖音团购订单</button>
               <button id="exportWashLabelsBtn" class="ghost" type="button">导出水洗标清单</button>
               <button id="refreshAdminBtn" class="ghost" type="button">刷新后台</button>
             </div>
+            <div id="adminManualOrderStatus" aria-live="polite"></div>
           </div>
 
           <nav class="subtabs" aria-label="后台功能">
@@ -369,6 +371,7 @@
             <h2>部署说明</h2>
             <ol class="steps">
               <li>已建过基础表后，先执行 <code>supabase-admin-upgrade.sql</code> 增量脚本。</li>
+              <li>在当前业务库 <code>bjlimqtrkdokmjpdcraa</code> 执行 <code>supabase-manual-wash-order-migration.sql</code> 后，可录入已核销的抖音团购订单。</li>
               <li>员工账号在 Authentication 创建，再到 <code>profiles</code> 表设置角色。</li>
               <li>当前前端可部署到 GitHub Pages，摄像头扫码需要 HTTPS。</li>
               <li>独立入口：<code>courier.html</code> 配送员端、<code>factory.html</code> 工厂端、<code>track.html</code> 学生查询。</li>
@@ -414,6 +417,63 @@
       </div>
     </dialog>
 
-    <script src="./app.js?v=84"></script>
+    <dialog id="manualOrderDialog" class="modal manual-order-dialog" aria-labelledby="manualOrderTitle">
+      <div class="modal-head">
+        <h2 id="manualOrderTitle">新增抖音团购订单</h2>
+        <button id="closeManualOrderBtn" class="ghost" type="button">关闭</button>
+      </div>
+      <form id="manualOrderForm" class="stack manual-order-form">
+        <fieldset id="manualOrderFields" class="stack manual-order-fieldset">
+          <section class="panel stack">
+            <h3>团购核销</h3>
+            <div class="manual-order-grid">
+              <label class="field-group"><span>团购券码</span><input id="manualOrderVoucher" class="input" name="voucher_code" maxlength="100" autocomplete="off" spellcheck="false" required /></label>
+              <label class="field-group"><span>实付金额（元）</span><input class="input" name="paid_amount" type="number" inputmode="decimal" min="0" max="999999.99" step="0.01" placeholder="填写客户实际支付金额" required /></label>
+            </div>
+            <label class="manual-order-check"><input id="manualOrderRedeemed" name="redeemed" type="checkbox" required /> 已在抖音完成核销</label>
+            <p class="hint">先在抖音完成核销。券码用于防止重复录单，已在小程序代下的订单无需再录。</p>
+          </section>
+          <section class="panel stack">
+            <h3>客户与取件</h3>
+            <div class="manual-order-grid">
+              <label class="field-group"><span>客户姓名</span><input id="manualOrderName" class="input" name="customer_name" maxlength="80" autocomplete="off" required /></label>
+              <label class="field-group"><span>手机号码</span><input class="input" name="phone" type="tel" inputmode="tel" maxlength="24" autocomplete="off" required /></label>
+            </div>
+            <label class="field-group"><span>完整取件地址</span><textarea class="input" name="address" rows="2" maxlength="400" placeholder="例如：学校、校区、楼栋和房间号" required></textarea></label>
+            <div class="manual-order-grid manual-order-location">
+              <label class="field-group"><span>学校（选填）</span><input class="input" name="school" maxlength="80" /></label>
+              <label class="field-group"><span>校区（选填）</span><input class="input" name="campus" maxlength="80" /></label>
+              <label class="field-group"><span>楼栋／地点（选填）</span><input class="input" name="building" maxlength="80" /></label>
+            </div>
+            <p class="hint">留空时按现有规则识别，识别不全的地址可在异常工单中确认。</p>
+            <div class="manual-order-grid">
+              <label class="field-group"><span>取件日期</span><input id="manualOrderPickupDate" class="input" name="pickup_date" type="date" required /></label>
+              <label class="field-group"><span>所属商家</span><input class="input" name="merchant" value="事事超级洗护馆" maxlength="80" required /></label>
+            </div>
+          </section>
+          <section class="panel stack">
+            <h3>洗护物品</h3>
+            <p class="hint">每双鞋或每件衣物对应一个水洗标，正式条码在首次导出时分配。</p>
+            <div id="manualOrderItems" class="stack"></div>
+            <div class="toolbar wrap">
+              <button id="addManualOrderItemBtn" class="ghost small" type="button">添加物品</button>
+              <span id="manualOrderItemCount" class="hint" aria-live="polite"></span>
+            </div>
+          </section>
+          <div class="actions"><button id="submitManualOrderBtn" type="submit">创建订单和取件任务</button></div>
+        </fieldset>
+        <div id="manualOrderMessage" aria-live="polite"></div>
+      </form>
+    </dialog>
+    <template id="manualOrderItemTemplate">
+      <div class="manual-order-item" data-manual-order-item>
+        <label class="field-group manual-order-product"><span>商品／物品名称</span><input class="input" data-manual-item-product maxlength="120" placeholder="例如：普通鞋" required /></label>
+        <label class="field-group"><span>数量</span><input class="input" data-manual-item-quantity type="number" inputmode="numeric" min="1" max="100" step="1" value="1" required /></label>
+        <label class="field-group"><span>单位</span><select class="input" data-manual-item-unit><option value="双">双</option><option value="件">件</option></select></label>
+        <button class="ghost small" data-remove-manual-item type="button">移除</button>
+      </div>
+    </template>
+
+    <script src="./app.js?v=85"></script>
   </body>
 </html>

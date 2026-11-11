@@ -170,6 +170,8 @@ const mergeWashLabelDates = new Set();
 const mergeWashLabelExcluded = new Set();
 let mergeWashLabelRows = [];
 let mergeWashLabelExportBusy = false;
+let manualOrderRequestId = "";
+let manualOrderBusy = false;
 
 const $ = (id) => document.getElementById(id);
 const on = (id, eventName, handler) => $(id)?.addEventListener(eventName, handler);
@@ -438,6 +440,10 @@ function parseDateOnly(value) {
 }
 
 function businessBatchDateFromOrder(order) {
+  if (order.source === "douyin") {
+    const pickupDate = relationOne(order.pickup_tasks).pickup_date;
+    if (pickupDate) return pickupDate;
+  }
   const base = parseDate(order.pay_time) || parseDate(order.order_time) || parseDate(order.created_at);
   if (!base) return "";
   const batchDate = new Date(base);
@@ -603,6 +609,13 @@ async function signOut() {
   await sb.auth.signOut();
   currentUser = null;
   currentProfile = null;
+  manualOrderRequestId = "";
+  $("manualOrderForm")?.reset();
+  $("manualOrderItems")?.replaceChildren();
+  $("manualOrderMessage")?.replaceChildren();
+  $("adminManualOrderStatus")?.replaceChildren();
+  $("orderManualOrderStatus")?.replaceChildren();
+  $("manualOrderDialog")?.close();
   if ($("sessionLabel")) $("sessionLabel").textContent = "已连接，未登录";
   $("signOutBtn")?.classList.add("hidden");
   $("loginPanel")?.classList.remove("hidden");
@@ -620,6 +633,9 @@ function setAuthGate(isAllowed) {
   const requiresLogin = APP_MODE !== "student";
   document.querySelectorAll("[data-auth-only]").forEach((node) => node.classList.toggle("hidden", requiresLogin && !isAllowed));
   document.querySelectorAll("[data-guest-only]").forEach((node) => node.classList.toggle("hidden", !requiresLogin || isAllowed));
+  document.querySelectorAll("[data-new-manual-order]").forEach((button) => {
+    button.classList.toggle("hidden", !isAllowed || !canCreateDouyinOrder());
+  });
   document.body?.classList.toggle("has-access", requiresLogin && isAllowed);
   if (requiresLogin && currentUser && !isAllowed) {
     setMessage("authMessage", `当前账号角色为“${currentProfile?.role || "未设置"}”，不能进入${ROLE_LABELS[APP_MODE] || "此"}页面。`, "warn");
@@ -1706,6 +1722,134 @@ function buildItemPayload(orderId, row, barcode, sourceKey, index) {
   return payload;
 }
 
+function canCreateDouyinOrder() {
+  return APP_MODE === "admin" && currentProfile?.role === "admin" && Boolean(currentUser) && isWashLabelBusinessProject();
+}
+
+function updateManualOrderItems() {
+  const rows = $("manualOrderItems")?.querySelectorAll("[data-manual-order-item]") || [];
+  const count = [...rows].reduce((sum, row) => {
+    const quantity = Number(row.querySelector("[data-manual-item-quantity]").value);
+    return sum + (Number.isInteger(quantity) && quantity > 0 ? quantity : 0);
+  }, 0);
+  rows.forEach((row) => { row.querySelector("[data-remove-manual-item]").disabled = rows.length <= 1; });
+  if ($("manualOrderItemCount")) $("manualOrderItemCount").textContent = `${count} 个水洗标待编号${count > 100 ? "（每单最多 100 个）" : ""}`;
+  if ($("addManualOrderItemBtn")) $("addManualOrderItemBtn").disabled = rows.length >= 100;
+}
+
+function addManualOrderItem(focus = false) {
+  const container = $("manualOrderItems");
+  const template = $("manualOrderItemTemplate");
+  if (!container || !template || container.children.length >= 100) return;
+  container.append(template.content.cloneNode(true));
+  updateManualOrderItems();
+  if (focus) container.lastElementChild?.querySelector("[data-manual-item-product]")?.focus();
+}
+
+function openManualOrderDialog() {
+  if (!canCreateDouyinOrder() || !requireClient()) return;
+  const dialog = $("manualOrderDialog");
+  if (!dialog || dialog.open) return;
+  if (!manualOrderRequestId) {
+    $("manualOrderForm").reset();
+    $("manualOrderPickupDate").value = currentBusinessBatchDate();
+    $("manualOrderItems").replaceChildren();
+    addManualOrderItem();
+    $("manualOrderMessage").replaceChildren();
+    manualOrderRequestId = crypto.randomUUID();
+  }
+  dialog.showModal();
+  $("manualOrderName")?.focus();
+}
+
+function manualOrderLocation(address, overrides) {
+  const detected = extractDormInfo({ 收货地址: address });
+  const normalizedSchool = normalizeSchool(overrides.school);
+  const school = overrides.school
+    ? (isUnresolvedDormValue(normalizedSchool, "school") ? overrides.school : normalizedSchool)
+    : detected.school;
+  const campus = overrides.campus ? (canonicalCampusName(overrides.campus, school) || overrides.campus) : detected.campus;
+  const building = overrides.building ? (normalizeBuilding(overrides.building) || overrides.building) : detected.building;
+  let note = cleanRecognitionNote(detected.note);
+  if (isUnresolvedDormValue(school, "school")) note = appendRecognitionNote(note, "未识别学校");
+  if (isUnresolvedDormValue(campus, "campus")) note = appendRecognitionNote(note, "未识别校区");
+  if (isUnresolvedDormValue(building, "building")) note = appendRecognitionNote(note, "未识别楼栋");
+  if (locationNeedsReview(school, campus, building)) note = appendRecognitionNote(note, "楼栋与校区不匹配，待确认");
+  if (!Object.values(overrides).every(Boolean) && text(detected.note).includes("地址推测，待确认")) {
+    note = appendRecognitionNote(note, "地址推测，待确认");
+  }
+  return { school, campus, building, exception_note: note };
+}
+
+async function saveManualOrder(event) {
+  event.preventDefault();
+  if (manualOrderBusy || !canCreateDouyinOrder() || !requireClient()) return;
+  const form = event.currentTarget;
+  const value = (name) => text(form.elements.namedItem(name)?.value);
+  const warn = (message) => setMessage("manualOrderMessage", message, "warn");
+  const customerName = value("customer_name");
+  const phone = normalizeOrderMobile(value("phone"));
+  const address = value("address");
+  const merchant = value("merchant");
+  const paidAmount = value("paid_amount");
+  const pickupDate = value("pickup_date");
+  const voucherCode = value("voucher_code").normalize("NFKC").replace(/\s/g, "");
+  const redeemed = Boolean($("manualOrderRedeemed")?.checked);
+  if (!manualOrderRequestId) return warn("请重新打开新增抖音团购订单。");
+  if (!customerName || !address || !merchant) return warn("请填写客户姓名、完整取件地址和所属商家。");
+  if (!phone) return warn("请输入正确的 11 位手机号。");
+  if (!/^\d{1,6}(?:\.\d{1,2})?$/.test(paidAmount)) return warn("请填写正确的实付金额（最多两位小数，可填 0）。");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(pickupDate) || dateOnly(parseDateOnly(pickupDate)) !== pickupDate) return warn("请选择有效的取件日期。");
+  if (!redeemed || !/^[a-z0-9_-]{4,80}$/i.test(voucherCode)) return warn("请填写有效团购券码，并确认已在抖音完成核销。");
+  const items = [...$("manualOrderItems").querySelectorAll("[data-manual-order-item]")].map((row) => {
+    const productName = text(row.querySelector("[data-manual-item-product]").value);
+    const count = Number(row.querySelector("[data-manual-item-quantity]").value);
+    const unit = row.querySelector("[data-manual-item-unit]").value;
+    return { product_name: productName, spec: `${count}${unit}`, count };
+  });
+  if (!items.length || items.some((item) => !item.product_name || !Number.isInteger(item.count) || item.count < 1)
+    || items.reduce((total, item) => total + item.count, 0) > 100) {
+    return warn("请填写每种物品的名称和实际数量，每单合计 1～100 个水洗标。");
+  }
+  const location = manualOrderLocation(address, { school: value("school"), campus: value("campus"), building: value("building") });
+  const fields = $("manualOrderFields");
+  const closeButton = $("closeManualOrderBtn");
+  manualOrderBusy = true;
+  fields.disabled = true;
+  closeButton.disabled = true;
+  setMessage("manualOrderMessage", "正在创建订单和取件任务…");
+  let createdOrder;
+  try {
+    const { data, error } = await sb.rpc("create_manual_wash_order", { order_data: {
+      request_id: manualOrderRequestId, source: "douyin", voucher_code: voucherCode, redeemed,
+      customer_name: customerName, phone, address, merchant, paid_amount: paidAmount,
+      pickup_date: pickupDate, items, ...location,
+    } });
+    if (error?.code === "PGRST202" || error?.code === "42883") {
+      return warn("当前业务库尚未开通抖音团购录单，请联系管理员。");
+    }
+    if (error) throw error;
+    if (!data?.order_id || !data.order_no) throw new Error("未收到订单确认，请保留当前录单并重试。");
+    createdOrder = data;
+  } catch (error) {
+    return warn(`录单未确认：${error?.message || "请检查网络后重试。"}`);
+  } finally {
+    manualOrderBusy = false;
+    fields.disabled = false;
+    closeButton.disabled = false;
+  }
+  manualOrderRequestId = "";
+  form.reset();
+  $("manualOrderItems").replaceChildren();
+  $("manualOrderDialog").close();
+  const message = createdOrder.already_exists
+    ? `此券码已登记，原订单 ${createdOrder.order_no}。`
+    : `已创建订单 ${createdOrder.order_no}，取件日期 ${createdOrder.pickup_date}，${createdOrder.item_count} 个水洗标将在首次导出时编号。`;
+  setMessage("adminManualOrderStatus", message, "success");
+  await Promise.allSettled([loadStats(), loadAdmin(), showOrderDetail(createdOrder.order_id)]);
+  setMessage("orderManualOrderStatus", message, "success");
+}
+
 async function handleImport(event) {
   if (washOrderImportBusy) return;
   if (!requireClient()) return;
@@ -2434,7 +2578,8 @@ function renderOrderManagement() {
   const endDate = text($("orderEndDate")?.value);
   $("adminOrders").innerHTML = `
     <section class="panel table-panel">
-      <h2>订单管理</h2>
+      <div class="toolbar wrap"><h2>订单管理</h2>${canCreateDouyinOrder() ? '<button class="ghost small" type="button" data-new-manual-order>新增抖音团购订单</button>' : ""}</div>
+      <div id="orderManualOrderStatus" aria-live="polite"></div>
       <div id="orderActiveFilter" class="active-filter ${orderDashboardFilter ? "" : "hidden"}">
         ${orderDashboardFilter ? `<span>驾驶舱筛选：${escapeHtml(overdueFilterLabel())}</span><button class="ghost small-btn" type="button" data-clear-dashboard-filter="orders">清除筛选</button>` : ""}
       </div>
@@ -2466,7 +2611,7 @@ function filteredOrderRows() {
   const startDate = text($("orderStartDate")?.value);
   const endDate = text($("orderEndDate")?.value);
   return orderManagementRows.filter((order) => {
-    const searchable = `${order.order_no} ${order.customer_name} ${order.phone} ${order.school} ${order.campus} ${orderCampusName(order)} ${order.building} ${order.address} ${(order.order_items || []).map((item) => `${item.barcode} ${item.product_name} ${item.spec}`).join(" ")}`.toLowerCase();
+    const searchable = `${order.order_no} ${order.customer_name} ${order.phone} ${order.school} ${order.campus} ${orderCampusName(order)} ${order.building} ${order.address} ${order.source === "douyin" ? "抖音团购" : ""} ${(order.order_items || []).map((item) => `${item.barcode} ${item.product_name} ${item.spec}`).join(" ")}`.toLowerCase();
     if (keyword && !searchable.includes(keyword)) return false;
     if (selectedStatus && order.order_status !== selectedStatus) return false;
     if (!matchesOverdueDashboardFilter(order)) return false;
@@ -2484,7 +2629,7 @@ function applyOrderFilters() {
 function renderOrderRows(rows) {
   return rows.map((order) => `
     <tr>
-      <td>${escapeHtml(order.order_no)}</td>
+      <td>${escapeHtml(order.order_no)}${order.source === "douyin" ? '<br /><small class="hint">抖音团购</small>' : ""}</td>
       <td>${escapeHtml(order.customer_name)}</td>
       <td>${escapeHtml(order.phone)}</td>
       <td>${escapeHtml(`${order.school || ""}${orderCampusName(order)}${order.building || ""}`)}</td>
@@ -3590,7 +3735,7 @@ async function loadWashLabelRows() {
   for (let from = 0; ; from += pageSize) {
     const { data: page, error } = await sb
       .from("order_items")
-      .select("*, orders(*)")
+      .select("*, orders(*, pickup_tasks(pickup_date))")
       .order("id", { ascending: true })
       .range(from, from + pageSize - 1);
     if (error) return { rows: [], error };
@@ -4299,6 +4444,7 @@ async function showOrderDetail(orderId) {
       <p>${escapeHtml(order.address || "")}</p>
       <p>宿舍：${escapeHtml(`${order.school || ""}${orderCampusName(order)}${order.building || ""}`)}</p>
       <p>状态：${escapeHtml(order.order_status || "")}　金额：${escapeHtml(order.paid_amount ?? "")}</p>
+      ${order.source === "douyin" ? "<p>来源：抖音团购</p>" : ""}
       ${order.exception_note ? `<p class="warn">异常：${escapeHtml(order.exception_note)}</p>` : ""}
       ${canEditOrderPhone() ? `<details class="order-address-editor">
         <summary>编辑联系电话</summary>
@@ -7036,6 +7182,18 @@ function bindEvents() {
   on("loginBtn", "click", login);
   on("signOutBtn", "click", signOut);
   on("fileInput", "change", handleImport);
+  on("manualOrderForm", "submit", saveManualOrder);
+  on("addManualOrderItemBtn", "click", () => addManualOrderItem(true));
+  on("closeManualOrderBtn", "click", () => { if (!manualOrderBusy) $("manualOrderDialog")?.close(); });
+  on("manualOrderDialog", "cancel", (event) => { if (manualOrderBusy) event.preventDefault(); });
+  on("manualOrderItems", "input", updateManualOrderItems);
+  on("manualOrderItems", "click", (event) => {
+    const button = event.target.closest("[data-remove-manual-item]");
+    if (button && !button.disabled && !manualOrderBusy) {
+      button.closest("[data-manual-order-item]")?.remove();
+      updateManualOrderItems();
+    }
+  });
   on("exportWashLabelsBtn", "click", exportWashLabels);
   on("mergeWashLabelCloseBtn", "click", () => $("mergeWashLabelDialog")?.close());
   on("mergeWashLabelMondayBtn", "click", selectMondayWashLabelBatches);
@@ -7209,6 +7367,7 @@ function bindEvents() {
       $("orderDialog")?.close();
     }
     if (event.target.closest("[data-open-label-review]")) switchAdminSection("labels");
+    if (event.target.closest("[data-new-manual-order]")) openManualOrderDialog();
     const confirmDormBtn = event.target.closest("[data-confirm-dorm]");
     if (confirmDormBtn) saveDorm(confirmDormBtn.dataset.confirmDorm, { confirm: true, next: true });
     const saveBtn = event.target.closest("[data-save-dorm]");
@@ -7319,7 +7478,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=84", { updateViaCache: "none" })
+    .register("./sw.js?v=85", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }

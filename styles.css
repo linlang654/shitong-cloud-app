@@ -2464,6 +2464,76 @@ button.danger,
   min-width: 660px;
 }
 
+.manual-order-dialog {
+  width: min(740px, calc(100vw - 24px));
+}
+
+.manual-order-dialog .modal-head {
+  z-index: 1;
+}
+
+.manual-order-form {
+  padding: 12px;
+}
+
+.manual-order-fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.manual-order-form h3,
+.manual-order-form .hint {
+  margin: 0;
+}
+
+.manual-order-grid,
+.manual-order-item {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.manual-order-location {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.manual-order-item {
+  grid-template-columns: minmax(0, 1fr) 88px 78px auto;
+  align-items: end;
+}
+
+.manual-order-form .field-group {
+  min-width: 0;
+}
+
+.manual-order-form textarea {
+  resize: vertical;
+}
+
+.manual-order-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+}
+
+@media (max-width: 640px) {
+  .manual-order-grid,
+  .manual-order-location {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .manual-order-item {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  }
+
+  .manual-order-product {
+    grid-column: 1 / -1;
+  }
+}
+
 .return-delivery-dialog {
   width: min(440px, calc(100vw - 20px));
   padding-bottom: 12px;
