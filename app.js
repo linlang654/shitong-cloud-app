@@ -141,6 +141,7 @@ let courierReturnBusyTaskId = "";
 const courierReturnProofFiles = new Map();
 let currentExceptionRows = [];
 let currentExceptionTickets = [];
+let exceptionLoadVersion = 0;
 let exceptionActionMessage = "";
 let exceptionTicketSchemaAvailable = null;
 let exceptionTicketSchemaError = "";
@@ -2755,17 +2756,23 @@ async function updateOrderItemStatus(itemId, orderId, barcode, status, selectEle
 }
 
 async function loadExceptions() {
+  if (!sb) return;
+  const client = sb;
+  const userId = currentUser?.id;
+  const version = ++exceptionLoadVersion;
   await detectExceptionTicketSchemaAvailability();
+  if (version !== exceptionLoadVersion || client !== sb || userId !== currentUser?.id) return;
   const [legacyResult, ticketResult] = await Promise.all([
-    sb.from("orders").select("*").or("exception_note.neq.,school.eq.学校未识别,campus.eq.校区未识别,building.eq.楼栋未识别,order_status.eq.异常,order_status.eq.未找到").order("created_at", { ascending: false }).limit(300),
+    loadRowsById(() => client.from("orders").select("*, order_items(barcode)").or("exception_note.neq.,school.eq.学校未识别,campus.eq.校区未识别,building.eq.楼栋未识别,order_status.eq.异常,order_status.eq.未找到")),
     exceptionTicketSchemaAvailable
-      ? sb.from("exception_tickets").select("*, orders(id,order_no,customer_name,phone,school,campus,building,address), order_items(id,barcode,product_name,spec,item_status)").order("created_at", { ascending: false }).limit(300)
+      ? loadRowsById(() => client.from("exception_tickets").select("*, orders(id,order_no,customer_name,phone,school,campus,building,address), order_items(id,barcode,product_name,spec,item_status)"))
       : Promise.resolve({ data: [], error: null }),
   ]);
+  if (version !== exceptionLoadVersion || client !== sb || userId !== currentUser?.id) return;
   if (legacyResult.error) return setMessage("adminExceptions", legacyResult.error.message, "warn");
   if (ticketResult.error) return setMessage("adminExceptions", ticketResult.error.message, "warn");
-  currentExceptionRows = legacyResult.data || [];
-  currentExceptionTickets = await hydrateExceptionTicketEvidence(ticketResult.data || []);
+  currentExceptionRows = legacyResult.data.sort((left, right) => new Date(right.created_at || 0) - new Date(left.created_at || 0));
+  currentExceptionTickets = hydrateExceptionTicketEvidence(ticketResult.data || []);
   const quickConfirmCount = currentExceptionRows.filter((order) => {
     const audit = recognitionAuditForOrder(order);
     return isDormComplete(audit) && audit.confidence >= 90 && !audit.currentMismatch && isRecognitionReviewNote(order.exception_note);
@@ -2786,6 +2793,7 @@ async function loadExceptions() {
   const processingCount = openTickets.filter((ticket) => ticket.status === "处理中").length;
   const totalPending = openTickets.length + currentExceptionRows.length;
   updateExceptionBadge(totalPending);
+  const searchValue = $("exceptionSearch")?.value || "";
   $("adminExceptions").innerHTML = `
     <section class="panel exception-center">
       <div class="exception-heading">
@@ -2808,12 +2816,14 @@ async function loadExceptions() {
       </div>
       ${exceptionTicketSchemaAvailable ? "" : `<p class="warn exception-migration-note">${escapeHtml(exceptionTicketMigrationMessage())}</p>`}
       ${exceptionActionMessage ? `<p class="success-note">${escapeHtml(exceptionActionMessage)}</p>` : ""}
-      <section class="exception-worklist" aria-labelledby="openExceptionTicketsTitle">
-        <div class="section-heading compact-heading"><div><h3 id="openExceptionTicketsTitle">处理中工单</h3><p class="hint">按提交时间排列，红色“紧急”优先处理。</p></div><strong>${openTickets.length} 单</strong></div>
+      <label class="field-group"><span>搜索异常工单</span><input id="exceptionSearch" class="input" type="search" value="${escapeHtml(searchValue)}" placeholder="订单号、水洗标、姓名、手机号或异常类型" autocomplete="off" /></label>
+      <p id="exceptionSearchResult" class="hint hidden" role="status"></p>
+      <section class="exception-worklist" aria-labelledby="openExceptionTicketsTitle" data-exception-search-group>
+        <div class="section-heading compact-heading"><div><h3 id="openExceptionTicketsTitle">处理中工单</h3><p class="hint">按提交时间排列，红色“紧急”优先处理。</p></div><strong data-exception-match-count>${openTickets.length} 单</strong></div>
         <div class="card-list">${openTickets.map(renderExceptionTicketCard).join("") || '<p class="hint empty-state">暂无处理中工单</p>'}</div>
       </section>
-      <details class="exception-legacy-section" ${currentExceptionRows.length ? "open" : ""}>
-        <summary><span><strong>地址确认与历史异常</strong><small>保留原“异常修正”全部能力</small></span><b>${currentExceptionRows.length}</b></summary>
+      <details class="exception-legacy-section" data-exception-search-group ${currentExceptionRows.length ? "open" : ""}>
+        <summary><span><strong>地址确认与历史异常</strong><small>保留原“异常修正”全部能力</small></span><b data-exception-match-count>${currentExceptionRows.length}</b></summary>
         <div class="mini-stats exception-stats legacy-stats">
           <div><strong>${quickConfirmCount}</strong><span>快速确认</span></div>
           <div><strong>${incompleteCount}</strong><span>信息不完整</span></div>
@@ -2821,16 +2831,55 @@ async function loadExceptions() {
         </div>
         <div class="card-list">${currentExceptionRows.map(renderExceptionCard).join("") || '<p class="hint">暂无地址或历史异常</p>'}</div>
       </details>
-      ${closedTickets.length ? `<details class="exception-legacy-section"><summary><span><strong>已结案工单</strong><small>仅供查询，不计入红色提醒</small></span><b>${closedTickets.length}</b></summary><div class="card-list">${closedTickets.map(renderExceptionTicketCard).join("")}</div></details>` : ""}
+      ${closedTickets.length ? `<details class="exception-legacy-section" data-exception-search-group><summary><span><strong>已结案工单</strong><small>仅供查询，不计入红色提醒</small></span><b data-exception-match-count>${closedTickets.length}</b></summary><div class="card-list">${closedTickets.map(renderExceptionTicketCard).join("")}</div></details>` : ""}
     </section>`;
+  on("exceptionSearch", "input", applyExceptionSearch);
+  applyExceptionSearch();
   exceptionActionMessage = "";
+}
+
+function exceptionSearchText(order, details) {
+  return [
+    order.order_no, order.customer_name, order.phone, order.school, orderCampusName(order), order.building, order.address,
+    ...details,
+  ].map(text).join(" ").normalize("NFKC").toLowerCase();
+}
+
+function applyExceptionSearch() {
+  const input = $("exceptionSearch");
+  const result = $("exceptionSearchResult");
+  if (!input || !result) return;
+  const terms = text(input.value).normalize("NFKC").toLowerCase().split(/\s+/).filter(Boolean);
+  const searching = terms.length > 0;
+  let totalMatches = 0;
+  for (const group of $("adminExceptions").querySelectorAll("[data-exception-search-group]")) {
+    let matches = 0;
+    for (const card of group.querySelectorAll("[data-exception-search]")) {
+      const match = terms.every((term) => card.dataset.exceptionSearch.includes(term));
+      card.classList.toggle("hidden", !match);
+      if (match) matches += 1;
+    }
+    totalMatches += matches;
+    group.classList.toggle("hidden", searching && !matches);
+    const isDetails = group.tagName === "DETAILS";
+    group.querySelector("[data-exception-match-count]").textContent = isDetails ? matches : `${matches} 单`;
+    if (isDetails && searching && matches && !group.open) {
+      group.dataset.openedBySearch = "true";
+      group.open = true;
+    } else if (isDetails && !searching && group.dataset.openedBySearch) {
+      delete group.dataset.openedBySearch;
+      group.open = false;
+    }
+  }
+  result.classList.toggle("hidden", !searching);
+  result.textContent = totalMatches ? `找到 ${totalMatches} 条记录` : "未找到匹配的工单或地址异常。";
 }
 
 function relationOne(value) {
   return Array.isArray(value) ? value[0] || {} : value || {};
 }
 
-async function hydrateExceptionTicketEvidence(tickets) {
+function hydrateExceptionTicketEvidence(tickets) {
   return tickets.map((ticket) => ({
     ...ticket,
     evidencePaths: Array.isArray(ticket.evidence_paths) ? ticket.evidence_paths.filter(Boolean) : [],
@@ -2854,9 +2903,13 @@ function renderExceptionTicketCard(ticket) {
   const evidenceKey = `exception-ticket-${ticket.id}`;
   const evidenceUrls = ticket.evidenceUrls || [];
   const evidencePaths = ticket.evidencePaths || (Array.isArray(ticket.evidence_paths) ? ticket.evidence_paths : []);
+  const searchable = exceptionSearchText(order, [
+    barcode, displayWashLabelBarcode(item.barcode), ticket.ticket_type, ticket.status, ticket.description,
+    item.product_name, item.spec,
+  ]);
   if (evidenceUrls.length) imagePreviewMap.set(evidenceKey, evidenceUrls);
   return `
-    <article class="task-card exception-ticket-card ${ticket.priority === "紧急" ? "urgent" : ""}" data-exception-ticket="${ticket.id}">
+    <article class="task-card exception-ticket-card ${ticket.priority === "紧急" ? "urgent" : ""}" data-exception-ticket="${ticket.id}" data-exception-search="${escapeHtml(searchable)}">
       <div class="card-head">
         <div><h3>${escapeHtml(ticket.ticket_type)}${ticket.priority === "紧急" ? '<span class="urgent-label">紧急</span>' : ""}</h3><p class="hint">${escapeHtml(order.customer_name || "未知客户")} · ${escapeHtml(order.phone || "")} · ${escapeHtml(barcode)}</p></div>
         <span class="ticket-status ${exceptionStatusClass(ticket.status)}">${escapeHtml(ticket.status)}</span>
@@ -2900,7 +2953,10 @@ async function loadExceptionTicketEvidence(ticketId) {
   } finally {
     ticket.evidenceLoading = false;
     const refreshedCard = document.querySelector(`[data-exception-ticket="${ticketId}"]`);
-    if (refreshedCard) refreshedCard.outerHTML = renderExceptionTicketCard(ticket);
+    if (refreshedCard) {
+      refreshedCard.outerHTML = renderExceptionTicketCard(ticket);
+      applyExceptionSearch();
+    }
   }
 }
 
@@ -3214,8 +3270,12 @@ function renderExceptionCard(order) {
   const quickConfirm = isDormComplete(suggestedDorm) && audit.confidence >= 90 && !audit.currentMismatch && isRecognitionReviewNote(order.exception_note);
   const addressNeedsReview = needsRecognitionReview(order) || audit.currentMismatch || audit.confidence < 90;
   const levelLabel = quickConfirm ? "黄色 · 快速确认" : `红色 · ${audit.confidenceLabel}置信度`;
+  const searchable = exceptionSearchText(order, [
+    order.order_status, order.exception_note, suggestedSchool, suggestedCampus, suggestedBuilding,
+    ...(order.order_items || []).map((item) => displayWashLabelBarcode(item.barcode)),
+  ]);
   return `
-    <article class="task-card ${quickConfirm ? "review" : "alert"}" data-exception-card="${order.id}">
+    <article class="task-card ${quickConfirm ? "review" : "alert"}" data-exception-card="${order.id}" data-exception-search="${escapeHtml(searchable)}">
       <div class="card-head">
         <h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3>
         <span class="confidence-badge ${quickConfirm ? "confirm" : "review"}">${levelLabel}</span>
@@ -3255,7 +3315,7 @@ function readDormEditor(orderId) {
 
 function focusFirstException() {
   requestAnimationFrame(() => {
-    document.querySelector("[data-exception-card] [data-edit-school]")?.focus();
+    (document.querySelector("[data-exception-card]:not(.hidden) [data-edit-school]") || $("exceptionSearch"))?.focus();
   });
 }
 
@@ -4900,13 +4960,13 @@ function resetCourierPickupDate() {
   loadCourierTasks();
 }
 
-async function loadCourierTaskPages(client, table, columns) {
+async function loadRowsById(createQuery) {
   const pageSize = 300;
   const rows = [];
   let lastId;
   try {
     for (;;) {
-      let query = client.from(table).select(columns).order("id", { ascending: true }).limit(pageSize);
+      let query = createQuery().order("id", { ascending: true }).limit(pageSize);
       if (lastId) query = query.gt("id", lastId);
       const { data, error } = await query;
       if (error) throw error;
@@ -4928,11 +4988,11 @@ async function loadCourierTasks() {
   const list = $("courierRouteTaskList");
   if (list && !list.innerHTML) setMessage("courierRouteTaskList", "正在读取配送任务…");
   const [pickup, retries, returns] = await Promise.all([
-    loadCourierTaskPages(client, "pickup_tasks", "*, orders(*, order_items(id,barcode,image_links,product_name,spec,item_status))"),
+    loadRowsById(() => client.from("pickup_tasks").select("*, orders(*, order_items(id,barcode,image_links,product_name,spec,item_status))")),
     retryPickupSchemaAvailable
-      ? loadCourierTaskPages(client, "pickup_retry_tasks", "*, order_items(id,order_id,barcode,image_links,product_name,spec,item_status,orders(*))")
+      ? loadRowsById(() => client.from("pickup_retry_tasks").select("*, order_items(id,order_id,barcode,image_links,product_name,spec,item_status,orders(*))"))
       : Promise.resolve({ data: [], error: null }),
-    loadCourierTaskPages(client, "return_tasks", "*, order_items(*, orders(*))"),
+    loadRowsById(() => client.from("return_tasks").select("*, order_items(*, orders(*))")),
   ]);
   if (version !== courierTaskLoadVersion || client !== sb || userId !== currentUser?.id) return;
   courierTaskLoadErrors = [];
@@ -7571,7 +7631,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=88", { updateViaCache: "none" })
+    .register("./sw.js?v=89", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
