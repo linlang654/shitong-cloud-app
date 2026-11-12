@@ -31,7 +31,7 @@ function item(id, date, building, barcode) {
   };
 }
 
-function setup(items, { date = '2026-11-10', issueError, original = false } = {}) {
+function setup(items, { date = '2026-11-10', issueError, original = false, createPrintBatch, listPrintBatches } = {}) {
   const downloads = [], calls = [], alerts = [];
   const itemWrites = [], importLogs = [];
   const importedOrders = new Map();
@@ -39,7 +39,7 @@ function setup(items, { date = '2026-11-10', issueError, original = false } = {}
   const phones = new Map(items.map(({ orders }, index) => [orders.id, `1390000${String(index + 1).padStart(4, '0')}`]));
   const elements = new Map();
   const node = (id) => {
-    if (!elements.has(id)) elements.set(id, {});
+    if (!elements.has(id)) elements.set(id, { dataset: {}, addEventListener(type, listener) { this[type] = listener; } });
     return elements.get(id);
   };
   node('washBatchSelect').value = date;
@@ -56,6 +56,14 @@ function setup(items, { date = '2026-11-10', issueError, original = false } = {}
   };
   const client = {
     from(table) {
+      if (table === 'wash_label_print_batches') {
+        const query = {
+          select: () => query,
+          order: () => query,
+          range: async () => ({ data: listPrintBatches() }),
+        };
+        return query;
+      }
       if (table === 'order_items') {
         return {
           select: () => ({
@@ -105,6 +113,7 @@ function setup(items, { date = '2026-11-10', issueError, original = false } = {}
       };
     },
     async rpc(name, input) {
+      if (name === 'create_wash_label_print_batch') return createPrintBatch(structuredClone(input));
       assert.equal(name, 'issue_wash_label_barcodes');
       const { p_prefixes: prefixes, p_ordered_item_ids: ids, p_route_snapshots: snapshots } = structuredClone(input);
       calls.push({ prefixes, ids, snapshots });
@@ -301,4 +310,63 @@ test('the original project cannot issue new barcodes', async () => {
   assert.equal(s.calls.length, 0);
   assert.deepEqual(s.downloads, []);
   assert.match(s.alerts[0], /请切换到当前业务库/);
+});
+
+test('two print batches keep independent membership, continue barcodes, and reprint with current phones', async () => {
+  const day = '2026-11-10';
+  const items = [item('ten', day, '10栋'), item('three', day, '3栋'), item('two', day, '2栋')];
+  const requests = [];
+  const batches = new Map();
+  let lastBarcode = 0;
+  const s = setup(items, {
+    listPrintBatches: () => [...batches.values()].reverse(),
+    createPrintBatch(input) {
+      requests.push(input);
+      const { p_batch_id: id, p_ordered_item_ids: ids } = input;
+      if (batches.has(id)) return { data: batches.get(id) };
+      const labels = ids.map((itemId, index) => {
+        const row = items.find((entry) => entry.id === itemId);
+        row.barcode = `261110${String(++lastBarcode).padStart(3, '0')}`;
+        row.wash_label_print_batch_id = id;
+        row.wash_label_print_position = index + 1;
+        return { item_id: itemId, barcode: row.barcode };
+      });
+      const batch = { id, print_date: day, batch_number: batches.size + 1, labels };
+      batches.set(id, batch);
+      if (requests.length === 1) return { error: { message: 'response lost after commit' } };
+      return { data: batch };
+    },
+  });
+  s.run(`
+    detectSettlementSchemaAvailability = async () => false;
+    detectWashAdjustmentSchemaAvailability = async () => false;
+  `);
+  await s.run('loadLabels()');
+  assert.match(s.node('adminLabels').innerHTML, /新建打印批次并导出/);
+  assert.equal(s.node('createWashPrintBatchBtn').disabled, true);
+  s.run('labelSelectedItems.add("ten"); labelSelectedItems.add("two");');
+  await s.node('createWashPrintBatchBtn').click();
+  assert.deepEqual(s.downloads, []);
+  assert.equal(items.find(({ id }) => id === 'three').barcode.startsWith('pending:'), true);
+  await s.node('createWashPrintBatchBtn').click();
+  assert.equal(requests[0].p_batch_id, requests[1].p_batch_id);
+  assert.deepEqual(requests[1].p_ordered_item_ids, ['two', 'ten']);
+  assert.deepEqual(labelColumns(s.downloads[0]), [[1, '261110001', 'two'], [2, '261110002', 'ten']]);
+
+  s.run('labelSelectedItems.add("three")');
+  await s.node('createWashPrintBatchBtn').click();
+  assert.equal(batches.size, 2);
+  assert.deepEqual(labelColumns(s.downloads[1]), [[3, '261110003', 'three']]);
+  assert.equal(s.downloads[1].rows[0].批次, '2026-11-10 第 2 批');
+
+  items.find(({ id }) => id === 'ten').orders.building = '1栋';
+  s.phones.set('order-ten', '15500001111');
+  assert.match(s.node('adminLabels').innerHTML, /第 1 批 · 2 个/);
+  assert.match(s.node('adminLabels').innerHTML, /第 2 批 · 1 个/);
+  s.node('washPrintBatchSelect').value = requests[0].p_batch_id;
+  s.node('washPrintBatchSelect').change();
+  await s.node('reprintWashBatchBtn').click();
+  assert.deepEqual(labelColumns(s.downloads[2]), labelColumns(s.downloads[0]));
+  assert.equal(s.downloads[2].rows[1].电话, '15500001111');
+  assert.equal(requests.length, 3);
 });

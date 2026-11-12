@@ -169,6 +169,10 @@ const labelSelectedItems = new Set();
 let washOrderImportBusy = false;
 let labelExportBusy = false;
 let labelBulkSaveBusy = false;
+let washPrintBatches = new Map();
+let selectedWashPrintBatchId = "";
+let washPrintBatchRequest = null;
+let washPrintBatchBusy = false;
 const mergeWashLabelDates = new Set();
 const mergeWashLabelExcluded = new Set();
 let mergeWashLabelRows = [];
@@ -3845,6 +3849,8 @@ async function loadWashLabelRows() {
       order_id: order.id,
       batch_date: itemBatchDate,
       batch_label: itemBatchDate ? businessBatchLabel(itemBatchDate) : "未识别批次",
+      print_batch_id: item.wash_label_print_batch_id,
+      print_position: item.wash_label_print_position,
       route: orderRouteParts(order),
       route_snapshot: [order.school ?? null, order.campus ?? null, order.building ?? null],
       source_key: item.source_key,
@@ -3853,15 +3859,44 @@ async function loadWashLabelRows() {
   return { rows, error: null };
 }
 
+function canUseWashPrintBatches() {
+  return APP_MODE === "admin" && currentProfile?.role === "admin" && Boolean(currentUser) && isWashLabelBusinessProject();
+}
+
+async function loadWashPrintBatches() {
+  if (!canUseWashPrintBatches()) return { batches: [] };
+  const pageSize = 1000;
+  const batches = [];
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await sb.from("wash_label_print_batches").select("id,print_date,batch_number")
+      .order("print_date", { ascending: false }).order("batch_number", { ascending: false })
+      .range(from, from + pageSize - 1);
+    if (error) return { batches: [], error };
+    const page = data || [];
+    batches.push(...page);
+    if (page.length < pageSize) return { batches };
+  }
+}
+
+function washPrintBatchLabel(batch) {
+  return `${batch.print_date} 第 ${batch.batch_number} 批`;
+}
+
 async function loadLabels() {
   await Promise.all([detectSettlementSchemaAvailability(), detectWashAdjustmentSchemaAvailability()]);
-  const allResult = await loadWashLabelRows();
+  const [allResult, printResult] = await Promise.all([loadWashLabelRows(), loadWashPrintBatches()]);
   const rows = allResult.rows;
   const error = allResult.error;
   if (error) return setMessage("adminLabels", error.message, "warn");
   const batchDates = [...new Set(rows.map((row) => row.batch_date).filter(Boolean))].sort().reverse();
   const selectedBatch = $("washBatchSelect")?.value || batchDates[0] || currentBusinessBatchDate();
   const filteredRows = rows.filter((row) => row.batch_date === selectedBatch);
+  washPrintBatches = new Map(printResult.batches.map((batch) => [batch.id, { ...batch, count: 0 }]));
+  for (const row of rows) {
+    const batch = washPrintBatches.get(row.print_batch_id);
+    if (batch) batch.count += 1;
+  }
+  if (!washPrintBatches.has(selectedWashPrintBatchId)) selectedWashPrintBatchId = printResult.batches[0]?.id || "";
   labelReviewRows = rows;
   labelVisibleRows = filteredRows;
   labelSelectedItems.clear();
@@ -3886,8 +3921,21 @@ async function loadLabels() {
         <button id="openMergeWashLabelsBtn" class="ghost" type="button" ${batchDates.length ? "" : "disabled"}>合并批次打印</button>
         <button class="ghost small" type="button" data-select-label-visible>全选当前批次</button>
         <button type="button" data-export-selected-labels disabled>导出所选水洗标（0）</button>
-        <span class="hint">请先导入同一取件日期的全部订单。首次导出会按楼栋统一编号，补打沿用原条码。</span>
+        <span class="hint">常规导出按取件日期统一编号。需要同日分开打印时，勾选本次水洗标后新建打印批次。</span>
       </div>
+      ${canUseWashPrintBatches() ? `
+        <div class="toolbar wrap" aria-label="水洗标打印批次">
+          <button id="selectUnprintedWashLabelsBtn" class="ghost small" type="button" ${printResult.error ? "disabled" : ""}>全选待编号</button>
+          <button id="createWashPrintBatchBtn" type="button" disabled>新建打印批次并导出（0）</button>
+          <select id="washPrintBatchSelect" class="input" aria-label="已保存的水洗标打印批次" ${washPrintBatches.size ? "" : "disabled"}>
+            ${[...washPrintBatches.values()].map((batch) => `<option value="${escapeHtml(batch.id)}" ${batch.id === selectedWashPrintBatchId ? "selected" : ""}>${escapeHtml(washPrintBatchLabel(batch))} · ${batch.count} 个</option>`).join("") || '<option value="">暂无打印批次</option>'}
+          </select>
+          <button id="reprintWashBatchBtn" class="ghost" type="button" disabled>补打整批</button>
+        </div>
+        <div id="washPrintBatchMessage" aria-live="polite">${printResult.error ? `<p class="warn">${escapeHtml(["42P01", "PGRST205"].includes(printResult.error.code)
+          ? "请先在当前业务库启用水洗标打印批次。"
+          : `读取打印批次失败：${printResult.error.message}`)}</p>` : ""}</div>
+      ` : ""}
       <div class="settlement-bulk-bar">
         <div class="settlement-bulk-copy">
           <strong>批量确认品类</strong>
@@ -3907,12 +3955,26 @@ async function loadLabels() {
       <div id="labelReviewMessage" aria-live="polite"></div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>选择</th><th>条形编码</th><th>所属商家</th><th>姓名</th><th>电话</th><th>校区</th><th>物品</th><th>结算品类</th><th>确认状态</th><th>实付款</th><th>流转状态</th><th>操作</th></tr></thead>
+          <thead><tr><th>选择</th><th>条形编码</th><th>所属商家</th><th>姓名</th><th>电话</th><th>校区</th><th>物品</th><th>结算品类</th><th>确认状态</th><th>实付款</th><th>流转状态</th><th>打印批次</th><th>操作</th></tr></thead>
           <tbody id="labelRows">${renderLabelRows(filteredRows)}</tbody>
         </table>
       </div>
     </section>`;
   $("washBatchSelect")?.addEventListener("change", loadLabels);
+  on("selectUnprintedWashLabelsBtn", "click", () => {
+    labelSelectedItems.clear();
+    for (const row of labelVisibleRows) {
+      if (!row.print_batch_id && pendingWashLabelPrefix(row.条形编码)) labelSelectedItems.add(row.id);
+    }
+    updateLabelSelectionUi();
+  });
+  on("createWashPrintBatchBtn", "click", createWashPrintBatch);
+  on("washPrintBatchSelect", "change", () => {
+    selectedWashPrintBatchId = $("washPrintBatchSelect").value;
+    updateLabelSelectionUi();
+  });
+  on("reprintWashBatchBtn", "click", reprintWashPrintBatch);
+  if ($("createWashPrintBatchBtn")) $("createWashPrintBatchBtn").dataset.available = printResult.error ? "false" : "true";
   $("openMergeWashLabelsBtn")?.addEventListener("click", openMergeWashLabelDialog);
   $("confirmSuggestedSettlementBtn")?.addEventListener("click", () => confirmSuggestedSettlementCategories(suggestedRows));
   $("labelSearch")?.addEventListener("input", () => {
@@ -3945,8 +4007,9 @@ function renderLabelRows(rows) {
       </div></td>
       <td><div class="settlement-status-stack"><span class="settlement-status ${row.settlement_confirmed ? "confirmed" : validSettlementCategoryKey(row.settlement_suggestion) ? "suggested" : "pending"}" title="${escapeHtml(row.settlement_suggestion_reason || "")}">${row.settlement_confirmed ? "已确认" : validSettlementCategoryKey(row.settlement_suggestion) ? "系统建议，待确认" : "待人工选择"}</span>${row.wash_decision !== WASH_DECISION_NORMAL ? `<span class="wash-decision-badge ${escapeHtml(row.wash_decision)}">${escapeHtml(washDecisionLabel(row))}${row.price_adjustment_amount > 0 ? ` ¥${escapeHtml(row.price_adjustment_amount)}` : ""}</span>` : ""}</div></td>
       <td>${escapeHtml(row.实付款)}</td><td>${escapeHtml(row.item_status)}</td>
+      <td>${row.print_batch_id && washPrintBatches.has(row.print_batch_id) ? escapeHtml(washPrintBatchLabel(washPrintBatches.get(row.print_batch_id))) : "—"}</td>
       <td><div class="actions compact"><button class="ghost small" type="button" data-select-label-order="${escapeHtml(row.order_id)}" ${settlementSchemaAvailable ? "" : "disabled"}>选择本单</button><button class="ghost small" type="button" data-save-settlement="${escapeHtml(row.id)}" ${settlementSchemaAvailable ? "" : "disabled"}>保存单项</button><button class="ghost small ${row.wash_decision === WASH_DECISION_RETURN_PENDING ? "danger" : ""}" type="button" data-wash-adjustment="${escapeHtml(row.id)}" ${washAdjustmentSchemaAvailable ? "" : "disabled"}>差价/退洗</button><button class="ghost small" type="button" data-detail="${row.order_id}">详情</button></div></td>
-    </tr>`).join("") || '<tr><td colspan="12">暂无水洗标</td></tr>';
+    </tr>`).join("") || '<tr><td colspan="13">暂无水洗标</td></tr>';
 }
 
 function updateLabelSelectionUi() {
@@ -3965,8 +4028,20 @@ function updateLabelSelectionUi() {
   });
   const exportButton = document.querySelector("[data-export-selected-labels]");
   if (exportButton) {
-    exportButton.disabled = !selectedCount || labelExportBusy;
+    exportButton.disabled = !selectedCount || labelExportBusy || washPrintBatchBusy;
     exportButton.textContent = labelExportBusy ? "正在导出…" : `导出所选水洗标（${selectedCount}）`;
+  }
+  const createBatchButton = $("createWashPrintBatchBtn");
+  if (createBatchButton?.dataset) {
+    const unavailable = createBatchButton.dataset.available !== "true";
+    const selectedAlreadyBatched = labelVisibleRows.some((row) => labelSelectedItems.has(row.id) && row.print_batch_id);
+    const blocked = washPrintBatchBusy || labelExportBusy || mergeWashLabelExportBusy;
+    createBatchButton.disabled = unavailable || !selectedCount || selectedAlreadyBatched || blocked;
+    createBatchButton.textContent = `新建打印批次并导出（${selectedCount}）`;
+    createBatchButton.title = selectedAlreadyBatched ? "已分批的水洗标可在原批次补打" : "";
+    $("selectUnprintedWashLabelsBtn").disabled = unavailable || blocked
+      || !labelVisibleRows.some((row) => !row.print_batch_id && pendingWashLabelPrefix(row.条形编码));
+    $("reprintWashBatchBtn").disabled = blocked || !washPrintBatches.get(selectedWashPrintBatchId)?.count;
   }
   const selectVisibleButton = document.querySelector("[data-select-label-visible]");
   if (selectVisibleButton) {
@@ -4392,7 +4467,7 @@ async function withIssuedWashLabelBarcodes(rows, compareRows, allRows) {
 }
 
 async function exportMergedWashLabels() {
-  if (mergeWashLabelExportBusy || APP_MODE !== "admin" || currentProfile?.role !== "admin" || !currentUser || !requireClient()) return;
+  if (mergeWashLabelExportBusy || washPrintBatchBusy || APP_MODE !== "admin" || currentProfile?.role !== "admin" || !currentUser || !requireClient()) return;
   const rows = mergeWashLabelRows.filter((row) => !mergeWashLabelExcluded.has(row.id)).sort(compareMergedWashLabelRows);
   if (!rows.length) return;
   mergeWashLabelExportBusy = true;
@@ -4412,7 +4487,7 @@ async function exportMergedWashLabels() {
 }
 
 async function exportWashLabels() {
-  if (!requireClient()) return;
+  if (washPrintBatchBusy || !requireClient()) return;
   if (!currentUser) return alert("请先登录后台账号");
   const button = $("exportWashLabelsBtn");
   if (button?.disabled) return;
@@ -4434,7 +4509,7 @@ async function exportWashLabels() {
 }
 
 async function exportSelectedWashLabels() {
-  if (labelExportBusy || !requireClient()) return;
+  if (labelExportBusy || washPrintBatchBusy || !requireClient()) return;
   if (!currentUser) return alert("请先登录后台账号");
   const rows = labelVisibleRows.filter((row) => labelSelectedItems.has(row.id)).sort(compareWashLabelRows);
   if (!rows.length) return setMessage("labelReviewMessage", "请先勾选需要补打的水洗标。", "warn");
@@ -4453,6 +4528,85 @@ async function exportSelectedWashLabels() {
   }
 }
 
+async function createWashPrintBatch() {
+  if (washPrintBatchBusy || labelExportBusy || mergeWashLabelExportBusy || !canUseWashPrintBatches() || !requireClient()) return;
+  if (washOrderImportBusy) return setMessage("washPrintBatchMessage", "请等本次订单导入完成后再创建打印批次。", "warn");
+  const rows = labelVisibleRows.filter((row) => labelSelectedItems.has(row.id)).sort(compareWashLabelRows);
+  if (!rows.length || rows.some((row) => row.print_batch_id)) return;
+  const ids = rows.map((row) => row.id);
+  const selection = JSON.stringify(ids);
+  if (washPrintBatchRequest?.selection !== selection) washPrintBatchRequest = { selection, id: crypto.randomUUID() };
+  washPrintBatchBusy = true;
+  updateLabelSelectionUi();
+  setMessage("washPrintBatchMessage", "正在保存打印批次…", "hint");
+  let batch;
+  let message;
+  let type;
+  try {
+    await ensureXlsx();
+    const { data, error } = await sb.rpc("create_wash_label_print_batch", {
+      p_batch_id: washPrintBatchRequest.id,
+      p_ordered_item_ids: ids,
+      p_route_snapshots: Object.fromEntries(rows.map((row) => [row.id, row.route_snapshot])),
+    });
+    if (error) throw new Error(error.code === "PGRST202" ? "请先在当前业务库启用水洗标打印批次。" : error.message);
+    if (!data?.id) throw new Error("未收到批次结果，请重试或刷新已保存的批次。");
+    batch = data;
+    selectedWashPrintBatchId = batch.id;
+    washPrintBatchRequest = null;
+    const barcodes = new Map((batch.labels || []).map((label) => [label.item_id, label.barcode]));
+    if (rows.some((row) => !barcodes.get(row.id))) throw new Error("未收到完整的条码，请从已保存的批次补打。");
+    const numbered = rows.map((row) => ({ ...row, 条形编码: barcodes.get(row.id) }));
+    await writeWashPrintBatch(batch, numbered);
+    message = `已保存并导出 ${washPrintBatchLabel(batch)}，共 ${rows.length} 个水洗标。`;
+    type = "success";
+  } catch (error) {
+    message = batch
+      ? `已保存 ${washPrintBatchLabel(batch)}。本次导出失败，可点「补打整批」。${error.message}`
+      : `创建打印批次失败：${error.message}`;
+    type = "warn";
+  } finally {
+    if (batch) {
+      try {
+        await loadLabels();
+      } catch {
+        message += " 请刷新页面读取已保存的批次。";
+      }
+    }
+    washPrintBatchBusy = false;
+    updateLabelSelectionUi();
+    setMessage("washPrintBatchMessage", message, type);
+  }
+}
+
+async function reprintWashPrintBatch() {
+  if (washPrintBatchBusy || labelExportBusy || mergeWashLabelExportBusy || !canUseWashPrintBatches() || !requireClient()) return;
+  const batch = washPrintBatches.get(selectedWashPrintBatchId);
+  if (!batch?.count) return;
+  washPrintBatchBusy = true;
+  updateLabelSelectionUi();
+  setMessage("washPrintBatchMessage", "正在读取本批水洗标…", "hint");
+  try {
+    await ensureXlsx();
+    const { rows, error } = await loadWashLabelRows();
+    if (error) throw new Error(error.message);
+    const batchRows = rows.filter((row) => row.print_batch_id === batch.id).sort((a, b) => a.print_position - b.print_position);
+    if (!batchRows.length) throw new Error("本批次已没有可补打的水洗标。");
+    await writeWashPrintBatch(batch, batchRows);
+    setMessage("washPrintBatchMessage", `已导出 ${washPrintBatchLabel(batch)}，共 ${batchRows.length} 个水洗标。`, "success");
+  } catch (error) {
+    setMessage("washPrintBatchMessage", `补打失败：${error.message}`, "warn");
+  } finally {
+    washPrintBatchBusy = false;
+    updateLabelSelectionUi();
+  }
+}
+
+async function writeWashPrintBatch(batch, rows) {
+  const name = washPrintBatchLabel(batch);
+  writeWashLabelExport(await withLatestWashLabelPhones(rows), name, `事事通水洗标清单-${name}.xlsx`, name);
+}
+
 async function withLatestWashLabelPhones(rows) {
   const orderIds = [...new Set(rows.map((row) => row.order_id))];
   const phones = new Map();
@@ -4465,13 +4619,13 @@ async function withLatestWashLabelPhones(rows) {
   return rows.map((row) => ({ ...row, 电话: phones.get(row.order_id) }));
 }
 
-function writeWashLabelExport(rows, sheetName, fileName) {
+function writeWashLabelExport(rows, sheetName, fileName, printBatchLabel = "") {
   if (rows.some((row) => pendingWashLabelPrefix(row.条形编码))) {
     throw new Error("有水洗标尚未分配正式条码，请重新导出。");
   }
   const exportRows = rows.map((row, index) => ({
-    序号: index + 1,
-    批次: `${row.batch_date}（${row.batch_label}）`,
+    序号: printBatchLabel && /^[0-9]{9,}$/.test(row.条形编码) ? Number(row.条形编码.slice(6)) : index + 1,
+    批次: printBatchLabel || `${row.batch_date}（${row.batch_label}）`,
     条形编码: row.条形编码,
     所属商家: row.所属商家,
     姓名: row.姓名,
@@ -7631,7 +7785,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=89", { updateViaCache: "none" })
+    .register("./sw.js?v=90", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }

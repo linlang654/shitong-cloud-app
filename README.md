@@ -48,6 +48,14 @@
 发布前，在当前业务库（`bjlimqtrkdokmjpdcraa`）执行 `supabase-wash-label-first-issue-migration.sql`。
 导入同一取件日期的全部订单并核对楼栋后，再首次导出。系统按学校、校区、楼栋的顺序分配正式条码。全新日期从 `001` 开始，同日补录从已有最大号续编。合并打印时各取件日期分别编号，补打使用已分配的条码。
 
+## 水洗标打印批次
+
+发布前，在当前业务库（`bjlimqtrkdokmjpdcraa`）执行 `supabase-wash-label-print-batches-migration.sql`。
+
+在「水洗标管理」勾选这次要打印的水洗标，点击「新建打印批次并导出」。同一个打印日按北京时间自动记录第 1 批、第 2 批等。待编号的水洗标按学校、校区、楼栋排序，同一条码日期接着已有最大号续编。Excel 的序号与条码日期后的编号一致。
+
+第二次打印时可以点「全选待编号」，也可以手动勾选。要重印某一批，在已保存的打印批次中选择该批并点击「补打整批」，系统按原顺序导出、使用原条码和最新联系电话。
+
 ## 抖音团购后台录单
 
 发布前，在当前业务库（`bjlimqtrkdokmjpdcraa`）执行 `supabase-manual-wash-order-migration.sql`。
