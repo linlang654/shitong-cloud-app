@@ -35,6 +35,9 @@ function setup(items, { date = '2026-11-10', issueError, original = false, creat
   const downloads = [], calls = [], alerts = [];
   const itemWrites = [], importLogs = [];
   const importedOrders = new Map();
+  const importedPickups = new Map();
+  const importBatchTotals = [];
+  const duplicateOrderLookups = [];
   let importBatchCount = 0;
   const phones = new Map(items.map(({ orders }, index) => [orders.id, `1390000${String(index + 1).padStart(4, '0')}`]));
   const elements = new Map();
@@ -92,20 +95,41 @@ function setup(items, { date = '2026-11-10', issueError, original = false, creat
       if (table === 'import_batches') {
         return {
           insert: () => ({ select: () => ({ single: async () => ({ data: { id: `import-${++importBatchCount}` } }) }) }),
-          update: () => ({ eq: async () => ({}) }),
+          update: (payload) => ({ eq: async (_column, id) => { importBatchTotals.push({ id, ...payload }); return {}; } }),
         };
       }
-      if (table === 'pickup_tasks') return { upsert: () => ({ select: async () => ({ data: [] }) }) };
+      if (table === 'pickup_tasks') return {
+        upsert: (payloads, options) => ({ select: async () => {
+          const data = [];
+          for (const payload of payloads) {
+            if (options.ignoreDuplicates && importedPickups.has(payload.order_id)) continue;
+            importedPickups.set(payload.order_id, { ...payload });
+            data.push(importedPickups.get(payload.order_id));
+          }
+          return { data };
+        } }),
+      };
       if (table === 'status_logs') return { insert: async (rows) => { importLogs.push(...rows); return {}; } };
       assert.equal(table, 'orders');
       return {
-        upsert: (payloads) => ({ select: async () => ({ data: payloads.map((payload) => {
-          const order = { ...payload, id: `order-${payload.order_no}` };
-          importedOrders.set(order.id, order);
-          return order;
-        }) }) }),
+        upsert: (payloads, options) => ({ select: async () => {
+          const data = [];
+          for (const payload of payloads) {
+            const id = `order-${payload.order_no}`;
+            const existing = importedOrders.get(id);
+            if (existing && options.ignoreDuplicates) continue;
+            const order = Object.assign(existing || {}, payload, { id });
+            importedOrders.set(id, order);
+            data.push(order);
+          }
+          return { data };
+        } }),
         select: () => ({
           in: async (key, ids) => {
+            if (key === 'order_no') {
+              duplicateOrderLookups.push(ids.length);
+              return { data: ids.map((id) => importedOrders.get(`order-${id}`)).filter(Boolean) };
+            }
             assert.equal(key, 'id');
             return { data: ids.map((id) => ({ id, phone: phones.get(id) })) };
           },
@@ -150,7 +174,10 @@ function setup(items, { date = '2026-11-10', issueError, original = false, creat
   const run = (code) => vm.runInContext(code, context);
   run(source.slice(0, startup));
   run('sb = client; currentUser = { id: "staff" }; currentProfile = { role: "admin" };');
-  return { context, run, calls, downloads, alerts, phones, node, itemWrites, importLogs };
+  return {
+    context, run, calls, downloads, alerts, phones, node, itemWrites, importLogs,
+    importedOrders, importedPickups, importBatchTotals, duplicateOrderLookups,
+  };
 }
 
 function labelColumns({ rows }) {
@@ -227,12 +254,50 @@ test('a large Excel import writes bounded batches and reimport preserves issued 
 
   await importWorkbook();
   assert.match(s.node('adminImportStatus').innerHTML, /130 个订单，新增 0 件物品，跳过重复 260 件/);
+  assert.deepEqual(s.duplicateOrderLookups, [30, 30, 30, 30, 10]);
+  assert.equal(s.importBatchTotals[1].imported_orders, 0);
   assert.deepEqual(s.itemWrites, [200, 60, 200, 60].map((size) => ({
     onConflict: 'source_key', ignoreDuplicates: true, size,
   })));
   assert.equal(items.length, 260);
   assert.equal(s.importLogs.length, 260);
   assert.equal(items.find((row) => row.id === issued.id).barcode, issued.barcode);
+});
+
+test('a repeated import preserves corrected order data and pickup progress while importing new rows', async () => {
+  const items = [];
+  const s = setup(items);
+  s.run(`
+    detectSettlementSchemaAvailability = async () => false;
+    loadRecognitionRules = async () => {};
+    refreshAll = async () => {};
+  `);
+  const importOrders = (orders) => s.context.handleImport({ target: { files: [importFile(orders)] } });
+  await importOrders([['corrected', '10栋']]);
+  const orderId = 'order-corrected';
+  Object.assign(s.importedOrders.get(orderId), {
+    school: '理工', campus: '北区', building: '22栋', exception_note: '',
+    phone: '13900008888', order_status: '已取件',
+  });
+  Object.assign(s.importedPickups.get(orderId), { status: '已取件', pickup_date: '2026-11-11' });
+  const savedOrder = structuredClone(s.importedOrders.get(orderId));
+  const savedPickup = structuredClone(s.importedPickups.get(orderId));
+
+  await importOrders([['corrected', '10栋'], ['new', '5栋']]);
+  assert.deepEqual(s.importedOrders.get(orderId), savedOrder);
+  assert.deepEqual(s.importedPickups.get(orderId), savedPickup);
+  assert.equal(s.importedOrders.get('order-new').import_batch_id, 'import-2');
+  assert.equal(s.importedPickups.get('order-new').status, '待取件');
+  assert.equal(s.importBatchTotals[1].imported_orders, 1);
+  assert.equal(items.length, 2);
+  assert.match(s.node('adminImportStatus').innerHTML, /新增订单 1 单，保留已有订单 1 单/);
+
+  // A retry after the task write failed can finish the import without touching the order.
+  s.importedPickups.delete(orderId);
+  await importOrders([['corrected', '10栋']]);
+  assert.deepEqual(s.importedOrders.get(orderId), savedOrder);
+  assert.equal(s.importedPickups.get(orderId).status, '已取件');
+  assert.equal(s.importedPickups.get(orderId).pickup_date, '2026-11-10');
 });
 
 test('first full daily export assigns actual barcodes in natural building order', async () => {

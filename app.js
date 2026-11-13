@@ -1679,6 +1679,21 @@ async function batchUpsert(tableName, rows, options = {}, size = 200) {
   return result;
 }
 
+async function importOrderRecords(payloads) {
+  const newOrders = await batchUpsert("orders", payloads, { onConflict: "order_no", ignoreDuplicates: true }, 120);
+  const orders = new Map(newOrders.map((order) => [order.order_no, order]));
+  const existingNumbers = payloads.map((payload) => payload.order_no).filter((orderNo) => !orders.has(orderNo));
+  // Only look up order numbers for conflicts. Keep these requests short even for large repeat imports.
+  for (const group of chunkArray(existingNumbers, 30)) {
+    const { data, error } = await sb.from("orders").select("id,order_no,order_status,pay_time,order_time,source")
+      .in("order_no", group);
+    if (error) throw error;
+    for (const order of data || []) orders.set(order.order_no, order);
+  }
+  if (orders.size !== payloads.length) throw new Error("部分已有订单无法读取，请刷新后重试导入。");
+  return { newOrders, orders };
+}
+
 async function batchInsert(tableName, rows, size = 300) {
   for (const group of chunkArray(rows, size)) {
     const { error } = await sb.from(tableName).insert(group);
@@ -1894,19 +1909,22 @@ async function handleImport(event) {
       const orderNo = text(field(row, ["订单号", "订单编号"]));
       if (!orderWorkItems.has(orderNo)) orderWorkItems.set(orderNo, workItem);
     });
-    const recognitionSummary = summarizeRecognition(workItems);
     const orderPayloads = [...orderWorkItems.values()].map((workItem) => buildOrderPayload(workItem.row, workItem.dorm, batch.id));
-    const orders = await batchUpsert("orders", orderPayloads, { onConflict: "order_no" }, 120);
-    const orderCache = new Map(orders.map((order) => [order.order_no, order]));
+    const { newOrders, orders: orderCache } = await importOrderRecords(orderPayloads);
+    const newOrderNumbers = new Set(newOrders.map((order) => order.order_no));
+    const recognitionSummary = summarizeRecognition(newOrders.map((order) => orderWorkItems.get(order.order_no)));
 
     setMessage("adminImportStatus", `正在导入：${workItems.length} 件物品，正在生成取件任务...`);
-    const pickupPayloads = [...orderWorkItems.entries()].map(([orderNo, workItem]) => ({
-      order_id: orderCache.get(orderNo).id,
-      pickup_date: workItem.pickupDate || null,
-      status: "待取件",
+    const pickupPayloads = [...orderCache.values()].filter((order) => order.source === "excel").map((order) => ({
+      order_id: order.id,
+      pickup_date: (newOrderNumbers.has(order.order_no) ? orderWorkItems.get(order.order_no).pickupDate
+        : calculatePickupDate({ 付款时间: order.pay_time, 下单时间: order.order_time })) || null,
+      status: ["待取件", "未找到", "异常"].includes(order.order_status) ? order.order_status
+        : order.order_status === "已退单" ? "已取消" : "已取件",
       updated_at: new Date().toISOString(),
     }));
-    await batchUpsert("pickup_tasks", pickupPayloads, { onConflict: "order_id" }, 200);
+    // A retry can create a missing task, while any existing task retains its date and progress.
+    await batchUpsert("pickup_tasks", pickupPayloads, { onConflict: "order_id", ignoreDuplicates: true }, 200);
 
     // The business project skips duplicates on insert. Looking up every source
     // key first puts long Excel values in a GET URL and can exceed its limit.
@@ -1929,7 +1947,10 @@ async function handleImport(event) {
         : nextBarcode(counters, workItem.prefix);
       const payload = buildItemPayload(order.id, workItem.row, barcode, sourceKey, workItem.index);
       itemPayloads.push(payload);
-      itemMeta.set(sourceKey, { orderId: order.id, note: workItem.dorm.note || "Excel 导入生成水洗标" });
+      itemMeta.set(sourceKey, {
+        orderId: order.id,
+        note: (newOrderNumbers.has(orderNo) && workItem.dorm.note) || "Excel 导入生成水洗标",
+      });
     });
 
     setMessage("adminImportStatus", `正在导入：${workItems.length} 件物品，正在保存物品记录...`);
@@ -1952,11 +1973,11 @@ async function handleImport(event) {
     const createdItems = createdItemRows.length;
     skippedItems += itemPayloads.length - createdItems;
     const labelNotice = deferBarcodes && createdItems ? "请先导入同一取件日期的全部订单，再导出水洗标统一编号。" : "";
-    await updateImportBatch(batch.id, orderCache.size, createdItems);
+    await updateImportBatch(batch.id, newOrders.length, createdItems);
     await refreshAll();
     $("adminImportStatus").innerHTML = renderImportDiagnosis(
       diagnosis,
-      `导入完成：${orderCache.size} 个订单，新增 ${createdItems} 件物品，跳过重复 ${skippedItems} 件。地址识别：自动通过 ${recognitionSummary.high} 单，快速确认 ${recognitionSummary.confirm} 单，需补充信息 ${recognitionSummary.review} 单。${labelNotice}`,
+      `导入完成：${orderCache.size} 个订单，新增 ${createdItems} 件物品，跳过重复 ${skippedItems} 件。新增订单 ${newOrders.length} 单，保留已有订单 ${orderCache.size - newOrders.length} 单。新增订单地址识别：自动通过 ${recognitionSummary.high} 单，快速确认 ${recognitionSummary.confirm} 单，需补充信息 ${recognitionSummary.review} 单。${labelNotice}`,
     );
   } catch (error) {
     console.error(error);
@@ -7798,7 +7819,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=91", { updateViaCache: "none" })
+    .register("./sw.js?v=92", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
