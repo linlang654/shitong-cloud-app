@@ -833,6 +833,10 @@ body.has-access .layout {
   display: none;
 }
 
+.wash-adjustment-fields.reason-only {
+  grid-template-columns: 1fr;
+}
+
 .wash-adjustment-actions {
   position: sticky;
   bottom: 0;

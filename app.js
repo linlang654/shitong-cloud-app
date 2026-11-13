@@ -61,9 +61,9 @@ const WASH_DECISION_OPTIONS = [
   { key: WASH_DECISION_NORMAL, label: "正常洗护（无需差价）", adjustmentType: "none" },
   { key: WASH_DECISION_SUPPLEMENT_PENDING, label: "待补差，暂不清洗", adjustmentType: "supplement" },
   { key: WASH_DECISION_SUPPLEMENT_CONFIRMED, label: "已补差，继续清洗", adjustmentType: "supplement" },
-  { key: WASH_DECISION_RETURN_PENDING, label: "不洗，待退回", adjustmentType: "refund" },
-  { key: WASH_DECISION_RETURNED, label: "已退洗并退回", adjustmentType: "refund" },
-  { key: WASH_DECISION_RETURN_CANCELLED, label: "未取件退单（直接完结）", adjustmentType: "refund" },
+  { key: WASH_DECISION_RETURN_PENDING, label: "不洗，待退回", adjustmentType: "none" },
+  { key: WASH_DECISION_RETURNED, label: "已退洗并退回", adjustmentType: "none" },
+  { key: WASH_DECISION_RETURN_CANCELLED, label: "未取件退单（直接完结）", adjustmentType: "none" },
 ];
 const DEFAULT_SETTLEMENT_CATEGORIES = [
   { key: "regular_shoe", label: "休闲鞋/运动鞋/帆布鞋/板鞋", shortLabel: "普通鞋", unit: "双", detail: "含网面普通鞋；特殊材质和靴类需另选" },
@@ -329,6 +329,12 @@ function washDecisionLabel(item) {
 
 function washDecisionIsReturn(item) {
   return [WASH_DECISION_RETURN_PENDING, WASH_DECISION_RETURNED, WASH_DECISION_RETURN_CANCELLED].includes(text(item?.wash_decision));
+}
+
+function washSupplementAmount(item) {
+  return washDecisionDefinition(item?.wash_decision).adjustmentType === "supplement"
+    ? numberValue(item.price_adjustment_amount)
+    : 0;
 }
 
 function factoryItemNeedsOutbound(item) {
@@ -2737,7 +2743,7 @@ async function updateOrderItemStatus(itemId, orderId, barcode, status, selectEle
   }
   if (currentItem?.wash_decision === WASH_DECISION_RETURN_PENDING) {
     if (selectElement) selectElement.value = currentItem.item_status;
-    return alert("该物品已在退洗流程中，请通过退洗处理入口修改，避免影响退款和送回任务。");
+    return alert("该物品已在退洗流程中，请通过退洗处理入口修改。");
   }
   if (selectElement) selectElement.disabled = true;
   const { error } = await sb.from("order_items").update({
@@ -3993,7 +3999,9 @@ async function loadLabels() {
 }
 
 function renderLabelRows(rows) {
-  return rows.map((row) => `
+  return rows.map((row) => {
+    const supplement = washSupplementAmount(row);
+    return `
     <tr data-label-row="${escapeHtml(row.id)}" class="${labelSelectedItems.has(row.id) ? "selected" : ""}">
       <td><label class="label-select-cell"><input type="checkbox" data-label-checkbox="${escapeHtml(row.id)}" ${labelSelectedItems.has(row.id) ? "checked" : ""} aria-label="选择水洗标 ${escapeHtml(displayWashLabelBarcode(row.条形编码))}" /></label></td>
       <td data-wash-label-barcode="${escapeHtml(row.id)}">${escapeHtml(displayWashLabelBarcode(row.条形编码))}</td><td>${escapeHtml(row.所属商家)}</td><td>${escapeHtml(row.姓名)}</td><td data-label-phone-order="${escapeHtml(row.order_id)}">${escapeHtml(row.电话)}</td><td>${escapeHtml(row.校区)}</td><td>${escapeHtml(row.物品)}</td>
@@ -4005,11 +4013,12 @@ function renderLabelRows(rows) {
           <input class="input compact-input" type="number" min="0" step="0.01" data-settlement-other-cost="${escapeHtml(row.id)}" value="${row.settlement_cost_snapshot ?? ""}" placeholder="代工价" />
         </div>
       </div></td>
-      <td><div class="settlement-status-stack"><span class="settlement-status ${row.settlement_confirmed ? "confirmed" : validSettlementCategoryKey(row.settlement_suggestion) ? "suggested" : "pending"}" title="${escapeHtml(row.settlement_suggestion_reason || "")}">${row.settlement_confirmed ? "已确认" : validSettlementCategoryKey(row.settlement_suggestion) ? "系统建议，待确认" : "待人工选择"}</span>${row.wash_decision !== WASH_DECISION_NORMAL ? `<span class="wash-decision-badge ${escapeHtml(row.wash_decision)}">${escapeHtml(washDecisionLabel(row))}${row.price_adjustment_amount > 0 ? ` ¥${escapeHtml(row.price_adjustment_amount)}` : ""}</span>` : ""}</div></td>
+      <td><div class="settlement-status-stack"><span class="settlement-status ${row.settlement_confirmed ? "confirmed" : validSettlementCategoryKey(row.settlement_suggestion) ? "suggested" : "pending"}" title="${escapeHtml(row.settlement_suggestion_reason || "")}">${row.settlement_confirmed ? "已确认" : validSettlementCategoryKey(row.settlement_suggestion) ? "系统建议，待确认" : "待人工选择"}</span>${row.wash_decision !== WASH_DECISION_NORMAL ? `<span class="wash-decision-badge ${escapeHtml(row.wash_decision)}">${escapeHtml(washDecisionLabel(row))}${supplement > 0 ? ` ¥${escapeHtml(supplement)}` : ""}</span>` : ""}</div></td>
       <td>${escapeHtml(row.实付款)}</td><td>${escapeHtml(row.item_status)}</td>
       <td>${row.print_batch_id && washPrintBatches.has(row.print_batch_id) ? escapeHtml(washPrintBatchLabel(washPrintBatches.get(row.print_batch_id))) : "—"}</td>
       <td><div class="actions compact"><button class="ghost small" type="button" data-select-label-order="${escapeHtml(row.order_id)}" ${settlementSchemaAvailable ? "" : "disabled"}>选择本单</button><button class="ghost small" type="button" data-save-settlement="${escapeHtml(row.id)}" ${settlementSchemaAvailable ? "" : "disabled"}>保存单项</button><button class="ghost small ${row.wash_decision === WASH_DECISION_RETURN_PENDING ? "danger" : ""}" type="button" data-wash-adjustment="${escapeHtml(row.id)}" ${washAdjustmentSchemaAvailable ? "" : "disabled"}>差价/退洗</button><button class="ghost small" type="button" data-detail="${row.order_id}">详情</button></div></td>
-    </tr>`).join("") || '<tr><td colspan="13">暂无水洗标</td></tr>';
+    </tr>`;
+  }).join("") || '<tr><td colspan="13">暂无水洗标</td></tr>';
 }
 
 function updateLabelSelectionUi() {
@@ -4144,20 +4153,22 @@ function washAdjustmentOptionHtml(row, directUnpickedReturn = false) {
 
 function updateWashAdjustmentDialogUi() {
   const decision = $("washAdjustmentDecision")?.value || WASH_DECISION_NORMAL;
-  const definition = washDecisionDefinition(decision);
+  const isReturn = washDecisionIsReturn({ wash_decision: decision });
+  const isSupplement = washDecisionDefinition(decision).adjustmentType === "supplement";
   const adjustmentFields = $("washAdjustmentFields");
-  adjustmentFields?.classList.toggle("hidden", definition.adjustmentType === "none");
-  if ($("washAdjustmentAmountLabel")) {
-    $("washAdjustmentAmountLabel").textContent = definition.adjustmentType === "refund" ? "应退金额（元）" : "应补金额（元）";
-  }
-  if ($("washAdjustmentReasonLabel")) {
-    $("washAdjustmentReasonLabel").textContent = definition.adjustmentType === "refund" ? "退洗原因" : "补差原因";
-  }
+  adjustmentFields.classList.toggle("hidden", !isReturn && !isSupplement);
+  adjustmentFields.classList.toggle("reason-only", isReturn);
+  $("washAdjustmentAmountField").classList.toggle("hidden", !isSupplement);
+  $("washAdjustmentNoteField").classList.toggle("hidden", isReturn);
+  $("washAdjustmentReasonLabel").textContent = isReturn ? "退洗原因（必填）" : "补差原因";
+  $("washAdjustmentReason").placeholder = isReturn ? "例如：客户要求原样退回" : "例如：实际为特殊材质，需要补差";
   if ($("washAdjustmentHelp")) {
     $("washAdjustmentHelp").textContent = decision === WASH_DECISION_RETURN_CANCELLED
       ? "物品尚未被取件员取走；保存后本件直接退单完结，不进入工厂和送回流程。若同单还有其他物品，整单会在其他物品也完成后自动完结。"
       : decision === WASH_DECISION_RETURN_PENDING
       ? "保存后该水洗标标记为不清洗；工厂出库后会作为单件退洗物品送回。"
+      : decision === WASH_DECISION_RETURNED
+      ? "该物品已退洗送回，可更新退洗原因。"
       : decision === WASH_DECISION_SUPPLEMENT_PENDING
         ? "待客户确认并完成补差前，系统禁止该水洗标出库。"
         : decision === WASH_DECISION_SUPPLEMENT_CONFIRMED
@@ -4168,24 +4179,21 @@ function updateWashAdjustmentDialogUi() {
 
 function openWashAdjustmentDialog(itemId, suppliedRow = null, statusSelect = null, directUnpickedReturn = false) {
   if (!washAdjustmentSchemaAvailable) return alert(washAdjustmentMigrationMessage());
-  const sourceRow = labelReviewRows.find((entry) => entry.id === itemId) || suppliedRow;
-  const row = sourceRow && !sourceRow.条形编码 ? {
+  const sourceRow = suppliedRow || labelReviewRows.find((entry) => entry.id === itemId);
+  if (!sourceRow) return alert("没有找到这个水洗标");
+  const row = {
     ...sourceRow,
-    条形编码: sourceRow.barcode,
-    姓名: sourceRow.orders?.customer_name || "",
-    电话: sourceRow.orders?.phone || "",
-    物品: sourceRow.product_name || "",
-    校区: sourceRow.orders?.campus || sourceRow.orders?.school || "",
-    wash_decision: directUnpickedReturn
-      ? WASH_DECISION_RETURN_CANCELLED
-      : sourceRow.wash_decision || WASH_DECISION_NORMAL,
-    wash_decision_reason: sourceRow.wash_decision_reason || "",
-    wash_decision_note: sourceRow.wash_decision_note || "",
-    price_adjustment_amount: Number(sourceRow.price_adjustment_amount) || 0,
-  } : sourceRow;
-  if (!row) return alert("没有找到这个水洗标");
+    条形编码: sourceRow.条形编码 || sourceRow.barcode,
+    姓名: sourceRow.姓名 ?? sourceRow.orders?.customer_name,
+    电话: sourceRow.电话 ?? sourceRow.orders?.phone,
+    物品: sourceRow.物品 ?? sourceRow.product_name,
+    校区: sourceRow.校区 ?? (sourceRow.orders?.campus || sourceRow.orders?.school),
+    wash_decision: sourceRow.wash_decision || WASH_DECISION_NORMAL,
+  };
   if (directUnpickedReturn) row.wash_decision = WASH_DECISION_RETURN_CANCELLED;
+  else if (statusSelect && !washDecisionIsReturn(row)) row.wash_decision = WASH_DECISION_RETURN_PENDING;
   const terminalUnpickedReturn = row.wash_decision === WASH_DECISION_RETURN_CANCELLED;
+  const supplement = washSupplementAmount(sourceRow);
   activeWashAdjustmentRow = row;
   activeWashAdjustmentSelect = statusSelect;
   $("orderDialogTitle").textContent = "单个水洗标差价 / 退洗";
@@ -4200,18 +4208,18 @@ function openWashAdjustmentDialog(itemId, suppliedRow = null, statusSelect = nul
       <select id="washAdjustmentDecision" class="input" ${directUnpickedReturn || terminalUnpickedReturn ? "disabled" : ""}>${washAdjustmentOptionHtml(row, directUnpickedReturn || terminalUnpickedReturn)}</select>
     </label>
     <div id="washAdjustmentFields" class="wash-adjustment-fields">
-      <label class="field-group" for="washAdjustmentAmount">
-        <span id="washAdjustmentAmountLabel">差价金额（元）</span>
-        <input id="washAdjustmentAmount" class="input" type="number" min="0.01" step="0.01" value="${row.price_adjustment_amount > 0 ? escapeHtml(row.price_adjustment_amount) : ""}" placeholder="请输入金额" />
+      <label id="washAdjustmentAmountField" class="field-group" for="washAdjustmentAmount">
+        <span>应补金额（元）</span>
+        <input id="washAdjustmentAmount" class="input" type="number" min="0.01" step="0.01" value="${supplement > 0 ? escapeHtml(supplement) : ""}" placeholder="请输入金额" />
       </label>
       <label class="field-group" for="washAdjustmentReason">
         <span id="washAdjustmentReasonLabel">处理原因</span>
         <input id="washAdjustmentReason" class="input" value="${escapeHtml(row.wash_decision_reason)}" maxlength="80" placeholder="例如：实际为绒面鞋，客户不同意补差" />
       </label>
     </div>
-    <label class="field-group" for="washAdjustmentNote">
+    <label id="washAdjustmentNoteField" class="field-group" for="washAdjustmentNote">
       <span>客服沟通备注</span>
-      <textarea id="washAdjustmentNote" class="input" rows="3" maxlength="300" placeholder="记录客户确认结果、退款方式等">${escapeHtml(row.wash_decision_note)}</textarea>
+      <textarea id="washAdjustmentNote" class="input" rows="3" maxlength="300" placeholder="记录客户确认结果">${escapeHtml(row.wash_decision_note)}</textarea>
     </label>
     <p id="washAdjustmentHelp" class="hint"></p>
     <div id="washAdjustmentMessage" aria-live="polite"></div>
@@ -4223,17 +4231,20 @@ function openWashAdjustmentDialog(itemId, suppliedRow = null, statusSelect = nul
 
 async function saveWashAdjustment(itemId) {
   if (!washAdjustmentSchemaAvailable) return setMessage("washAdjustmentMessage", washAdjustmentMigrationMessage(), "warn");
-  const row = labelReviewRows.find((entry) => entry.id === itemId) || (activeWashAdjustmentRow?.id === itemId ? activeWashAdjustmentRow : null);
+  const row = activeWashAdjustmentRow?.id === itemId ? activeWashAdjustmentRow : null;
+  if (!row) return;
   const decision = $("washAdjustmentDecision")?.value || WASH_DECISION_NORMAL;
   const definition = washDecisionDefinition(decision);
-  const amount = definition.adjustmentType === "none" ? 0 : Number($("washAdjustmentAmount")?.value);
-  const reason = definition.adjustmentType === "none" ? "" : text($("washAdjustmentReason")?.value);
-  const note = text($("washAdjustmentNote")?.value);
-  if (definition.adjustmentType !== "none" && (!Number.isFinite(amount) || amount <= 0)) {
-    return setMessage("washAdjustmentMessage", "请填写正确的补差或退款金额。", "warn");
+  const isReturn = washDecisionIsReturn({ wash_decision: decision });
+  const isSupplement = definition.adjustmentType === "supplement";
+  const amount = isSupplement ? Number($("washAdjustmentAmount")?.value) : 0;
+  const reason = isReturn || isSupplement ? text($("washAdjustmentReason")?.value) : "";
+  const note = isReturn ? "" : text($("washAdjustmentNote")?.value);
+  if (isSupplement && (!Number.isFinite(amount) || amount <= 0)) {
+    return setMessage("washAdjustmentMessage", "请填写正确的补差金额。", "warn");
   }
-  if (definition.adjustmentType !== "none" && !reason) {
-    return setMessage("washAdjustmentMessage", "请填写补差或退洗原因。", "warn");
+  if ((isReturn || isSupplement) && !reason) {
+    return setMessage("washAdjustmentMessage", isReturn ? "请填写退洗原因。" : "请填写补差原因。", "warn");
   }
   if (decision === WASH_DECISION_RETURN_PENDING && ["已出库", "配送中", "已送达"].includes(row?.item_status)) {
     return setMessage("washAdjustmentMessage", "该物品已经出库，不能再改为待退洗。", "warn");
@@ -4242,11 +4253,12 @@ async function saveWashAdjustment(itemId) {
     return setMessage("washAdjustmentMessage", "只有尚未取件的物品可以直接退单，请按退洗送回流程处理。", "warn");
   }
   setMessage("washAdjustmentMessage", "正在保存处理结果...", "hint");
-  const settlementValues = settlementValuesFromRow(itemId);
-  if (validSettlementCategoryKey(settlementValues.categoryKey)
-    && settlementDetailsAreValid(settlementValues.categoryKey, settlementValues.details.otherName, settlementValues.details.cost)) {
-    const settlementResult = await persistSettlementCategory(itemId, settlementValues.categoryKey, settlementValues.details);
-    if (settlementResult.error) return setMessage("washAdjustmentMessage", `结算品类保存失败：${settlementResult.error.message}`, "warn");
+  if (!isReturn) {
+    const { categoryKey, details } = settlementValuesFromRow(itemId);
+    if (validSettlementCategoryKey(categoryKey) && settlementDetailsAreValid(categoryKey, details.otherName, details.cost)) {
+      const settlementResult = await persistSettlementCategory(itemId, categoryKey, details);
+      if (settlementResult.error) return setMessage("washAdjustmentMessage", `结算品类保存失败：${settlementResult.error.message}`, "warn");
+    }
   }
   const updatedAt = new Date().toISOString();
   const directUnpickedReturn = decision === WASH_DECISION_RETURN_CANCELLED;
@@ -4256,7 +4268,7 @@ async function saveWashAdjustment(itemId) {
     price_adjustment_type: definition.adjustmentType,
     price_adjustment_amount: amount,
     wash_decision_reason: reason,
-    wash_decision_note: note,
+    ...(!isReturn ? { wash_decision_note: note } : {}),
     wash_decision_updated_by: currentProfile?.id || null,
     wash_decision_updated_at: updatedAt,
     updated_at: updatedAt,
@@ -4274,7 +4286,7 @@ async function saveWashAdjustment(itemId) {
       .not("status", "eq", "已送达");
     if (returnCancelError) console.warn("关闭退单物品的送回任务失败：", returnCancelError.message);
   }
-  const logStatus = directUnpickedReturn ? "已退单" : definition.adjustmentType === "refund" ? "退洗" : definition.adjustmentType === "supplement" ? "补差" : "正常洗护";
+  const logStatus = directUnpickedReturn ? "已退单" : isReturn ? "退洗" : isSupplement ? "补差" : "正常洗护";
   await insertLog({
     orderId: row?.order_id,
     itemId,
@@ -5753,8 +5765,9 @@ function renderFactoryPendingItems() {
   if (!$("factoryItemList")) return;
   $("factoryItemList").innerHTML = rows.map((item) => {
     const order = Array.isArray(item.orders) ? item.orders[0] || {} : item.orders || {};
+    const supplement = washSupplementAmount(item);
     const decisionTag = item.wash_decision && item.wash_decision !== WASH_DECISION_NORMAL
-      ? `<p class="factory-wash-decision ${escapeHtml(item.wash_decision)}">${escapeHtml(washDecisionLabel(item))}${numberValue(item.price_adjustment_amount) > 0 ? ` · ¥${escapeHtml(numberValue(item.price_adjustment_amount))}` : ""}</p>`
+      ? `<p class="factory-wash-decision ${escapeHtml(item.wash_decision)}">${escapeHtml(washDecisionLabel(item))}${supplement > 0 ? ` · ¥${escapeHtml(supplement)}` : ""}</p>`
       : "";
     return `<article class="task-card compact"><div class="card-head"><h3>${escapeHtml(displayWashLabelBarcode(item.barcode))}</h3><span>${escapeHtml(item.item_status)}</span></div><p>${escapeHtml(order.customer_name || "")} · ${escapeHtml(order.phone || "")}</p><p>${escapeHtml(`${order.school || ""}${orderCampusName(order)}${order.building || ""}`)}</p><p>${escapeHtml(item.spec || item.product_name || "")}</p>${decisionTag}<div class="actions factory-item-actions"><button class="ghost danger" type="button" data-report-exception="${escapeHtml(item.id)}">上报异常</button></div></article>`;
   }).join("") || `<p class="factory-pending-empty">${factoryPendingView ? "当前作业类型暂无待处理物品" : "暂不展示全部物品，避免列表过长。"}</p>`;
@@ -7785,7 +7798,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=90", { updateViaCache: "none" })
+    .register("./sw.js?v=91", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
