@@ -20,6 +20,8 @@ const TEMP_SUPABASE_CONFIG = {
   anonKey: "sb_publishable_ogvv4aULMe1_13Tla4y-ZQ_JLOdEoCt",
 };
 const OVERDUE_HOURS = 48;
+const RECENT_ORDER_LIMIT = 500;
+const ORDER_MANAGEMENT_SELECT = "*, order_items(id,barcode,item_status,product_name,spec)";
 const APP_MODE = document.body?.dataset.appMode || new URLSearchParams(window.location.search).get("page") || "admin";
 const ROLE_LABELS = {
   admin: "后台",
@@ -124,6 +126,7 @@ const factoryScanHistory = [];
 let recognitionRules = [];
 const imagePreviewMap = new Map();
 let orderManagementRows = [];
+let orderManagementLoad = null;
 let orderDashboardFilter = "";
 let courierDashboardFilter = "";
 let factoryDashboardFilter = "";
@@ -2598,14 +2601,23 @@ function formatOverdueAge(order) {
 }
 
 async function loadOrderManagement() {
-  const { data, error } = await sb
+  const load = { client: sb, userId: currentUser?.id, status: "loading-recent" };
+  orderManagementLoad = load;
+  const { data, error } = await load.client
     .from("orders")
-    .select("*, order_items(id,barcode,item_status,product_name,spec)")
+    .select(ORDER_MANAGEMENT_SELECT)
     .order("created_at", { ascending: false })
-    .limit(500);
+    .order("id", { ascending: true })
+    .limit(RECENT_ORDER_LIMIT);
+  if (!isCurrentOrderManagementLoad(load)) return;
   if (error) return setMessage("adminOrders", error.message, "warn");
   orderManagementRows = data || [];
-  renderOrderManagement();
+  load.status = orderManagementRows.length < RECENT_ORDER_LIMIT ? "complete" : "recent";
+  return renderOrderManagement();
+}
+
+function isCurrentOrderManagementLoad(load) {
+  return orderManagementLoad === load && sb === load.client && currentUser?.id === load.userId;
 }
 
 function renderOrderManagement() {
@@ -2630,7 +2642,7 @@ function renderOrderManagement() {
         <input id="orderEndDate" class="input" type="date" value="${escapeHtml(endDate)}" />
         <button id="clearOrderFiltersBtn" class="ghost" type="button">清空筛选</button>
       </div>
-      <p id="orderFilterSummary" class="hint">时间筛选优先按付款时间，付款时间为空时按下单时间。</p>
+      <p id="orderFilterSummary" class="hint" aria-live="polite"></p>
       <div class="table-wrap">
         <table>
           <thead><tr><th>订单号</th><th>姓名</th><th>电话</th><th>宿舍</th><th>状态</th><th>积压时长</th><th>责任环节</th><th>付款时间</th><th>下单时间</th><th>物品数</th><th>操作</th></tr></thead>
@@ -2639,15 +2651,11 @@ function renderOrderManagement() {
       </div>
     </section>`;
   bindOrderManagementFilters();
-  applyOrderFilters();
+  return applyOrderFilters();
 }
 
-function filteredOrderRows() {
-  const keyword = text($("orderSearch")?.value).toLowerCase();
-  const selectedStatus = text($("orderStatusFilter")?.value);
-  const startDate = text($("orderStartDate")?.value);
-  const endDate = text($("orderEndDate")?.value);
-  return orderManagementRows.filter((order) => {
+function filteredOrderRows(rows, { keyword, selectedStatus, startDate, endDate }) {
+  return rows.filter((order) => {
     const searchable = `${order.order_no} ${order.customer_name} ${order.phone} ${order.school} ${order.campus} ${orderCampusName(order)} ${order.building} ${order.address} ${order.source === "douyin" ? "抖音团购" : ""} ${(order.order_items || []).map((item) => `${item.barcode} ${item.product_name} ${item.spec}`).join(" ")}`.toLowerCase();
     if (keyword && !searchable.includes(keyword)) return false;
     if (selectedStatus && order.order_status !== selectedStatus) return false;
@@ -2656,11 +2664,45 @@ function filteredOrderRows() {
   });
 }
 
-function applyOrderFilters() {
-  const rows = filteredOrderRows();
-  if ($("orderRows")) $("orderRows").innerHTML = renderOrderRows(rows);
-  const prefix = orderDashboardFilter ? `${overdueFilterLabel()}共 ${rows.length} 单；` : `共 ${rows.length} 单；`;
-  if ($("orderFilterSummary")) $("orderFilterSummary").textContent = `${prefix}时间筛选优先按付款时间，付款时间为空时按下单时间。`;
+async function applyOrderFilters() {
+  const load = orderManagementLoad;
+  const table = $("orderRows");
+  const summary = $("orderFilterSummary");
+  if (!table || !summary || !load || !isCurrentOrderManagementLoad(load) || load.status === "loading-recent") return;
+
+  const filters = {
+    keyword: text($("orderSearch")?.value).toLowerCase(),
+    selectedStatus: text($("orderStatusFilter")?.value),
+    startDate: text($("orderStartDate")?.value),
+    endDate: text($("orderEndDate")?.value),
+  };
+  const searchHistory = Boolean(filters.keyword || filters.selectedStatus || filters.startDate || filters.endDate || orderDashboardFilter);
+
+  if (searchHistory && load.status !== "complete") {
+    summary.textContent = "正在搜索全部订单…";
+    table.replaceChildren();
+    if (load.status === "loading-history") return;
+    load.status = "loading-history";
+    const { data, error } = await loadRowsById(() => load.client.from("orders").select(ORDER_MANAGEMENT_SELECT));
+    if (!isCurrentOrderManagementLoad(load)) return;
+    if (error) {
+      load.status = "recent";
+      if (summary.textContent === "正在搜索全部订单…") {
+        summary.textContent = "历史订单读取失败，请重新输入搜索词或刷新后重试。";
+      }
+      return;
+    }
+    orderManagementRows = data.sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at)
+      || left.id.localeCompare(right.id));
+    load.status = "complete";
+    return applyOrderFilters();
+  }
+
+  const rows = searchHistory ? filteredOrderRows(orderManagementRows, filters) : orderManagementRows.slice(0, RECENT_ORDER_LIMIT);
+  table.innerHTML = renderOrderRows(rows);
+  const scope = searchHistory ? "全部订单" : "最近订单";
+  const overdue = orderDashboardFilter ? `${overdueFilterLabel()}，` : "";
+  summary.textContent = `${scope}，${overdue}共 ${rows.length} 单。时间筛选优先按付款时间，付款时间为空时按下单时间。`;
 }
 
 function renderOrderRows(rows) {
@@ -7819,7 +7861,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=92", { updateViaCache: "none" })
+    .register("./sw.js?v=93", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
