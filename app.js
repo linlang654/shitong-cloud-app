@@ -21,6 +21,7 @@ const TEMP_SUPABASE_CONFIG = {
 };
 const OVERDUE_HOURS = 48;
 const RECENT_ORDER_LIMIT = 500;
+const ORDER_MANAGEMENT_PAGE_SIZE = 50;
 const ORDER_MANAGEMENT_SELECT = "*, order_items(id,barcode,item_status,product_name,spec)";
 const APP_MODE = document.body?.dataset.appMode || new URLSearchParams(window.location.search).get("page") || "admin";
 const ROLE_LABELS = {
@@ -774,6 +775,7 @@ function clearDashboardFilter(scope) {
   }
   if (scope === "orders") {
     orderDashboardFilter = "";
+    if (orderManagementLoad) orderManagementLoad.page = 0;
     renderActiveFilter("orderActiveFilter", "", "orders");
     applyOrderFilters();
   }
@@ -2131,9 +2133,8 @@ function ensurePdfLib() {
 }
 
 async function loadAdmin() {
-  await loadAdminOverview();
   const activeSection = document.querySelector(".subtab.active")?.dataset.adminSection || "overview";
-  if (activeSection !== "overview") await loadAdminSection(activeSection);
+  await loadAdminSection(activeSection);
 }
 
 async function loadAdminSection(sectionName) {
@@ -2601,8 +2602,21 @@ function formatOverdueAge(order) {
 }
 
 async function loadOrderManagement() {
-  const load = { client: sb, userId: currentUser?.id, status: "loading-recent" };
+  const previous = orderManagementLoad;
+  const load = {
+    client: sb, userId: currentUser?.id, remote: isWashLabelBusinessProject(), status: "loading-recent",
+    page: 0, total: 0, request: 0, timer: null,
+  };
+  if (previous) clearTimeout(previous.timer);
   orderManagementLoad = load;
+  if (load.remote) {
+    orderManagementRows = [];
+    return renderOrderManagement();
+  }
+  return loadRecentOrderManagement(load);
+}
+
+async function loadRecentOrderManagement(load) {
   const { data, error } = await load.client
     .from("orders")
     .select(ORDER_MANAGEMENT_SELECT)
@@ -2649,6 +2663,11 @@ function renderOrderManagement() {
           <tbody id="orderRows"></tbody>
         </table>
       </div>
+      <div class="toolbar wrap hidden" id="orderPagination" aria-label="订单列表分页">
+        <button id="orderPreviousPage" class="ghost small" type="button" disabled>上一页</button>
+        <span id="orderPageSummary" class="hint"></span>
+        <button id="orderNextPage" class="ghost small" type="button" disabled>下一页</button>
+      </div>
     </section>`;
   bindOrderManagementFilters();
   return applyOrderFilters();
@@ -2668,7 +2687,7 @@ async function applyOrderFilters() {
   const load = orderManagementLoad;
   const table = $("orderRows");
   const summary = $("orderFilterSummary");
-  if (!table || !summary || !load || !isCurrentOrderManagementLoad(load) || load.status === "loading-recent") return;
+  if (!table || !summary || !load || !isCurrentOrderManagementLoad(load)) return;
 
   const filters = {
     keyword: text($("orderSearch")?.value).toLowerCase(),
@@ -2676,6 +2695,8 @@ async function applyOrderFilters() {
     startDate: text($("orderStartDate")?.value),
     endDate: text($("orderEndDate")?.value),
   };
+  if (load.remote) return loadOrderManagementPage(load, filters, table, summary);
+  if (load.status === "loading-recent") return;
   const searchHistory = Boolean(filters.keyword || filters.selectedStatus || filters.startDate || filters.endDate || orderDashboardFilter);
 
   if (searchHistory && load.status !== "complete") {
@@ -2705,6 +2726,50 @@ async function applyOrderFilters() {
   summary.textContent = `${scope}，${overdue}共 ${rows.length} 单。时间筛选优先按付款时间，付款时间为空时按下单时间。`;
 }
 
+async function loadOrderManagementPage(load, filters, table, summary) {
+  clearTimeout(load.timer);
+  const request = ++load.request;
+  const previous = $("orderPreviousPage");
+  const next = $("orderNextPage");
+  previous.disabled = next.disabled = true;
+  table.replaceChildren();
+  summary.textContent = "正在查询订单…";
+  try {
+    const { data, error } = await load.client.rpc("search_admin_orders", {
+      p_keyword: filters.keyword,
+      p_status: filters.selectedStatus,
+      p_start_date: filters.startDate || null,
+      p_end_date: filters.endDate || null,
+      p_overdue: orderDashboardFilter,
+      p_offset: load.page * ORDER_MANAGEMENT_PAGE_SIZE,
+    });
+    if (!isCurrentOrderManagementLoad(load) || request !== load.request) return;
+    if (error?.code === "PGRST202" || error?.code === "42883") {
+      load.remote = false;
+      return loadRecentOrderManagement(load);
+    }
+    if (error) throw error;
+    orderManagementRows = data.rows || [];
+    load.total = data.total || 0;
+    const pageCount = Math.max(1, Math.ceil(load.total / ORDER_MANAGEMENT_PAGE_SIZE));
+    if (load.page >= pageCount) {
+      load.page = pageCount - 1;
+      return loadOrderManagementPage(load, filters, table, summary);
+    }
+    table.innerHTML = renderOrderRows(orderManagementRows);
+    const overdue = orderDashboardFilter ? `${overdueFilterLabel()}，` : "";
+    summary.textContent = `全部订单，${overdue}共 ${load.total} 单。时间筛选优先按付款时间，付款时间为空时按下单时间。`;
+    $("orderPagination").classList.toggle("hidden", pageCount <= 1);
+    $("orderPageSummary").textContent = `第 ${load.page + 1} / ${pageCount} 页`;
+    previous.disabled = load.page === 0;
+    next.disabled = load.page + 1 >= pageCount;
+  } catch (error) {
+    if (!isCurrentOrderManagementLoad(load) || request !== load.request) return;
+    $("orderPagination").classList.add("hidden");
+    summary.textContent = "订单读取失败，请重新搜索或刷新后重试。";
+  }
+}
+
 function renderOrderRows(rows) {
   return rows.map((order) => `
     <tr>
@@ -2723,16 +2788,38 @@ function renderOrderRows(rows) {
       <td>${escapeHtml(`${overdueStage(order).label}｜${overdueStage(order).responsible}`)}</td>
       <td>${escapeHtml(formatDateTime(order.pay_time))}</td>
       <td>${escapeHtml(formatDateTime(order.order_time))}</td>
-      <td>${order.order_items?.length || 0}</td>
+      <td>${order.item_count ?? order.order_items?.length ?? 0}</td>
       <td><button class="ghost small" type="button" data-detail="${order.id}">详情</button></td>
     </tr>`).join("") || '<tr><td colspan="11">暂无符合条件的订单</td></tr>';
 }
 
 function bindOrderManagementFilters() {
-  on("orderSearch", "input", applyOrderFilters);
-  on("orderStatusFilter", "change", applyOrderFilters);
-  on("orderStartDate", "change", applyOrderFilters);
-  on("orderEndDate", "change", applyOrderFilters);
+  const applyFirstPage = () => {
+    orderManagementLoad.page = 0;
+    applyOrderFilters();
+  };
+  on("orderSearch", "input", () => {
+    const load = orderManagementLoad;
+    if (!load.remote) return applyFirstPage();
+    load.request += 1;
+    $("orderPreviousPage").disabled = $("orderNextPage").disabled = true;
+    clearTimeout(load.timer);
+    load.timer = setTimeout(applyFirstPage, 250);
+  });
+  on("orderStatusFilter", "change", applyFirstPage);
+  on("orderStartDate", "change", applyFirstPage);
+  on("orderEndDate", "change", applyFirstPage);
+  on("orderPreviousPage", "click", () => {
+    if (orderManagementLoad.page <= 0) return;
+    orderManagementLoad.page -= 1;
+    applyOrderFilters();
+  });
+  on("orderNextPage", "click", () => {
+    const load = orderManagementLoad;
+    if ((load.page + 1) * ORDER_MANAGEMENT_PAGE_SIZE >= load.total) return;
+    load.page += 1;
+    applyOrderFilters();
+  });
   on("clearOrderFiltersBtn", "click", () => {
     orderDashboardFilter = "";
     if ($("orderSearch")) $("orderSearch").value = "";
@@ -2740,7 +2827,7 @@ function bindOrderManagementFilters() {
     if ($("orderStartDate")) $("orderStartDate").value = "";
     if ($("orderEndDate")) $("orderEndDate").value = "";
     renderActiveFilter("orderActiveFilter", "", "orders");
-    applyOrderFilters();
+    applyFirstPage();
   });
 }
 
@@ -7861,7 +7948,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=93", { updateViaCache: "none" })
+    .register("./sw.js?v=94", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }

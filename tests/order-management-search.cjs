@@ -8,7 +8,7 @@ const source = readFileSync(join(__dirname, '../app.js'), 'utf8');
 const startup = source.lastIndexOf('\nif ("serviceWorker" in navigator)');
 assert.ok(startup > 0);
 
-function setup() {
+function setup({ rpc } = {}) {
   const rows = Array.from({ length: 681 }, (_, index) => ({
     id: String(index + 1).padStart(4, '0'),
     order_no: `order-${index + 1}`,
@@ -20,6 +20,7 @@ function setup() {
   const requests = [];
   let failCursor;
   const client = {
+    rpc,
     from(table) {
       assert.equal(table, 'orders');
       let cursor = '', limit, newestFirst = false;
@@ -39,22 +40,30 @@ function setup() {
     },
   };
   const nodes = {
-    orderSearch: { value: '' },
-    orderStatusFilter: { value: '' },
+    orderSearch: { value: '', addEventListener(event, listener) { this[event] = listener; } },
+    orderStatusFilter: { value: '', addEventListener(event, listener) { this[event] = listener; } },
+    orderNextPage: { addEventListener(event, listener) { this[event] = listener; } },
+    orderPreviousPage: { addEventListener(event, listener) { this[event] = listener; } },
+    orderPageSummary: {},
+    orderPagination: { classList: { toggle() {}, add() {} } },
     orderRows: { replaceChildren() { this.innerHTML = ''; } },
     orderFilterSummary: {},
   };
   const context = vm.createContext({
-    URL, URLSearchParams,
+    URL, URLSearchParams, clearTimeout, setTimeout,
     window: { location: { search: '' } },
     document: { getElementById: (id) => nodes[id] },
-    client,
+    client, useServerSearch: Boolean(rpc),
   });
   vm.runInContext(source.slice(0, startup), context);
   vm.runInContext(`
     sb = client;
     currentUser = { id: 'staff' };
-    renderOrderManagement = applyOrderFilters;
+    isWashLabelBusinessProject = () => useServerSearch;
+    renderOrderManagement = () => {
+      bindOrderManagementFilters();
+      return applyOrderFilters();
+    };
     renderOrderRows = (rows) => rows.map((row) => row.order_no).join(', ');
   `, context);
   return { context, nodes, requests, failAt: (cursor) => { failCursor = cursor; } };
@@ -100,4 +109,55 @@ test('failed historical read shows an error and a later search retries from page
   nodes.orderSearch.value = '261101002';
   await context.applyOrderFilters();
   assert.equal(nodes.orderRows.innerHTML, 'order-2');
+});
+
+test('business search sends filters to the server and loads only the requested page', async () => {
+  const calls = [];
+  const { context, nodes, requests } = setup({
+    rpc: async (name, params) => {
+      assert.equal(name, 'search_admin_orders');
+      calls.push(structuredClone(params));
+      const orderNo = params.p_keyword ? 'old-match' : `page-start-${params.p_offset}`;
+      return { data: { rows: [{ order_no: orderNo }], total: params.p_keyword ? 1 : 125 } };
+    },
+  });
+  await context.loadOrderManagement();
+  assert.deepEqual(requests, []);
+  assert.equal(calls[0].p_offset, 0);
+  assert.equal(nodes.orderPageSummary.textContent, '第 1 / 3 页');
+  nodes.orderNextPage.click();
+  await new Promise(setImmediate);
+  assert.equal(calls[1].p_offset, 50);
+  assert.equal(nodes.orderRows.innerHTML, 'page-start-50');
+
+  nodes.orderSearch.value = '139';
+  nodes.orderSearch.input();
+  nodes.orderSearch.value = '13900000001';
+  nodes.orderSearch.input();
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  assert.equal(calls.length, 3);
+  assert.equal(calls[2].p_keyword, '13900000001');
+  assert.equal(calls[2].p_offset, 0);
+  assert.equal(nodes.orderRows.innerHTML, 'old-match');
+});
+
+test('a slow earlier request cannot overwrite newer business search results', async () => {
+  const responses = [];
+  const { context, nodes } = setup({
+    rpc: (_name, params) => new Promise((resolve) => responses.push({
+      complete: () => resolve({ data: { rows: [{ order_no: params.p_keyword || 'initial' }], total: 1 } }),
+    })),
+  });
+  const initial = context.loadOrderManagement();
+  responses.shift().complete();
+  await initial;
+  nodes.orderSearch.value = 'old';
+  const previous = context.applyOrderFilters();
+  nodes.orderSearch.value = 'new';
+  const latest = context.applyOrderFilters();
+  responses.pop().complete();
+  await latest;
+  responses.pop().complete();
+  await previous;
+  assert.equal(nodes.orderRows.innerHTML, 'new');
 });

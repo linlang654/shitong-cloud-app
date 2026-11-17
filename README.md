@@ -56,6 +56,10 @@
 
 第二次打印时可以点「全选待编号」，也可以手动勾选。要重印某一批，在已保存的打印批次中选择该批并点击「补打整批」，系统按原顺序导出、使用原条码和最新联系电话。
 
+## 订单管理搜索
+
+发布 build 94 前，在当前业务库（`bjlimqtrkdokmjpdcraa`）执行 `supabase-admin-order-search-migration.sql`。后台按手机号、订单号、水洗标等条件检索全部历史订单，每页显示 50 单。
+
 ## 抖音团购后台录单
 
 发布前，在当前业务库（`bjlimqtrkdokmjpdcraa`）执行 `supabase-manual-wash-order-migration.sql`。
