@@ -58,7 +58,7 @@
 
 ## 订单管理搜索
 
-发布 build 94 前，在当前业务库（`bjlimqtrkdokmjpdcraa`）执行 `supabase-admin-order-search-migration.sql`。后台按手机号、订单号、水洗标等条件检索全部历史订单，每页显示 50 单。
+发布 build 95 前，在当前业务库（`bjlimqtrkdokmjpdcraa`）执行更新后的 `supabase-admin-order-search-migration.sql`。后台筛选超时天数时，按距订单上次更新的时长计算，每满 24 小时算 1 天，并继续使用每页 50 单的分页搜索。
 
 ## 抖音团购后台录单
 

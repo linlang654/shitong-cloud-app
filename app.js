@@ -773,12 +773,6 @@ function clearDashboardFilter(scope) {
     factoryDashboardFilter = "";
     loadFactoryItems();
   }
-  if (scope === "orders") {
-    orderDashboardFilter = "";
-    if (orderManagementLoad) orderManagementLoad.page = 0;
-    renderActiveFilter("orderActiveFilter", "", "orders");
-    applyOrderFilters();
-  }
 }
 
 function field(row, names) {
@@ -2579,19 +2573,28 @@ function summarizeOverdueStages(rows) {
 
 function matchesOverdueDashboardFilter(order, filter = orderDashboardFilter) {
   if (!filter) return true;
-  if (filter === "overdue") return isOverdueOrder(order);
-  if (filter.startsWith("overdue-")) return overdueBucket(order) === filter;
-  return true;
+  if (!isOverdueOrder(order)) return false;
+  if (filter === "overdue") return true;
+  const days = Math.floor(overdueAgeHours(order) / 24);
+  if (filter === "overdue-8-plus") return days >= 8;
+  const exactDays = exactOverdueDays(filter);
+  return exactDays ? days === exactDays : overdueBucket(order) === filter;
+}
+
+function exactOverdueDays(filter) {
+  return Number(/^overdue-day-([2-9]|[1-9][0-9]{1,5})$/.exec(filter)?.[1]) || 0;
 }
 
 function overdueFilterLabel(filter = orderDashboardFilter) {
   const labels = {
-    overdue: `超过 ${OVERDUE_HOURS} 小时未更新且未送达`,
+    overdue: "全部超时订单",
     "overdue-2": "超时 2 天",
-    "overdue-3-5": "超时 3～5 天",
-    "overdue-5-plus": "超时 5 天以上",
+    "overdue-3-5": "超时 3～4 天",
+    "overdue-5-plus": "超时 5 天及以上",
+    "overdue-8-plus": "超时 8 天及以上",
   };
-  return labels[filter] || "";
+  const days = exactOverdueDays(filter);
+  return days ? `超时 ${days} 天` : labels[filter] || "";
 }
 
 function formatOverdueAge(order) {
@@ -2639,19 +2642,25 @@ function renderOrderManagement() {
   const selectedStatus = text($("orderStatusFilter")?.value);
   const startDate = text($("orderStartDate")?.value);
   const endDate = text($("orderEndDate")?.value);
+  const overdueOptions = ["", "overdue", "overdue-2", "overdue-day-3", "overdue-day-4", "overdue-day-5",
+    "overdue-day-6", "overdue-day-7", "overdue-8-plus", "overdue-3-5", "overdue-5-plus"];
+  const customDays = !overdueOptions.includes(orderDashboardFilter) ? exactOverdueDays(orderDashboardFilter) : 0;
   $("adminOrders").innerHTML = `
     <section class="panel table-panel">
       <div class="toolbar wrap"><h2>订单管理</h2>${canCreateDouyinOrder() ? '<button class="ghost small" type="button" data-new-manual-order>新增抖音团购订单</button>' : ""}</div>
       <div id="orderManualOrderStatus" aria-live="polite"></div>
-      <div id="orderActiveFilter" class="active-filter ${orderDashboardFilter ? "" : "hidden"}">
-        ${orderDashboardFilter ? `<span>驾驶舱筛选：${escapeHtml(overdueFilterLabel())}</span><button class="ghost small-btn" type="button" data-clear-dashboard-filter="orders">清除筛选</button>` : ""}
-      </div>
       <div class="toolbar wrap filter-toolbar">
         <input id="orderSearch" class="input" placeholder="搜索订单号、姓名、电话、学校、楼栋、水洗标" value="${escapeHtml(keyword)}" />
         <select id="orderStatusFilter" class="input">
           <option value="">全部状态</option>
           ${ORDER_STATUSES.map((status) => `<option value="${escapeHtml(status)}" ${status === selectedStatus ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}
         </select>
+        <select id="orderOverdueFilter" class="input" aria-label="超时天数">
+          ${overdueOptions.map((filter) => `<option value="${filter}" ${filter === orderDashboardFilter ? "selected" : ""}>${filter ? overdueFilterLabel(filter) : "超时天数（不限）"}</option>`).join("")}
+          <option value="custom" ${customDays ? "selected" : ""}>指定超时天数</option>
+        </select>
+        <input id="orderCustomOverdueDays" class="input order-overdue-days ${customDays ? "" : "hidden"}" type="number"
+          min="2" max="999999" step="1" value="${customDays || ""}" placeholder="输入天数" aria-label="指定超时天数（至少 2 天）" />
         <input id="orderStartDate" class="input" type="date" value="${escapeHtml(startDate)}" />
         <input id="orderEndDate" class="input" type="date" value="${escapeHtml(endDate)}" />
         <button id="clearOrderFiltersBtn" class="ghost" type="button">清空筛选</button>
@@ -2723,7 +2732,13 @@ async function applyOrderFilters() {
   table.innerHTML = renderOrderRows(rows);
   const scope = searchHistory ? "全部订单" : "最近订单";
   const overdue = orderDashboardFilter ? `${overdueFilterLabel()}，` : "";
-  summary.textContent = `${scope}，${overdue}共 ${rows.length} 单。时间筛选优先按付款时间，付款时间为空时按下单时间。`;
+  summary.textContent = `${scope}，${overdue}共 ${rows.length} 单。${orderFilterHelp()}`;
+}
+
+function orderFilterHelp() {
+  return orderDashboardFilter
+    ? "超时按距上次更新的时长计算，每满 24 小时算 1 天。"
+    : "时间筛选优先按付款时间，付款时间为空时按下单时间。";
 }
 
 async function loadOrderManagementPage(load, filters, table, summary) {
@@ -2758,7 +2773,7 @@ async function loadOrderManagementPage(load, filters, table, summary) {
     }
     table.innerHTML = renderOrderRows(orderManagementRows);
     const overdue = orderDashboardFilter ? `${overdueFilterLabel()}，` : "";
-    summary.textContent = `全部订单，${overdue}共 ${load.total} 单。时间筛选优先按付款时间，付款时间为空时按下单时间。`;
+    summary.textContent = `全部订单，${overdue}共 ${load.total} 单。${orderFilterHelp()}`;
     $("orderPagination").classList.toggle("hidden", pageCount <= 1);
     $("orderPageSummary").textContent = `第 ${load.page + 1} / ${pageCount} 页`;
     previous.disabled = load.page === 0;
@@ -2809,6 +2824,23 @@ function bindOrderManagementFilters() {
   on("orderStatusFilter", "change", applyFirstPage);
   on("orderStartDate", "change", applyFirstPage);
   on("orderEndDate", "change", applyFirstPage);
+  const overdueSelect = $("orderOverdueFilter");
+  const customDays = $("orderCustomOverdueDays");
+  const applyOverdue = () => {
+    const isCustom = overdueSelect.value === "custom";
+    if (isCustom && !customDays.reportValidity()) return;
+    const exactFilter = `overdue-day-${customDays.valueAsNumber}`;
+    orderDashboardFilter = isCustom ? (exactOverdueDays(exactFilter) ? exactFilter : "overdue") : overdueSelect.value;
+    applyFirstPage();
+  };
+  on("orderOverdueFilter", "change", () => {
+    const isCustom = overdueSelect.value === "custom";
+    customDays.classList.toggle("hidden", !isCustom);
+    customDays.value = "";
+    applyOverdue();
+    if (isCustom) customDays.focus();
+  });
+  on("orderCustomOverdueDays", "change", applyOverdue);
   on("orderPreviousPage", "click", () => {
     if (orderManagementLoad.page <= 0) return;
     orderManagementLoad.page -= 1;
@@ -2826,7 +2858,11 @@ function bindOrderManagementFilters() {
     if ($("orderStatusFilter")) $("orderStatusFilter").value = "";
     if ($("orderStartDate")) $("orderStartDate").value = "";
     if ($("orderEndDate")) $("orderEndDate").value = "";
-    renderActiveFilter("orderActiveFilter", "", "orders");
+    if (overdueSelect) overdueSelect.value = "";
+    if (customDays) {
+      customDays.value = "";
+      customDays.classList.add("hidden");
+    }
     applyFirstPage();
   });
 }
@@ -7948,7 +7984,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=94", { updateViaCache: "none" })
+    .register("./sw.js?v=95", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }

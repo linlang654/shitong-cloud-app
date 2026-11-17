@@ -42,6 +42,15 @@ function setup({ rpc } = {}) {
   const nodes = {
     orderSearch: { value: '', addEventListener(event, listener) { this[event] = listener; } },
     orderStatusFilter: { value: '', addEventListener(event, listener) { this[event] = listener; } },
+    orderOverdueFilter: { value: '', addEventListener(event, listener) { this[event] = listener; } },
+    orderCustomOverdueDays: {
+      value: '',
+      get valueAsNumber() { return this.value ? Number(this.value) : NaN; },
+      classList: { toggle() {} },
+      addEventListener(event, listener) { this[event] = listener; },
+      reportValidity() { return true; },
+      focus() {},
+    },
     orderNextPage: { addEventListener(event, listener) { this[event] = listener; } },
     orderPreviousPage: { addEventListener(event, listener) { this[event] = listener; } },
     orderPageSummary: {},
@@ -160,4 +169,54 @@ test('a slow earlier request cannot overwrite newer business search results', as
   responses.pop().complete();
   await previous;
   assert.equal(nodes.orderRows.innerHTML, 'new');
+});
+
+test('changing overdue days preserves other filters and restarts at page one', async () => {
+  const calls = [];
+  const { context, nodes } = setup({
+    rpc: async (_name, params) => {
+      calls.push(structuredClone(params));
+      return { data: { rows: [], total: 125 } };
+    },
+  });
+  await context.loadOrderManagement();
+  nodes.orderNextPage.click();
+  await new Promise(setImmediate);
+  assert.equal(calls.at(-1).p_offset, 50);
+
+  nodes.orderStatusFilter.value = '已取件';
+  nodes.orderSearch.value = '订单';
+  nodes.orderOverdueFilter.value = 'overdue-day-4';
+  nodes.orderOverdueFilter.change();
+  await new Promise(setImmediate);
+  assert.deepEqual(calls.at(-1), {
+    p_keyword: '订单', p_status: '已取件', p_start_date: null, p_end_date: null,
+    p_overdue: 'overdue-day-4', p_offset: 0,
+  });
+  assert.match(nodes.orderFilterSummary.textContent, /超时 4 天/);
+
+  nodes.orderOverdueFilter.value = 'custom';
+  nodes.orderOverdueFilter.change();
+  await new Promise(setImmediate);
+  assert.equal(calls.at(-1).p_overdue, 'overdue');
+  nodes.orderCustomOverdueDays.value = '14';
+  nodes.orderCustomOverdueDays.change();
+  await new Promise(setImmediate);
+  assert.equal(calls.at(-1).p_overdue, 'overdue-day-14');
+  assert.match(nodes.orderFilterSummary.textContent, /超时 14 天/);
+});
+
+test('overdue filters count complete 24-hour periods and exclude closed orders', () => {
+  const { context } = setup();
+  const order = (hours, status = '已取件') => ({
+    updated_at: new Date(Date.now() - hours * 3600000).toISOString(),
+    order_status: status,
+  });
+  assert.equal(context.matchesOverdueDashboardFilter(order(95), 'overdue-day-3'), true);
+  assert.equal(context.matchesOverdueDashboardFilter(order(97), 'overdue-day-3'), false);
+  assert.equal(context.matchesOverdueDashboardFilter(order(97), 'overdue-day-4'), true);
+  assert.equal(context.matchesOverdueDashboardFilter(order(97), 'overdue-3-5'), true);
+  assert.equal(context.matchesOverdueDashboardFilter(order(121), 'overdue-3-5'), false);
+  assert.equal(context.matchesOverdueDashboardFilter(order(193), 'overdue-8-plus'), true);
+  assert.equal(context.matchesOverdueDashboardFilter(order(97, '已送达'), 'overdue-day-4'), false);
 });

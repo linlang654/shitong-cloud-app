@@ -335,6 +335,10 @@ body.has-access .layout {
   padding: 6px 8px;
 }
 
+.order-overdue-days.input {
+  flex: 0 1 110px;
+}
+
 #loginPanel {
   display: grid;
   gap: 8px;

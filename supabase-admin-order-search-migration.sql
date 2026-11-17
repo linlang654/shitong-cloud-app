@@ -1,4 +1,4 @@
--- Apply to the current business project bjlimqtrkdokmjpdcraa before publishing build 94.
+-- Apply to the current business project bjlimqtrkdokmjpdcraa before publishing build 95.
 begin;
 
 create index if not exists order_items_order_id_idx on public.order_items (order_id);
@@ -42,7 +42,11 @@ begin
             when 'overdue-2' then o.updated_at > now() - interval '72 hours'
             when 'overdue-3-5' then o.updated_at <= now() - interval '72 hours' and o.updated_at > now() - interval '120 hours'
             when 'overdue-5-plus' then o.updated_at <= now() - interval '120 hours'
-            else false
+            when 'overdue-8-plus' then o.updated_at <= now() - interval '192 hours'
+            else case when p_overdue ~ '^overdue-day-([2-9]|[1-9][0-9]{1,5})$'
+              then floor(extract(epoch from (now() - o.updated_at)) / 86400) = split_part(p_overdue, '-', 3)::integer
+              else false
+            end
           end
       end
       and (keyword = ''
