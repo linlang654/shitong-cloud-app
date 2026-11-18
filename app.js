@@ -128,6 +128,8 @@ let recognitionRules = [];
 const imagePreviewMap = new Map();
 let orderManagementRows = [];
 let orderManagementLoad = null;
+const orderStatusEditsBusy = new Set();
+let orderStatusStatsTimer;
 let orderDashboardFilter = "";
 let courierDashboardFilter = "";
 let factoryDashboardFilter = "";
@@ -2041,7 +2043,7 @@ async function upsertPickupTask(orderId, pickupDate) {
 }
 
 async function insertLog({ orderId, itemId = null, barcode = "", status, note = "" }) {
-  await sb.from("status_logs").insert({
+  return sb.from("status_logs").insert({
     order_id: orderId,
     item_id: itemId,
     barcode: pendingWashLabelPrefix(barcode) ? null : barcode,
@@ -2785,6 +2787,24 @@ async function loadOrderManagementPage(load, filters, table, summary) {
   }
 }
 
+function orderStatusIsLocked(status) {
+  return status === "已退单" || status === "已完结";
+}
+
+function renderOrderStatusOptions(status) {
+  const currentOption = status === "待补取"
+    ? '<option value="待补取" selected disabled>待补取（按水洗标处理）</option>'
+    : orderStatusIsLocked(status)
+      ? `<option value="${escapeHtml(status)}" selected disabled>${escapeHtml(status)}（自动完结）</option>`
+      : "";
+  return currentOption + ORDER_EDITABLE_STATUSES.map((option) => `<option value="${escapeHtml(option)}" ${option === status ? "selected" : ""}>${escapeHtml(option)}</option>`).join("");
+}
+
+function orderWorkStageLabel(order) {
+  const stage = overdueStage(order);
+  return `${stage.label}｜${stage.responsible}`;
+}
+
 function renderOrderRows(rows) {
   return rows.map((order) => `
     <tr>
@@ -2793,14 +2813,15 @@ function renderOrderRows(rows) {
       <td>${escapeHtml(order.phone)}</td>
       <td>${escapeHtml(`${order.school || ""}${orderCampusName(order)}${order.building || ""}`)}</td>
       <td>
-        <select class="input compact-input" data-order-status="${order.id}" ${["已退单", "已完结"].includes(order.order_status) ? "disabled" : ""}>
-          ${order.order_status === "待补取" ? '<option value="待补取" selected disabled>待补取（按水洗标处理）</option>' : ""}
-          ${["已退单", "已完结"].includes(order.order_status) ? `<option value="${escapeHtml(order.order_status)}" selected disabled>${escapeHtml(order.order_status)}（自动完结）</option>` : ""}
-          ${ORDER_EDITABLE_STATUSES.map((status) => `<option value="${escapeHtml(status)}" ${status === order.order_status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}
+        <select class="input compact-input order-status-control" data-order-status="${escapeHtml(order.id)}"
+          aria-label="订单 ${escapeHtml(order.order_no)} 状态"
+          ${orderStatusIsLocked(order.order_status) || orderStatusEditsBusy.has(order.id) ? "disabled" : ""}>
+          ${renderOrderStatusOptions(order.order_status)}
         </select>
+        <small class="order-status-feedback" data-order-status-feedback role="status">${orderStatusEditsBusy.has(order.id) ? "保存中…" : ""}</small>
       </td>
-      <td>${escapeHtml(formatOverdueAge(order))}</td>
-      <td>${escapeHtml(`${overdueStage(order).label}｜${overdueStage(order).responsible}`)}</td>
+      <td data-order-overdue-age>${escapeHtml(formatOverdueAge(order))}</td>
+      <td data-order-work-stage>${escapeHtml(orderWorkStageLabel(order))}</td>
       <td>${escapeHtml(formatDateTime(order.pay_time))}</td>
       <td>${escapeHtml(formatDateTime(order.order_time))}</td>
       <td>${order.item_count ?? order.order_items?.length ?? 0}</td>
@@ -2867,31 +2888,92 @@ function bindOrderManagementFilters() {
   });
 }
 
-async function updateOrderStatus(orderId, status) {
-  if (status === "待补取") return alert("待补取必须在订单详情中按单个水洗标安排，不能整单修改。");
-  const now = new Date().toISOString();
-  const { data: itemRows, error: itemReadError } = await sb.from("order_items").select("id").eq("order_id", orderId);
-  if (itemReadError) return alert(`状态同步失败：${itemReadError.message}`);
+function setOrderStatusFeedback(select, message, state = "", detail = "") {
+  const feedback = select?.closest("tr")?.querySelector("[data-order-status-feedback]");
+  if (!feedback) return;
+  feedback.textContent = message;
+  feedback.dataset.state = state;
+  feedback.title = detail;
+}
+
+async function saveOrderStatusChange(client, orderId, status) {
+  const updatedAt = new Date().toISOString();
+  const { data: itemRows, error } = await client.from("order_items").select("id").eq("order_id", orderId);
+  if (error) throw error;
   const itemIds = (itemRows || []).map((item) => item.id).filter(Boolean);
   const updates = itemIds.length
-    ? [sb.from("order_items").update({ item_status: status, updated_at: now }).in("id", itemIds)]
-    : [sb.from("orders").update({ order_status: status, updated_at: now }).eq("id", orderId)];
+    ? [client.from("order_items").update({ item_status: status, updated_at: updatedAt }).in("id", itemIds)]
+    : [client.from("orders").update({ order_status: status, updated_at: updatedAt }).eq("id", orderId)];
   const pickupStatus = status === "待取件" || status === "未找到"
     ? status
     : ["已取件", "已入厂", "已出库", "配送中", "已送达"].includes(status)
       ? "已取件"
       : "";
   if (pickupStatus) {
-    updates.push(sb.from("pickup_tasks").update({ status: pickupStatus, updated_at: now }).eq("order_id", orderId));
+    updates.push(client.from("pickup_tasks").update({ status: pickupStatus, updated_at: updatedAt }).eq("order_id", orderId));
   }
-  const results = await Promise.all(updates);
-  const failure = results.find((result) => result.error)?.error;
-  if (failure) {
-    await refreshAll();
-    return alert(`状态同步失败：${failure.message}`);
+  const results = await Promise.allSettled(updates);
+  for (const result of results) {
+    if (result.status === "rejected") throw result.reason;
+    if (result.value.error) throw result.value.error;
   }
-  await insertLog({ orderId, status, note: `后台手动改状态为：${status}` });
-  await refreshAll();
+}
+
+async function updateOrderStatus(orderId, status, select) {
+  const order = orderManagementRows.find((row) => row.id === orderId);
+  if (!order || orderStatusEditsBusy.has(orderId)) return;
+  if (!ORDER_EDITABLE_STATUSES.includes(status) || orderStatusIsLocked(order.order_status)) {
+    select.value = order.order_status;
+    return;
+  }
+  const client = sb;
+  const userId = currentUser?.id;
+  orderStatusEditsBusy.add(orderId);
+  clearTimeout(orderStatusStatsTimer);
+  select.disabled = true;
+  setOrderStatusFeedback(select, "保存中…");
+
+  let failure = "";
+  let savedOrder;
+  try {
+    await saveOrderStatusChange(client, orderId, status);
+    if (sb === client && currentUser?.id === userId) {
+      const log = await insertLog({ orderId, status, note: `后台手动改状态为：${status}` });
+      if (log?.error) failure = `操作记录保存失败：${log.error.message}`;
+    }
+  } catch (error) {
+    failure = `状态同步失败：${error?.message || error}`;
+  }
+  try {
+    const { data, error } = await client.from("orders").select("order_status,updated_at").eq("id", orderId).maybeSingle();
+    if (error || !data) throw error || new Error("订单不可读取");
+    savedOrder = data;
+  } catch (error) {
+    failure = failure || `未能核对保存结果，请刷新后确认。 ${error?.message || error}`;
+  } finally {
+    orderStatusEditsBusy.delete(orderId);
+  }
+
+  if (sb !== client || currentUser?.id !== userId) return;
+  const cachedOrder = orderManagementRows.find((row) => row.id === orderId);
+  const currentOrder = Object.assign(cachedOrder || order, savedOrder);
+  const currentSelect = $("orderRows")?.querySelector(`[data-order-status="${CSS.escape(orderId)}"]`);
+  if (currentSelect) {
+    currentSelect.innerHTML = renderOrderStatusOptions(currentOrder.order_status);
+    currentSelect.disabled = orderStatusIsLocked(currentOrder.order_status);
+    const row = currentSelect.closest("tr");
+    row.querySelector("[data-order-overdue-age]").textContent = formatOverdueAge(currentOrder);
+    row.querySelector("[data-order-work-stage]").textContent = orderWorkStageLabel(currentOrder);
+    const changedByFlow = savedOrder && currentOrder.order_status !== status;
+    const feedback = failure ? "请核对状态" : changedByFlow ? "已同步" : "已保存";
+    const detail = failure || (changedByFlow ? `系统汇总状态为「${currentOrder.order_status}」。` : "");
+    setOrderStatusFeedback(currentSelect, feedback, failure ? "error" : "saved", detail);
+  }
+  if (!orderStatusEditsBusy.size) {
+    orderStatusStatsTimer = setTimeout(() => {
+      if (sb === client && currentUser?.id === userId) loadStats().catch(console.warn);
+    }, 500);
+  }
 }
 
 async function updateOrderItemStatus(itemId, orderId, barcode, status, selectElement) {
@@ -7959,7 +8041,7 @@ function bindEvents() {
       toggleFactoryOutboundOrder(factoryOutboundOrder.dataset.factoryOutboundOrder, factoryOutboundOrder.checked);
     }
     const statusSelect = event.target.closest("[data-order-status]");
-    if (statusSelect) updateOrderStatus(statusSelect.dataset.orderStatus, statusSelect.value);
+    if (statusSelect) updateOrderStatus(statusSelect.dataset.orderStatus, statusSelect.value, statusSelect);
     const itemStatusSelect = event.target.closest("[data-order-item-status]");
     if (itemStatusSelect) updateOrderItemStatus(
       itemStatusSelect.dataset.orderItemStatus,
@@ -8015,7 +8097,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=96", { updateViaCache: "none" })
+    .register("./sw.js?v=97", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }

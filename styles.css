@@ -335,6 +335,26 @@ body.has-access .layout {
   padding: 6px 8px;
 }
 
+.order-status-control {
+  min-width: 6.5em;
+}
+
+.order-status-feedback {
+  display: block;
+  min-height: 1.25em;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.order-status-feedback[data-state="saved"] {
+  color: var(--green);
+}
+
+.order-status-feedback[data-state="error"] {
+  color: var(--red);
+}
+
 .order-overdue-days.input {
   flex: 0 1 110px;
 }
