@@ -4939,9 +4939,40 @@ async function showOrderDetail(orderId) {
       <div data-order-photo-message="${escapeHtml(order.id)}" aria-live="polite"></div>` : ""}
     </section>
     <section class="panel table-panel">
-      <h3>物品 / 水洗标</h3>
+      <h3 id="orderItemTableTitle">物品 / 水洗标</h3>
       ${canEditItemStatus ? '<p class="hint">这里修改只影响当前水洗标；整单状态会按该订单下所有水洗标的最慢进度自动汇总。</p>' : ""}
-    <div class="table-wrap"><table><thead><tr><th>水洗标</th><th>商品</th><th>规格</th><th>结算品类</th><th>状态</th><th>图片</th>${canEditItemStatus ? "<th>操作</th>" : ""}</tr></thead><tbody>${(itemResult.data || []).map((item) => `<tr><td>${escapeHtml(displayWashLabelBarcode(item.barcode))}</td><td>${escapeHtml(item.product_name)}</td><td>${escapeHtml(item.spec)}</td><td>${escapeHtml(settlementDisplayLabel(item))}${resolvedSettlementCategory(item).confirmed ? "" : "（待确认）"}</td><td>${canEditItemStatus ? `<select class="input compact-input" data-order-item-status="${escapeHtml(item.id)}" data-order-id="${escapeHtml(order.id)}" data-item-barcode="${escapeHtml(item.barcode)}" data-original-status="${escapeHtml(item.item_status)}">${item.item_status === "待补取" ? '<option value="待补取" selected disabled>待补取（由补取任务控制）</option>' : ""}${ITEM_EDITABLE_STATUSES.map((status) => `<option value="${escapeHtml(status)}" ${status === item.item_status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}</select>` : escapeHtml(item.item_status)}</td><td>${item.image_links ? `<a href="${escapeHtml(item.image_links.split("\n")[0])}" target="_blank">查看</a>` : ""}</td>${canEditItemStatus ? `<td>${["待取件", "未找到", "待补取", "已取件"].includes(item.item_status) ? `<button class="ghost small-btn" type="button" data-schedule-retry-item="${escapeHtml(item.id)}" data-retry-order="${escapeHtml(order.id)}">安排补取</button>` : "—"}</td>` : ""}</tr>`).join("")}</tbody></table></div>
+      <p class="hint order-item-scroll-hint">左右滑动查看完整表格。</p>
+      <div class="table-wrap" role="region" aria-labelledby="orderItemTableTitle" tabindex="0">
+        <table class="order-item-table">
+          <thead><tr>
+            <th scope="col">水洗标</th><th scope="col">商品</th><th scope="col">规格</th>
+            <th scope="col">结算品类</th><th scope="col">状态</th><th scope="col">图片</th>
+            ${canEditItemStatus ? '<th scope="col">操作</th>' : ""}
+          </tr></thead>
+          <tbody>${(itemResult.data || []).map((item) => {
+            const barcode = displayWashLabelBarcode(item.barcode);
+            const awaitingRetry = item.item_status === "待补取";
+            return `<tr>
+              <td class="order-item-nowrap">${escapeHtml(barcode)}</td>
+              <td>${escapeHtml(item.product_name)}</td><td>${escapeHtml(item.spec)}</td>
+              <td>${escapeHtml(settlementDisplayLabel(item))}${resolvedSettlementCategory(item).confirmed ? "" : "（待确认）"}</td>
+              <td class="order-item-nowrap">${canEditItemStatus ? `
+                <select class="input compact-input order-item-status-select" aria-label="水洗标 ${escapeHtml(barcode)} 状态"
+                  data-order-item-status="${escapeHtml(item.id)}" data-order-id="${escapeHtml(order.id)}"
+                  data-item-barcode="${escapeHtml(item.barcode)}" data-original-status="${escapeHtml(item.item_status)}">
+                  ${awaitingRetry ? '<option value="待补取" selected disabled>待补取</option>' : ""}
+                  ${ITEM_EDITABLE_STATUSES.map((status) => `<option value="${escapeHtml(status)}" ${status === item.item_status ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}
+                </select>
+                ${awaitingRetry ? '<small class="hint order-item-status-hint">由补取任务控制</small>' : ""}
+              ` : escapeHtml(item.item_status)}</td>
+              <td class="order-item-nowrap">${item.image_links ? `<a href="${escapeHtml(item.image_links.split("\n")[0])}" target="_blank">查看</a>` : ""}</td>
+              ${canEditItemStatus ? `<td class="order-item-nowrap">${["待取件", "未找到", "待补取", "已取件"].includes(item.item_status)
+                ? `<button class="ghost small-btn" type="button" data-schedule-retry-item="${escapeHtml(item.id)}" data-retry-order="${escapeHtml(order.id)}">安排补取</button>`
+                : "—"}</td>` : ""}
+            </tr>`;
+          }).join("")}</tbody>
+        </table>
+      </div>
     </section>
     <section class="panel">
       <h3>状态时间线</h3>
@@ -7984,7 +8015,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=95", { updateViaCache: "none" })
+    .register("./sw.js?v=96", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }

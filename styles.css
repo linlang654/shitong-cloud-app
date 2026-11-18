@@ -3583,6 +3583,33 @@ th {
   font-weight: 900;
 }
 
+.order-item-table :is(th, .order-item-nowrap) {
+  white-space: nowrap;
+}
+
+.order-item-table td:not(.order-item-nowrap) {
+  overflow-wrap: anywhere;
+}
+
+.order-item-status-select {
+  min-width: 6.5em;
+}
+
+.order-item-status-hint {
+  display: block;
+  margin-top: 4px;
+}
+
+.order-item-scroll-hint {
+  display: none;
+}
+
+@media (max-width: 860px) {
+  .order-item-scroll-hint {
+    display: block;
+  }
+}
+
 .steps {
   line-height: 1.8;
   margin: 0;
