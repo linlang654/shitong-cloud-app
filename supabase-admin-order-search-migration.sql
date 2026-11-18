@@ -1,4 +1,4 @@
--- Apply to the current business project bjlimqtrkdokmjpdcraa before publishing build 95.
+-- Apply to the current business project bjlimqtrkdokmjpdcraa before publishing build 96.
 begin;
 
 create index if not exists order_items_order_id_idx on public.order_items (order_id);
