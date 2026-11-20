@@ -22,6 +22,8 @@ const TEMP_SUPABASE_CONFIG = {
 const OVERDUE_HOURS = 48;
 const RECENT_ORDER_LIMIT = 500;
 const ORDER_MANAGEMENT_PAGE_SIZE = 50;
+const LABEL_PAGE_SIZE = 50;
+const naturalTextCollator = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" });
 const ORDER_MANAGEMENT_SELECT = "*, order_items(id,barcode,item_status,product_name,spec)";
 const APP_MODE = document.body?.dataset.appMode || new URLSearchParams(window.location.search).get("page") || "admin";
 const ROLE_LABELS = {
@@ -168,9 +170,17 @@ const settlementCatalogDraft = new Map();
 let settlementCatalogSearch = "";
 let settlementCatalogActiveOnly = true;
 let labelReviewRows = [];
+let labelRowsById = new Map();
 let activeWashAdjustmentRow = null;
 let activeWashAdjustmentSelect = null;
 let labelVisibleRows = [];
+let labelPage = 0;
+let labelSearchTimer;
+let labelSearchPending = false;
+let labelLoad = null;
+let refreshLoad = null;
+const labelSettlementDrafts = new Map();
+const labelSearchTextCache = new WeakMap();
 const labelSelectedItems = new Set();
 let washOrderImportBusy = false;
 let labelExportBusy = false;
@@ -558,6 +568,8 @@ async function initSupabase() {
   const config = loadConfig();
   populateConfigInputs(config);
   if (config.url && config.anonKey && window.supabase) {
+    settlementSchemaAvailable = washAdjustmentSchemaAvailable = exceptionTicketSchemaAvailable = retryPickupSchemaAvailable = null;
+    settlementCatalogAvailable = factoryScanBatchSchemaAvailable = null;
     sb = window.supabase.createClient(config.url, config.anonKey);
     setConnectionStatus("正在检查数据库连接…", "checking");
     await refreshSession();
@@ -2053,15 +2065,34 @@ async function insertLog({ orderId, itemId = null, barcode = "", status, note = 
   });
 }
 
-async function refreshAll() {
+async function refreshAll({ reusePending = false } = {}) {
   if (!sb || APP_MODE === "student" || !currentUser || !canUseCurrentPage()) return;
-  await Promise.all([loadRecognitionRules(), detectSettlementSchemaAvailability(true), detectWashAdjustmentSchemaAvailability(true), detectExceptionTicketSchemaAvailability(true), detectRetryPickupSchemaAvailability(true), loadSettlementCatalog(true)]);
-  const tasks = [];
-  if (APP_MODE === "admin") tasks.push(loadStats(), loadAdmin(), loadCourierTasks(), loadFactoryItems(), loadFactoryDailyScans());
-  if (APP_MODE === "courier") tasks.push(loadCourierTasks());
-  if (APP_MODE === "factory") tasks.push(loadFactoryItems(), loadFactoryDailyScans());
-  await Promise.all(tasks);
-  if (APP_MODE === "factory") $("barcodeInput")?.focus();
+  if (refreshLoad?.client === sb && refreshLoad.userId === currentUser.id) {
+    const previous = refreshLoad;
+    if (reusePending) return previous.promise;
+    // 写入完成后的刷新必须等旧查询结束后重读，不能复用写入前的结果。
+    await previous.promise.catch(console.warn);
+    if (sb !== previous.client || currentUser?.id !== previous.userId) return;
+    return refreshAll();
+  }
+  const load = { client: sb, userId: currentUser.id };
+  refreshLoad = load;
+  load.promise = (async () => {
+    await Promise.all([
+      APP_MODE === "admin" ? loadRecognitionRules() : Promise.resolve(),
+      detectSettlementSchemaAvailability(), detectWashAdjustmentSchemaAvailability(),
+      detectExceptionTicketSchemaAvailability(), detectRetryPickupSchemaAvailability(), loadSettlementCatalog(true),
+    ]);
+    if (sb !== load.client || currentUser?.id !== load.userId) return;
+    const tasks = [];
+    if (APP_MODE === "admin") tasks.push(loadStats(), loadAdmin());
+    if (APP_MODE === "courier") tasks.push(loadCourierTasks());
+    if (APP_MODE === "factory") tasks.push(loadFactoryItems(), loadFactoryDailyScans());
+    await Promise.all(tasks);
+    if (APP_MODE === "factory") $("barcodeInput")?.focus();
+  })();
+  try { await load.promise; }
+  finally { if (refreshLoad === load) refreshLoad = null; }
 }
 
 async function loadStats() {
@@ -4070,21 +4101,40 @@ function compareWashLabelRows(left, right) {
     || compareNaturalText(washLabelSortKey(left), washLabelSortKey(right));
 }
 
-async function loadWashLabelRows() {
+async function loadWashLabelRows(client = sb) {
   // 水洗标管理既用于按批次作业，也需要能追溯历史水洗标。分页取数避免
   // Supabase 单次查询上限导致“全库搜索”只命中前一部分记录。
   const pageSize = 1000;
   const data = [];
-  for (let from = 0; ; from += pageSize) {
-    const { data: page, error } = await sb
+  const columns = "id,barcode,source_key,product_name,spec,item_status,settlement_category,settlement_category_confirmed,settlement_other_name,settlement_other_unit,settlement_cost_snapshot,wash_decision,price_adjustment_type,price_adjustment_amount,wash_decision_reason,wash_decision_note,wash_label_print_batch_id,wash_label_print_position,orders(id,merchant,order_no,customer_name,phone,school,campus,building,address,paid_amount,order_time,pay_time,created_at,source,pickup_tasks(pickup_date))";
+  const readPage = (from, withCount = false) => client
       .from("order_items")
-      .select("*, orders(*, pickup_tasks(pickup_date))")
+      .select(columns, withCount ? { count: "exact" } : undefined)
       .order("id", { ascending: true })
       .range(from, from + pageSize - 1);
-    if (error) return { rows: [], error };
-    const pageRows = page || [];
-    data.push(...pageRows);
-    if (pageRows.length < pageSize) break;
+  const first = await readPage(0, true);
+  if (first.error) return { rows: [], error: first.error };
+  data.push(...(first.data || []));
+  if (data.length === pageSize) {
+    if (Number.isSafeInteger(first.count) && first.count >= data.length) {
+      // 限制同时读取两页，减少跨境请求逐页串行等待。
+      for (let from = pageSize; from < first.count; from += pageSize * 2) {
+        const requests = [readPage(from)];
+        if (from + pageSize < first.count) requests.push(readPage(from + pageSize));
+        const pages = await Promise.all(requests);
+        const failed = pages.find((page) => page.error);
+        if (failed) return { rows: [], error: failed.error };
+        for (const page of pages) data.push(...(page.data || []));
+      }
+    } else {
+      // 未返回总数时继续分页，不能把首屏误当作全部历史记录。
+      for (let from = pageSize; ; from += pageSize) {
+        const page = await readPage(from);
+        if (page.error) return { rows: [], error: page.error };
+        data.push(...(page.data || []));
+        if ((page.data || []).length < pageSize) break;
+      }
+    }
   }
   const rows = data.map((item) => {
     const order = Array.isArray(item.orders) ? item.orders[0] || {} : item.orders || {};
@@ -4137,12 +4187,12 @@ function canUseWashPrintBatches() {
   return APP_MODE === "admin" && currentProfile?.role === "admin" && Boolean(currentUser) && isWashLabelBusinessProject();
 }
 
-async function loadWashPrintBatches() {
+async function loadWashPrintBatches(client = sb) {
   if (!canUseWashPrintBatches()) return { batches: [] };
   const pageSize = 1000;
   const batches = [];
   for (let from = 0; ; from += pageSize) {
-    const { data, error } = await sb.from("wash_label_print_batches").select("id,print_date,batch_number")
+    const { data, error } = await client.from("wash_label_print_batches").select("id,print_date,batch_number")
       .order("print_date", { ascending: false }).order("batch_number", { ascending: false })
       .range(from, from + pageSize - 1);
     if (error) return { batches: [], error };
@@ -4156,12 +4206,35 @@ function washPrintBatchLabel(batch) {
   return `${batch.print_date} 第 ${batch.batch_number} 批`;
 }
 
-async function loadLabels() {
-  await Promise.all([detectSettlementSchemaAvailability(), detectWashAdjustmentSchemaAvailability()]);
-  const [allResult, printResult] = await Promise.all([loadWashLabelRows(), loadWashPrintBatches()]);
-  const rows = allResult.rows;
-  const error = allResult.error;
-  if (error) return setMessage("adminLabels", error.message, "warn");
+async function loadLabels({ fresh = false } = {}) {
+  if (labelLoad?.client === sb && labelLoad.userId === currentUser?.id) {
+    const previous = labelLoad;
+    if (!fresh) return previous.promise;
+    await previous.promise.catch(console.warn);
+    if (sb !== previous.client || currentUser?.id !== previous.userId) return;
+    return loadLabels();
+  }
+  clearTimeout(labelSearchTimer);
+  labelSearchPending = false;
+  const load = { client: sb, userId: currentUser?.id };
+  labelLoad = load;
+  load.promise = (async () => {
+    await Promise.all([detectSettlementSchemaAvailability(), detectWashAdjustmentSchemaAvailability()]);
+    if (sb !== load.client || currentUser?.id !== load.userId) return;
+    const [allResult, printResult] = await Promise.all([loadWashLabelRows(load.client), loadWashPrintBatches(load.client)]);
+    if (sb !== load.client || currentUser?.id !== load.userId || labelLoad !== load) return;
+    if (allResult.error) return setMessage("adminLabels", allResult.error.message, "warn");
+    labelSettlementDrafts.clear();
+    renderLabels(allResult.rows, printResult);
+  })();
+  try { await load.promise; }
+  finally { if (labelLoad === load) labelLoad = null; }
+}
+
+function renderLabels(rows, printResult) {
+  clearTimeout(labelSearchTimer);
+  labelSearchPending = false;
+  const keyword = $("labelSearch")?.value || "";
   const batchDates = [...new Set(rows.map((row) => row.batch_date).filter(Boolean))].sort().reverse();
   const selectedBatch = $("washBatchSelect")?.value || batchDates[0] || currentBusinessBatchDate();
   const filteredRows = rows.filter((row) => row.batch_date === selectedBatch);
@@ -4172,6 +4245,7 @@ async function loadLabels() {
   }
   if (!washPrintBatches.has(selectedWashPrintBatchId)) selectedWashPrintBatchId = printResult.batches[0]?.id || "";
   labelReviewRows = rows;
+  labelRowsById = new Map(rows.map((row) => [row.id, row]));
   labelVisibleRows = filteredRows;
   labelSelectedItems.clear();
   const confirmedCount = filteredRows.filter((row) => row.settlement_confirmed).length;
@@ -4186,7 +4260,7 @@ async function loadLabels() {
         <select id="washBatchSelect" class="input">
           ${batchDates.map((date) => `<option value="${escapeHtml(date)}" ${date === selectedBatch ? "selected" : ""}>${escapeHtml(date)} 批次（${escapeHtml(businessBatchLabel(date))}）</option>`).join("") || `<option value="${escapeHtml(selectedBatch)}">${escapeHtml(selectedBatch)} 批次</option>`}
         </select>
-        <input id="labelSearch" class="input" placeholder="搜索全部数据：水洗标、订单、姓名、电话、地址" />
+        <input id="labelSearch" class="input" value="${escapeHtml(keyword)}" placeholder="搜索全部数据：水洗标、订单、姓名、电话、地址" />
         <button id="confirmSuggestedSettlementBtn" class="ghost" type="button" ${settlementSchemaAvailable && suggestedRows.length ? "" : "disabled"}>确认系统建议（${suggestedRows.length}）</button>
       </div>
       <p class="hint">批次规则：昨天 18:00 之后到当天 18:00 之前付款/下单的订单，归为当天批次。<span id="labelSearchScope">未输入搜索词时仅显示当前批次；输入后搜索全部批次。</span></p>
@@ -4227,14 +4301,27 @@ async function loadLabels() {
       ${settlementSchemaAvailable ? "" : `<p class="warn">${escapeHtml(settlementMigrationMessage())}</p>`}
       ${washAdjustmentSchemaAvailable ? "" : `<p class="warn">${escapeHtml(washAdjustmentMigrationMessage())}</p>`}
       <div id="labelReviewMessage" aria-live="polite"></div>
+      <div class="toolbar wrap" aria-label="水洗标翻页">
+        <button id="labelPrevPage" class="ghost small" type="button">上一页</button>
+        <span id="labelPageInfo" class="hint" role="status"></span>
+        <button id="labelNextPage" class="ghost small" type="button">下一页</button>
+        <span class="hint">全选和批量操作覆盖全部筛选结果，翻页保留选择和未保存的品类编辑。</span>
+      </div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>选择</th><th>条形编码</th><th>所属商家</th><th>姓名</th><th>电话</th><th>校区</th><th>物品</th><th>结算品类</th><th>确认状态</th><th>实付款</th><th>流转状态</th><th>打印批次</th><th>操作</th></tr></thead>
-          <tbody id="labelRows">${renderLabelRows(filteredRows)}</tbody>
+          <tbody id="labelRows"></tbody>
         </table>
       </div>
     </section>`;
-  $("washBatchSelect")?.addEventListener("change", loadLabels);
+  $("washBatchSelect")?.addEventListener("change", () => {
+    captureLabelDrafts();
+    $("labelSearch").value = "";
+    labelPage = 0;
+    renderLabels(rows, printResult);
+  });
+  on("labelPrevPage", "click", () => changeLabelPage(-1));
+  on("labelNextPage", "click", () => changeLabelPage(1));
   on("selectUnprintedWashLabelsBtn", "click", () => {
     labelSelectedItems.clear();
     for (const row of labelVisibleRows) {
@@ -4251,23 +4338,88 @@ async function loadLabels() {
   if ($("createWashPrintBatchBtn")) $("createWashPrintBatchBtn").dataset.available = printResult.error ? "false" : "true";
   $("openMergeWashLabelsBtn")?.addEventListener("click", openMergeWashLabelDialog);
   $("confirmSuggestedSettlementBtn")?.addEventListener("click", () => confirmSuggestedSettlementCategories(suggestedRows));
-  $("labelSearch")?.addEventListener("input", () => {
-    const keyword = text($("labelSearch").value).toLowerCase();
-    const sourceRows = keyword ? rows : filteredRows;
-    labelVisibleRows = sourceRows.filter((row) => JSON.stringify(row).toLowerCase().includes(keyword));
+  $("labelSearch")?.addEventListener("compositionstart", () => clearTimeout(labelSearchTimer));
+  $("labelSearch")?.addEventListener("input", (event) => {
+    clearTimeout(labelSearchTimer);
+    if (event.isComposing) return;
+    const input = event.target;
+    const client = sb;
+    const userId = currentUser?.id;
+    labelSearchPending = true;
     labelSelectedItems.clear();
-    $("labelRows").innerHTML = renderLabelRows(labelVisibleRows);
-    const searchScope = $("labelSearchScope");
-    if (searchScope) searchScope.textContent = keyword
-      ? `正在搜索全部批次，找到 ${labelVisibleRows.length} 个水洗标。`
-      : "未输入搜索词时仅显示当前批次；输入后搜索全部批次。";
+    $("labelSearchScope").textContent = "正在搜索全部批次…";
+    $("labelRows")?.setAttribute?.("aria-busy", "true");
     updateLabelSelectionUi();
+    labelSearchTimer = setTimeout(() => {
+      if (sb !== client || currentUser?.id !== userId || $("labelSearch") !== input) return;
+      labelSearchPending = false;
+      applyLabelFilters();
+    }, 220);
   });
+  applyLabelFilters(false);
+}
+
+function labelSearchText(row) {
+  const cached = labelSearchTextCache.get(row);
+  // 联系电话和首次编号可原位更新，查询时同时使旧索引失效。
+  if (cached && cached.barcode === row.条形编码 && cached.phone === row.电话) return cached.value;
+  const value = [row.条形编码, row.所属商家, row.订单号, row.姓名, row.电话, row.校区,
+    row.楼栋, row.详细地址, row.物品, row.batch_date, row.batch_label, row.item_status,
+    row.settlement_label, row.settlement_other_name, row.下单时间,
+    row.route?.school, row.route?.campus, row.route?.building].join(" ").toLowerCase();
+  labelSearchTextCache.set(row, { barcode: row.条形编码, phone: row.电话, value });
+  return value;
+}
+
+function captureLabelDrafts() {
+  document.querySelectorAll("#labelRows [data-settlement-select]").forEach((select) => {
+    labelSettlementDrafts.set(select.dataset.settlementSelect, settlementValuesFromRow(select.dataset.settlementSelect));
+  });
+}
+
+function applyLabelFilters(capture = true) {
+  if (capture) captureLabelDrafts();
+  const keyword = text($("labelSearch")?.value).toLowerCase();
+  const batch = $("washBatchSelect")?.value;
+  labelVisibleRows = labelReviewRows.filter((row) => keyword
+    ? labelSearchText(row).includes(keyword) : row.batch_date === batch);
+  labelSelectedItems.clear();
+  labelPage = 0;
+  renderLabelPage(false);
+  const scope = $("labelSearchScope");
+  if (scope) scope.textContent = keyword
+    ? `正在搜索全部批次，找到 ${labelVisibleRows.length} 个水洗标。`
+    : "未输入搜索词时仅显示当前批次；输入后搜索全部批次。";
+}
+
+function changeLabelPage(delta) {
+  if (labelSearchPending) return;
+  captureLabelDrafts();
+  labelPage += delta;
+  renderLabelPage(false);
+}
+
+function renderLabelPage(capture = true) {
+  if (capture) captureLabelDrafts();
+  const pages = Math.max(1, Math.ceil(labelVisibleRows.length / LABEL_PAGE_SIZE));
+  labelPage = Math.max(0, Math.min(labelPage, pages - 1));
+  const start = labelPage * LABEL_PAGE_SIZE;
+  const tbody = $("labelRows");
+  if (!tbody) return;
+  tbody.innerHTML = renderLabelRows(labelVisibleRows.slice(start, start + LABEL_PAGE_SIZE));
+  tbody.setAttribute?.("aria-busy", "false");
+  if ($("labelPageInfo")) $("labelPageInfo").textContent = `共 ${labelVisibleRows.length} 个 · 第 ${labelPage + 1} / ${pages} 页 · 每页 ${LABEL_PAGE_SIZE} 个`;
+  if ($("labelPrevPage")) $("labelPrevPage").disabled = labelPage === 0;
+  if ($("labelNextPage")) $("labelNextPage").disabled = labelPage >= pages - 1;
   updateLabelSelectionUi();
 }
 
 function renderLabelRows(rows) {
   return rows.map((row) => {
+    const draft = labelSettlementDrafts.get(row.id);
+    if (draft) row = { ...row, settlement_selected_key: draft.categoryKey,
+      settlement_other_name: draft.details.otherName, settlement_other_unit: draft.details.otherUnit,
+      settlement_cost_snapshot: draft.details.cost };
     const supplement = washSupplementAmount(row);
     return `
     <tr data-label-row="${escapeHtml(row.id)}" class="${labelSelectedItems.has(row.id) ? "selected" : ""}">
@@ -4333,6 +4485,10 @@ function updateLabelSelectionUi() {
       ? "全选搜索结果待确认"
       : "全选当前待确认";
   }
+  if (labelSearchPending) {
+    document.querySelectorAll("#labelPrevPage, #labelNextPage, [data-select-label-visible], [data-select-label-pending], #selectUnprintedWashLabelsBtn, #labelRows button, #labelRows [data-label-checkbox]")
+      .forEach((control) => { control.disabled = true; });
+  }
 }
 
 function selectLabelOrder(orderId) {
@@ -4360,17 +4516,25 @@ function clearLabelSelection() {
 function applyCategoryToSelectedLabels() {
   const categoryKey = $("labelBulkCategory")?.value || SETTLEMENT_UNCONFIRMED;
   if (!validSettlementCategoryKey(categoryKey)) return alert("请先选择要批量应用的结算品类");
+  captureLabelDrafts();
   labelSelectedItems.forEach((itemId) => {
-    const select = document.querySelector(`[data-settlement-select="${itemId}"]`);
-    if (!select) return;
-    select.value = categoryKey;
-    select.dispatchEvent(new Event("change", { bubbles: true }));
+    const entry = settlementValuesFromRow(itemId);
+    labelSettlementDrafts.set(itemId, { ...entry, categoryKey });
   });
+  renderLabelPage(false);
   setMessage("labelReviewMessage", `已将 ${labelSelectedItems.size} 个水洗标设为“${settlementCategoryLabel(categoryKey)}”，确认内容后点击“保存已选”。`, "hint");
 }
 
 function settlementValuesFromRow(itemId) {
-  const categoryKey = document.querySelector(`[data-settlement-select="${itemId}"]`)?.value || SETTLEMENT_UNCONFIRMED;
+  const select = document.querySelector(`[data-settlement-select="${itemId}"]`);
+  if (!select) {
+    const draft = labelSettlementDrafts.get(itemId);
+    if (draft) return draft;
+    const row = labelRowsById.get(itemId) || labelReviewRows.find((entry) => entry.id === itemId);
+    return { itemId, categoryKey: row?.settlement_selected_key || SETTLEMENT_UNCONFIRMED,
+      details: { otherName: row?.settlement_other_name || "", otherUnit: row?.settlement_other_unit || "件", cost: row?.settlement_cost_snapshot ?? null } };
+  }
+  const categoryKey = select.value || SETTLEMENT_UNCONFIRMED;
   return {
     itemId,
     categoryKey,
@@ -4405,7 +4569,7 @@ async function saveSelectedSettlementCategories() {
     });
   }
   labelBulkSaveBusy = false;
-  await loadLabels();
+  await loadLabels({ fresh: true });
   setMessage("labelReviewMessage", failed ? `已保存 ${succeeded} 个，失败 ${failed} 个，请重新选择后重试。` : `已一次保存 ${succeeded} 个水洗标的结算品类。`, failed ? "warn" : "success");
 }
 
@@ -4566,7 +4730,7 @@ async function saveWashAdjustment(itemId) {
   const orderId = row?.order_id;
   activeWashAdjustmentRow = null;
   activeWashAdjustmentSelect = null;
-  await loadLabels();
+  await loadLabels({ fresh: true });
   if (orderId) await showOrderDetail(orderId);
   setMessage("labelReviewMessage", `${row?.条形编码 || "水洗标"} 已标记为“${definition.label}”。`, "success");
 }
@@ -4605,7 +4769,7 @@ async function saveSettlementCategoryFromRow(itemId) {
   setMessage("labelReviewMessage", "正在保存结算品类...", "hint");
   const { error } = await persistSettlementCategory(itemId, categoryKey, details);
   if (error) return setMessage("labelReviewMessage", `保存失败：${error.message}`, "warn");
-  await loadLabels();
+  await loadLabels({ fresh: true });
   setMessage("labelReviewMessage", `结算品类已保存为“${settlementCategoryLabel(categoryKey)}”。`, "success");
 }
 
@@ -4625,7 +4789,7 @@ async function confirmSuggestedSettlementCategories(rows) {
       else succeeded += 1;
     });
   }
-  await loadLabels();
+  await loadLabels({ fresh: true });
   setMessage("labelReviewMessage", failed ? `已确认 ${succeeded} 个，失败 ${failed} 个，请逐项重试。` : `已确认 ${succeeded} 个系统建议。`, failed ? "warn" : "success");
 }
 
@@ -4848,7 +5012,7 @@ async function createWashPrintBatch() {
   } finally {
     if (batch) {
       try {
-        await loadLabels();
+        await loadLabels({ fresh: true });
       } catch {
         message += " 请刷新页面读取已保存的批次。";
       }
@@ -5293,7 +5457,7 @@ function areaLabel(value, fallback) {
 }
 
 function compareNaturalText(left, right) {
-  return text(left).localeCompare(text(right), "zh-CN", { numeric: true, sensitivity: "base" });
+  return naturalTextCollator.compare(text(left), text(right));
 }
 
 function orderRouteParts(order = {}) {
@@ -7834,9 +7998,9 @@ function bindEvents() {
   on("mergeWashLabelSelectAllBtn", "click", () => setMergeWashLabelSelection(true));
   on("mergeWashLabelClearBtn", "click", () => setMergeWashLabelSelection(false));
   on("mergeWashLabelExportBtn", "click", exportMergedWashLabels);
-  on("refreshAdminBtn", "click", refreshAll);
-  on("refreshCourierBtn", "click", refreshAll);
-  on("refreshFactoryBtn", "click", refreshAll);
+  on("refreshAdminBtn", "click", () => refreshAll({ reusePending: true }));
+  on("refreshCourierBtn", "click", () => refreshAll({ reusePending: true }));
+  on("refreshFactoryBtn", "click", () => refreshAll({ reusePending: true }));
   on("refreshFactoryDailyBtn", "click", loadFactoryDailyScans);
   on("factoryOutboundBatchSelect", "change", () => selectFactoryOutboundBatch($("factoryOutboundBatchSelect")?.value || ""));
   on("factoryDailyCollapseBtn", "click", () => toggleFactoryDailyPanel());
@@ -8097,7 +8261,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=97", { updateViaCache: "none" })
+    .register("./sw.js?v=98", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }

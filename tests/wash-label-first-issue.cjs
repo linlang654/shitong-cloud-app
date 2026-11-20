@@ -161,6 +161,7 @@ function setup(items, { date = '2026-11-10', issueError, original = false, creat
     },
   };
   const context = vm.createContext({
+    setTimeout, clearTimeout,
     URLSearchParams,
     URL,
     window: { location: { search: original ? '?env=original' : '' }, XLSX: spreadsheet },
