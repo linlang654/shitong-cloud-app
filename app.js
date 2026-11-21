@@ -3595,7 +3595,7 @@ async function copyExceptionCustomerMessage(ticketId) {
     .trim();
   const content = ticket.ticket_type === "原有破损"
     ? `${greeting}你的物品${riskDescription ? `有${riskDescription}的情况，清洗后${riskDescription}可能会加重，` : "有原有破损，清洗后可能会加重，"}麻烦确认一下是否要继续清洗，谢谢！`
-    : `${greeting}你的物品${originalDescription ? `有${originalDescription}的情况，` : `出现${ticket.ticket_type}的情况，`}麻烦确认一下后续怎么处理，谢谢！`;
+    : `${greeting}你的物品${originalDescription ? `有${originalDescription}的情况，` : `出现${ticket.ticket_type}的情况，`}麻烦确认一下是否继续清洗，谢谢！`;
   await copyText(content);
   exceptionActionMessage = "客户沟通内容已复制，可直接粘贴到微信";
   await loadExceptions();
