@@ -2037,6 +2037,39 @@ button.danger,
   border-left-color: #dc2626;
 }
 
+.exception-customer-group {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #ead9aa;
+  border-radius: 10px;
+  background: #fffdf7;
+}
+
+.exception-customer-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.exception-customer-heading > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.exception-customer-heading span {
+  color: var(--muted);
+}
+
+.exception-customer-heading > strong {
+  flex-shrink: 0;
+  color: #9a3412;
+}
+
 .exception-ticket-card.urgent {
   border-color: #fca5a5;
   border-left-color: #b91c1c;

@@ -3128,8 +3128,8 @@ async function loadExceptions() {
       <label class="field-group"><span>搜索异常工单</span><input id="exceptionSearch" class="input" type="search" value="${escapeHtml(searchValue)}" placeholder="订单号、水洗标、姓名、手机号或异常类型" autocomplete="off" /></label>
       <p id="exceptionSearchResult" class="hint hidden" role="status"></p>
       <section class="exception-worklist" aria-labelledby="openExceptionTicketsTitle" data-exception-search-group>
-        <div class="section-heading compact-heading"><div><h3 id="openExceptionTicketsTitle">处理中工单</h3><p class="hint">按提交时间排列，红色“紧急”优先处理。</p></div><strong data-exception-match-count>${openTickets.length} 单</strong></div>
-        <div class="card-list">${openTickets.map(renderExceptionTicketCard).join("") || '<p class="hint empty-state">暂无处理中工单</p>'}</div>
+        <div class="section-heading compact-heading"><div><h3 id="openExceptionTicketsTitle">处理中工单</h3><p class="hint">按联系电话归组，同一客户的工单集中显示；有紧急工单的客户优先，组内紧急、较早提交的工单在前。</p></div><strong data-exception-match-count>${openTickets.length} 单</strong></div>
+        <div class="card-list">${renderExceptionTicketGroups(openTickets, "暂无处理中工单")}</div>
       </section>
       <details class="exception-legacy-section" data-exception-search-group ${currentExceptionRows.length ? "open" : ""}>
         <summary><span><strong>地址确认与历史异常</strong><small>保留原“异常修正”全部能力</small></span><b data-exception-match-count>${currentExceptionRows.length}</b></summary>
@@ -3140,7 +3140,7 @@ async function loadExceptions() {
         </div>
         <div class="card-list">${currentExceptionRows.map(renderExceptionCard).join("") || '<p class="hint">暂无地址或历史异常</p>'}</div>
       </details>
-      ${closedTickets.length ? `<details class="exception-legacy-section" data-exception-search-group><summary><span><strong>已结案工单</strong><small>仅供查询，不计入红色提醒</small></span><b data-exception-match-count>${closedTickets.length}</b></summary><div class="card-list">${closedTickets.map(renderExceptionTicketCard).join("")}</div></details>` : ""}
+      ${closedTickets.length ? `<details class="exception-legacy-section" data-exception-search-group><summary><span><strong>已结案工单</strong><small>按客户归组，仅供查询，不计入红色提醒</small></span><b data-exception-match-count>${closedTickets.length}</b></summary><div class="card-list">${renderExceptionTicketGroups(closedTickets)}</div></details>` : ""}
     </section>`;
   on("exceptionSearch", "input", applyExceptionSearch);
   applyExceptionSearch();
@@ -3149,9 +3149,43 @@ async function loadExceptions() {
 
 function exceptionSearchText(order, details) {
   return [
-    order.order_no, order.customer_name, order.phone, order.school, orderCampusName(order), order.building, order.address,
+    order.order_no, order.customer_name, order.phone, exceptionCustomerPhone(order.phone), order.school, orderCampusName(order), order.building, order.address,
     ...details,
   ].map(text).join(" ").normalize("NFKC").toLowerCase();
+}
+
+function exceptionCustomerPhone(value) {
+  let phone = text(value).normalize("NFKC").replace(/[\s()+-]/g, "");
+  if (/^00861\d{10}$/.test(phone)) phone = phone.slice(4);
+  else if (/^861\d{10}$/.test(phone)) phone = phone.slice(2);
+  return /^\d{7,15}$/.test(phone) ? phone : "";
+}
+
+function groupExceptionTickets(tickets) {
+  // 输入已按处理优先级排序，首张工单决定客户组的位置。
+  const groups = new Map();
+  tickets.forEach((ticket, index) => {
+    const order = relationOne(ticket.orders);
+    const phone = exceptionCustomerPhone(order.phone);
+    const orderId = order.id || ticket.order_id || order.order_no;
+    const key = phone ? `phone:${phone}` : orderId ? `order:${orderId}` : `ticket:${ticket.id || index}`;
+    if (!groups.has(key)) groups.set(key, { key, phone, names: new Set(), tickets: [] });
+    const group = groups.get(key);
+    if (text(order.customer_name)) group.names.add(text(order.customer_name));
+    group.tickets.push(ticket);
+  });
+  return [...groups.values()];
+}
+
+function renderExceptionTicketGroups(tickets, emptyMessage = "暂无工单") {
+  return groupExceptionTickets(tickets).map((group) => `
+    <section class="exception-customer-group" data-exception-customer-group>
+      <header class="exception-customer-heading">
+        <div><strong>${escapeHtml([...group.names].join(" / ") || "未知客户")}</strong><span>${escapeHtml(group.phone || "未填写联系电话")}</span></div>
+        <strong data-exception-customer-count>${group.tickets.length} 单</strong>
+      </header>
+      <div class="card-list">${group.tickets.map(renderExceptionTicketCard).join("")}</div>
+    </section>`).join("") || `<p class="hint empty-state">${escapeHtml(emptyMessage)}</p>`;
 }
 
 function applyExceptionSearch() {
@@ -3167,6 +3201,12 @@ function applyExceptionSearch() {
       const match = terms.every((term) => card.dataset.exceptionSearch.includes(term));
       card.classList.toggle("hidden", !match);
       if (match) matches += 1;
+    }
+    for (const customer of group.querySelectorAll("[data-exception-customer-group]")) {
+      const customerMatches = [...customer.querySelectorAll("[data-exception-search]")]
+        .filter((card) => terms.every((term) => card.dataset.exceptionSearch.includes(term))).length;
+      customer.classList.toggle("hidden", searching && !customerMatches);
+      customer.querySelector("[data-exception-customer-count]").textContent = `${customerMatches} 单`;
     }
     totalMatches += matches;
     group.classList.toggle("hidden", searching && !matches);
@@ -8261,7 +8301,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=98", { updateViaCache: "none" })
+    .register("./sw.js?v=99", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }

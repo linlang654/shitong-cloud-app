@@ -19,7 +19,9 @@ function element(properties = {}) {
 function group(tagName, searchTexts, open = false) {
   const cards = searchTexts.map((exceptionSearch) => element({ dataset: { exceptionSearch } }));
   const count = element();
-  return element({ tagName, open, cards, count, querySelectorAll: () => cards, querySelector: () => count });
+  return element({ tagName, open, cards, count,
+    querySelectorAll: (selector) => selector === '[data-exception-search]' ? cards : [],
+    querySelector: () => count });
 }
 
 test('exception search finds archived records, supports combined terms, and restores the list when cleared', () => {
