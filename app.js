@@ -26,6 +26,7 @@ const LABEL_PAGE_SIZE = 50;
 const naturalTextCollator = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" });
 const ORDER_MANAGEMENT_SELECT = "*, order_items(id,barcode,item_status,product_name,spec)";
 const APP_MODE = document.body?.dataset.appMode || new URLSearchParams(window.location.search).get("page") || "admin";
+const STAFF_USERNAME_DOMAIN = "staff.shitong.invalid";
 const ROLE_LABELS = {
   admin: "后台",
   courier: "配送员",
@@ -625,14 +626,23 @@ async function refreshSession() {
 
 async function login() {
   if (!requireClient()) return;
-  const email = text($("loginEmail").value);
+  const identifier = text($("loginEmail").value);
   const password = $("loginPassword").value;
-  if (!email || !password) return setMessage("authMessage", "请输入邮箱和密码。", "warn");
+  if (!identifier || !password) return setMessage("authMessage", "请输入邮箱或用户名和密码。", "warn");
+  const email = staffLoginEmail(identifier);
+  if (!email) return setMessage("authMessage", "用户名请使用 3 至 32 位字母、数字、点、横线或下划线，并以字母开头。", "warn");
   setMessage("authMessage", "正在登录…");
   const { error } = await sb.auth.signInWithPassword({ email, password });
   if (error) return setMessage("authMessage", `登录失败：${error.message}`, "warn");
   if ($("loginPassword")) $("loginPassword").value = "";
   await refreshSession();
+}
+
+function staffLoginEmail(identifier) {
+  const value = text(identifier);
+  if (value.includes("@")) return value;
+  if (!/^[a-z][a-z0-9_.-]{2,31}$/i.test(value)) return "";
+  return `${value.toLowerCase()}@${STAFF_USERNAME_DOMAIN}`;
 }
 
 async function signOut() {
@@ -3074,7 +3084,7 @@ async function loadExceptions() {
   const [legacyResult, ticketResult] = await Promise.all([
     loadRowsById(() => client.from("orders").select("*, order_items(barcode)").or("exception_note.neq.,school.eq.学校未识别,campus.eq.校区未识别,building.eq.楼栋未识别,order_status.eq.异常,order_status.eq.未找到")),
     exceptionTicketSchemaAvailable
-      ? loadRowsById(() => client.from("exception_tickets").select("*, orders(id,order_no,customer_name,phone,school,campus,building,address), order_items(id,barcode,product_name,spec,item_status)"))
+      ? loadRowsById(() => client.from("exception_tickets").select("*, orders(id,order_no,customer_name,phone,school,campus,building,address), order_items(id,barcode,product_name,spec,item_status), assignee:profiles!exception_tickets_assignee_id_fkey(id,name)"))
       : Promise.resolve({ data: [], error: null }),
   ]);
   if (version !== exceptionLoadVersion || client !== sb || userId !== currentUser?.id) return;
@@ -3103,6 +3113,8 @@ async function loadExceptions() {
   const totalPending = openTickets.length + currentExceptionRows.length;
   updateExceptionBadge(totalPending);
   const searchValue = $("exceptionSearch")?.value || "";
+  const statusFilter = $("exceptionStatusFilter")?.value || "";
+  const ownerFilter = $("exceptionOwnerFilter")?.value === "mine" ? "mine" : "";
   $("adminExceptions").innerHTML = `
     <section class="panel exception-center">
       <div class="exception-heading">
@@ -3126,6 +3138,17 @@ async function loadExceptions() {
       ${exceptionTicketSchemaAvailable ? "" : `<p class="warn exception-migration-note">${escapeHtml(exceptionTicketMigrationMessage())}</p>`}
       ${exceptionActionMessage ? `<p class="success-note">${escapeHtml(exceptionActionMessage)}</p>` : ""}
       <label class="field-group"><span>搜索异常工单</span><input id="exceptionSearch" class="input" type="search" value="${escapeHtml(searchValue)}" placeholder="订单号、水洗标、姓名、手机号或异常类型" autocomplete="off" /></label>
+      <div class="toolbar wrap exception-filter-toolbar">
+        <label class="field-group"><span>工单状态</span><select id="exceptionStatusFilter" class="input">
+          <option value="">全部状态</option>
+          ${[...EXCEPTION_OPEN_STATUSES, "已解决", "已关闭"].map((status) => `<option value="${status}" ${statusFilter === status ? "selected" : ""}>${status}</option>`).join("")}
+        </select></label>
+        <label class="field-group"><span>工单范围</span><select id="exceptionOwnerFilter" class="input">
+          <option value="">全部工单</option><option value="mine" ${ownerFilter === "mine" ? "selected" : ""}>我的工单</option>
+        </select></label>
+        <button id="clearExceptionFilters" class="ghost" type="button">清空筛选</button>
+      </div>
+      <p class="hint">点击“认领工单”“开始处理”或“标记待客户”可认领未分配的工单，“我的工单”显示当前账号负责的工单。</p>
       <p id="exceptionSearchResult" class="hint hidden" role="status"></p>
       <section class="exception-worklist" aria-labelledby="openExceptionTicketsTitle" data-exception-search-group>
         <div class="section-heading compact-heading"><div><h3 id="openExceptionTicketsTitle">处理中工单</h3><p class="hint">按联系电话归组，同一客户的工单集中显示；有紧急工单的客户优先，组内紧急、较早提交的工单在前。</p></div><strong data-exception-match-count>${openTickets.length} 单</strong></div>
@@ -3143,6 +3166,12 @@ async function loadExceptions() {
       ${closedTickets.length ? `<details class="exception-legacy-section" data-exception-search-group><summary><span><strong>已结案工单</strong><small>按客户归组，仅供查询，不计入红色提醒</small></span><b data-exception-match-count>${closedTickets.length}</b></summary><div class="card-list">${renderExceptionTicketGroups(closedTickets)}</div></details>` : ""}
     </section>`;
   on("exceptionSearch", "input", applyExceptionSearch);
+  on("exceptionStatusFilter", "change", applyExceptionSearch);
+  on("exceptionOwnerFilter", "change", applyExceptionSearch);
+  on("clearExceptionFilters", "click", () => {
+    $("exceptionSearch").value = $("exceptionStatusFilter").value = $("exceptionOwnerFilter").value = "";
+    applyExceptionSearch();
+  });
   applyExceptionSearch();
   exceptionActionMessage = "";
 }
@@ -3193,18 +3222,23 @@ function applyExceptionSearch() {
   const result = $("exceptionSearchResult");
   if (!input || !result) return;
   const terms = text(input.value).normalize("NFKC").toLowerCase().split(/\s+/).filter(Boolean);
-  const searching = terms.length > 0;
+  const statusFilter = $("exceptionStatusFilter")?.value || "";
+  const mine = $("exceptionOwnerFilter")?.value === "mine";
+  const searching = terms.length > 0 || Boolean(statusFilter) || mine;
+  const matchesFilters = (card) => terms.every((term) => card.dataset.exceptionSearch.includes(term))
+    && (!statusFilter || card.dataset.exceptionTicketStatus === statusFilter)
+    && (!mine || Boolean(currentUser?.id) && card.dataset.exceptionAssignee === currentUser.id);
   let totalMatches = 0;
   for (const group of $("adminExceptions").querySelectorAll("[data-exception-search-group]")) {
     let matches = 0;
     for (const card of group.querySelectorAll("[data-exception-search]")) {
-      const match = terms.every((term) => card.dataset.exceptionSearch.includes(term));
+      const match = matchesFilters(card);
       card.classList.toggle("hidden", !match);
       if (match) matches += 1;
     }
     for (const customer of group.querySelectorAll("[data-exception-customer-group]")) {
       const customerMatches = [...customer.querySelectorAll("[data-exception-search]")]
-        .filter((card) => terms.every((term) => card.dataset.exceptionSearch.includes(term))).length;
+        .filter(matchesFilters).length;
       customer.classList.toggle("hidden", searching && !customerMatches);
       customer.querySelector("[data-exception-customer-count]").textContent = `${customerMatches} 单`;
     }
@@ -3249,6 +3283,10 @@ function renderExceptionTicketCard(ticket) {
   const item = relationOne(ticket.order_items);
   const barcode = displayWashLabelBarcode(ticket.barcode || item.barcode, "未绑定水洗标");
   const resolved = !EXCEPTION_OPEN_STATUSES.includes(ticket.status);
+  const assignee = relationOne(ticket.assignee);
+  const assigneeName = ticket.assignee_id
+    ? text(assignee.name) || (ticket.assignee_id === currentUser?.id ? text(currentProfile?.name) || "我" : "其他管理员")
+    : "未认领";
   const evidenceKey = `exception-ticket-${ticket.id}`;
   const evidenceUrls = ticket.evidenceUrls || [];
   const evidencePaths = ticket.evidencePaths || (Array.isArray(ticket.evidence_paths) ? ticket.evidence_paths : []);
@@ -3258,13 +3296,13 @@ function renderExceptionTicketCard(ticket) {
   ]);
   if (evidenceUrls.length) imagePreviewMap.set(evidenceKey, evidenceUrls);
   return `
-    <article class="task-card exception-ticket-card ${ticket.priority === "紧急" ? "urgent" : ""}" data-exception-ticket="${ticket.id}" data-exception-search="${escapeHtml(searchable)}">
+    <article class="task-card exception-ticket-card ${ticket.priority === "紧急" ? "urgent" : ""}" data-exception-ticket="${ticket.id}" data-exception-ticket-status="${escapeHtml(ticket.status)}" data-exception-assignee="${escapeHtml(ticket.assignee_id || "")}" data-exception-search="${escapeHtml(searchable)}">
       <div class="card-head">
         <div><h3>${escapeHtml(ticket.ticket_type)}${ticket.priority === "紧急" ? '<span class="urgent-label">紧急</span>' : ""}</h3><p class="hint">${escapeHtml(order.customer_name || "未知客户")} · ${escapeHtml(order.phone || "")} · ${escapeHtml(barcode)}</p></div>
         <span class="ticket-status ${exceptionStatusClass(ticket.status)}">${escapeHtml(ticket.status)}</span>
       </div>
       <p class="exception-ticket-description">${escapeHtml(ticket.description || "未填写问题说明")}</p>
-      <div class="exception-ticket-meta"><span>订单 ${escapeHtml(order.order_no || "—")}</span><span>${escapeHtml(item.spec || item.product_name || "物品待核对")}</span><span>${escapeHtml(ticket.source || "后台")}</span><span>${escapeHtml(formatDateTime(ticket.created_at, true))}</span></div>
+      <div class="exception-ticket-meta"><span>订单 ${escapeHtml(order.order_no || "—")}</span><span>${escapeHtml(item.spec || item.product_name || "物品待核对")}</span><span>${escapeHtml(ticket.source || "后台")}</span><span>${escapeHtml(formatDateTime(ticket.created_at, true))}</span><span>负责人 ${escapeHtml(assigneeName)}</span></div>
       ${evidenceUrls.length ? `<div class="exception-evidence-grid">${evidenceUrls.map((url, index) => {
         const singleImageKey = `${evidenceKey}-${index}`;
         imagePreviewMap.set(singleImageKey, [url]);
@@ -3275,6 +3313,7 @@ function renderExceptionTicketCard(ticket) {
       ${ticket.customer_reply ? `<p><strong>客户回复：</strong>${escapeHtml(ticket.customer_reply)}</p>` : ""}
       ${ticket.resolution ? `<p><strong>处理结果：</strong>${escapeHtml(ticket.resolution)}</p>` : ""}
       <div class="actions exception-ticket-actions">
+        ${!resolved && !ticket.assignee_id ? `<button class="ghost" type="button" data-claim-exception-ticket="${escapeHtml(ticket.id)}">认领工单</button>` : ""}
         <button class="ghost" type="button" data-copy-exception-message="${ticket.id}">复制客户沟通内容</button>
         ${item.id && order.id && !resolved ? `<button class="ghost" type="button" data-schedule-retry-item="${escapeHtml(item.id)}" data-retry-order="${escapeHtml(order.id)}" data-retry-ticket="${escapeHtml(ticket.id)}">安排补取</button>` : ""}
         ${resolved ? "" : `<button class="ghost" type="button" data-exception-status="${ticket.id}" data-status="待客户">标记待客户</button><button class="ghost" type="button" data-exception-status="${ticket.id}" data-status="处理中">开始处理</button><button type="button" data-exception-status="${ticket.id}" data-status="已解决">处理完成</button>`}
@@ -3554,31 +3593,76 @@ async function submitExceptionTicket() {
   }
 }
 
+async function persistExceptionTicketUpdate(client, ticket, update) {
+  let query = client.from("exception_tickets").update(update).eq("id", ticket.id).eq("status", ticket.status);
+  query = ticket.assignee_id ? query.eq("assignee_id", ticket.assignee_id) : query.is("assignee_id", null);
+  if (ticket.updated_at) query = query.eq("updated_at", ticket.updated_at);
+  return query.select("id").maybeSingle();
+}
+
+async function claimExceptionTicket(ticketId) {
+  if (exceptionTicketBusy || !sb || !currentUser || currentProfile?.role !== "admin") return;
+  const ticket = currentExceptionTickets.find((row) => row.id === ticketId);
+  if (!ticket || ticket.assignee_id || !EXCEPTION_OPEN_STATUSES.includes(ticket.status)) return;
+  const client = sb;
+  const userId = currentUser.id;
+  exceptionTicketBusy = true;
+  try {
+    const { data, error } = await persistExceptionTicketUpdate(client, ticket, { assignee_id: userId, updated_at: new Date().toISOString() });
+    if (client !== sb || userId !== currentUser?.id) return;
+    if (error) return alert(`认领失败：${error.message}`);
+    if (!data) {
+      alert("工单已被其他人认领或更新，已为你刷新，请核对负责人。");
+      await loadExceptions();
+      return;
+    }
+    await insertLog({ orderId: ticket.order_id, itemId: ticket.item_id, barcode: ticket.barcode, status: "认领异常工单", note: `由${currentProfile?.name || "当前管理员"}认领` });
+    exceptionActionMessage = "已认领，可在“我的工单”中查看";
+    await loadExceptions();
+  } catch (error) {
+    if (client === sb && userId === currentUser?.id) alert(`未确认认领结果，请刷新后核对。${error.message || ""}`);
+  } finally {
+    exceptionTicketBusy = false;
+  }
+}
+
 async function updateExceptionTicketStatus(ticketId, status) {
-  if (exceptionTicketBusy || !EXCEPTION_OPEN_STATUSES.concat(["已解决", "已关闭"]).includes(status)) return;
+  if (exceptionTicketBusy || !sb || !currentUser || currentProfile?.role !== "admin" || !EXCEPTION_OPEN_STATUSES.concat(["已解决", "已关闭"]).includes(status)) return;
   const ticket = currentExceptionTickets.find((row) => row.id === ticketId);
   if (!ticket) return;
-  const update = { status, updated_at: new Date().toISOString() };
+  const client = sb;
+  const userId = currentUser.id;
+  const update = { status, updated_at: new Date().toISOString(), assignee_id: ticket.assignee_id || userId };
   if (status === "处理中") {
     const reply = prompt("填写客户回复或已确认方案", ticket.customer_reply || "");
     if (reply === null) return;
     update.customer_reply = text(reply);
-    update.assignee_id = currentProfile?.id || ticket.assignee_id || null;
   }
   if (status === "已解决" || status === "已关闭") {
     const resolution = prompt("填写最终处理结果", ticket.resolution || "");
     if (resolution === null || !text(resolution)) return;
     update.resolution = text(resolution);
     update.resolved_at = new Date().toISOString();
-    update.assignee_id = currentProfile?.id || ticket.assignee_id || null;
   }
+  if (client !== sb || userId !== currentUser?.id) return;
   exceptionTicketBusy = true;
-  const { error } = await sb.from("exception_tickets").update(update).eq("id", ticketId);
-  exceptionTicketBusy = false;
-  if (error) return alert(error.message);
-  await insertLog({ orderId: ticket.order_id, itemId: ticket.item_id, barcode: ticket.barcode, status: `异常工单${status}`, note: update.resolution || update.customer_reply || ticket.description });
-  exceptionActionMessage = `工单已更新为“${status}”`;
-  await Promise.all([loadExceptions(), loadStats()]);
+  try {
+    const { data, error } = await persistExceptionTicketUpdate(client, ticket, update);
+    if (client !== sb || userId !== currentUser?.id) return;
+    if (error) return alert(error.message);
+    if (!data) {
+      alert("工单已被其他人更新，已为你刷新，请核对状态和负责人后重试。");
+      await loadExceptions();
+      return;
+    }
+    await insertLog({ orderId: ticket.order_id, itemId: ticket.item_id, barcode: ticket.barcode, status: `异常工单${status}`, note: update.resolution || update.customer_reply || ticket.description });
+    exceptionActionMessage = `工单已更新为“${status}”`;
+    await Promise.all([loadExceptions(), loadStats()]);
+  } catch (error) {
+    if (client === sb && userId === currentUser?.id) alert(`未确认保存结果，请刷新后核对。${error.message || ""}`);
+  } finally {
+    exceptionTicketBusy = false;
+  }
 }
 
 async function copyExceptionCustomerMessage(ticketId) {
@@ -8123,6 +8207,8 @@ function bindEvents() {
     }
     const exceptionStatusBtn = event.target.closest("[data-exception-status]");
     if (exceptionStatusBtn) updateExceptionTicketStatus(exceptionStatusBtn.dataset.exceptionStatus, exceptionStatusBtn.dataset.status);
+    const claimExceptionBtn = event.target.closest("[data-claim-exception-ticket]");
+    if (claimExceptionBtn) claimExceptionTicket(claimExceptionBtn.dataset.claimExceptionTicket);
     const copyExceptionBtn = event.target.closest("[data-copy-exception-message]");
     if (copyExceptionBtn) copyExceptionCustomerMessage(copyExceptionBtn.dataset.copyExceptionMessage);
     const scheduleRetryBtn = event.target.closest("[data-schedule-retry-item]");
@@ -8301,7 +8387,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=99", { updateViaCache: "none" })
+    .register("./sw.js?v=100", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }

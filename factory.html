@@ -7,7 +7,7 @@
     <title>工厂扫码台 - 事事通校园配送系统</title>
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/remixicon@4.6.0/fonts/remixicon.css" />
-    <link rel="stylesheet" href="./styles.css?v=99" />
+    <link rel="stylesheet" href="./styles.css?v=100" />
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   </head>
   <body data-app-mode="factory" class="role-page factory-page">
@@ -30,7 +30,7 @@
       <section id="loginPanel" class="panel login-card" data-guest-only>
         <h2>工厂登录</h2>
         <p id="authMessage" class="hint">请先登录工厂账号。</p>
-        <input id="loginEmail" class="input" placeholder="邮箱" />
+        <input id="loginEmail" class="input" placeholder="邮箱或用户名" autocomplete="username" aria-label="邮箱或用户名" />
         <input id="loginPassword" class="input" placeholder="密码" type="password" />
         <button id="loginBtn" type="button">登录</button>
       </section>
@@ -224,6 +224,6 @@
       <div id="orderDialogBody" class="stack"></div>
     </dialog>
 
-    <script src="./app.js?v=99"></script>
+    <script src="./app.js?v=100"></script>
   </body>
 </html>
