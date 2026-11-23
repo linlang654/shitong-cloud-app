@@ -135,7 +135,7 @@ test('switching the business batch reuses loaded rows and preserves draft edits'
 
 test('refresh loads only the current role and deduplicates concurrent refresh clicks', async () => {
   for (const [mode, expected] of [
-    ['admin', ['stats', 'admin']], ['courier', ['courier']], ['factory', ['factory', 'scans']],
+    ['admin', ['stats', 'admin']], ['courier', ['courier']], ['factory', ['factory', 'scans', 'feedback']],
   ]) {
     const s = setup(mode);
     s.run(`
@@ -146,6 +146,7 @@ test('refresh loads only the current role and deduplicates concurrent refresh cl
       loadStats = async () => calls.push('stats'); loadAdmin = async () => calls.push('admin');
       loadCourierTasks = async () => calls.push('courier'); loadFactoryItems = async () => calls.push('factory');
       loadFactoryDailyScans = async () => calls.push('scans');
+      loadFactoryExceptionBadge = async () => calls.push('feedback');
     `);
     await Promise.all([s.context.refreshAll({ reusePending: true }), s.context.refreshAll({ reusePending: true })]);
     assert.deepEqual(s.calls, expected);

@@ -4403,6 +4403,263 @@ code {
 }
 
 /* 工厂端紧凑作业台与订单查询 */
+.factory-feedback-entry-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-bottom: 12px;
+}
+
+.factory-feedback-entry-bar > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 44px;
+}
+
+.factory-feedback-count {
+  padding: 3px 6px;
+  border-radius: 6px;
+  color: #176344;
+  background: #e9f7ef;
+  font-size: 12px;
+}
+
+.factory-exception-dialog {
+  width: min(840px, calc(100vw - 24px));
+  max-width: 100%;
+  max-height: calc(100dvh - 24px);
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+}
+
+.factory-exception-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.factory-exception-sheet {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 26px);
+}
+
+.factory-exception-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 12px 8px;
+  background: #fff;
+}
+
+.factory-exception-heading > div:first-child {
+  min-width: 0;
+}
+
+.factory-exception-heading h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.factory-exception-heading p {
+  margin: 4px 0 0;
+  line-height: 1.5;
+}
+
+.factory-exception-heading .actions {
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.factory-exception-dialog button,
+.factory-exception-dialog .input {
+  min-height: 44px;
+}
+
+.factory-exception-filters {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+  background: #fff;
+}
+
+.factory-exception-filters :is(input, select) {
+  min-width: 0;
+  font-size: 16px;
+}
+
+.factory-exception-filter-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+#factoryExceptionMessage {
+  margin: 8px 0 0;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.factory-exception-body {
+  min-height: 0;
+  padding: 12px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.factory-exception-card {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  overflow-wrap: anywhere;
+}
+
+.factory-exception-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 8px;
+}
+
+.factory-exception-card-head h3 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.factory-exception-card-head p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.factory-exception-card-head .ticket-status {
+  flex-shrink: 0;
+}
+
+.factory-exception-item {
+  margin: 10px 0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.factory-exception-item span {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.factory-exception-feedback {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8f7f3;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.factory-exception-feedback.has-feedback {
+  border-color: #badfca;
+  background: #effaf4;
+  color: #176344;
+}
+
+.factory-exception-feedback p {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+}
+
+.factory-exception-feedback .factory-exception-reply {
+  padding-top: 6px;
+  border-top: 1px solid #cce8d8;
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.factory-exception-report {
+  margin-top: 10px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.factory-exception-report summary {
+  min-height: 36px;
+  padding: 7px 0;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.factory-exception-report p {
+  white-space: pre-wrap;
+}
+
+.factory-exception-times {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.factory-exception-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.factory-exception-card-actions button {
+  flex: 1 1 120px;
+}
+
+.factory-exception-pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+@media (max-width: 640px) {
+  .factory-exception-dialog {
+    width: 100%;
+    height: 100dvh;
+    max-height: 100dvh;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .factory-exception-sheet {
+    height: 100%;
+    max-height: none;
+  }
+
+  .factory-exception-heading {
+    align-items: start;
+    padding-top: max(12px, env(safe-area-inset-top));
+  }
+
+  .factory-exception-body {
+    flex: 1;
+    padding: 10px 10px max(12px, env(safe-area-inset-bottom));
+  }
+
+  .factory-exception-heading .actions button {
+    padding: 8px 10px;
+  }
+}
+
 .factory-order-search-entry,
 .factory-camera-toggle {
   display: inline-flex;

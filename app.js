@@ -124,6 +124,16 @@ let factoryItemTotalCount = 0;
 let factoryPendingView = "";
 let factoryOrderSearchRows = [];
 let factoryOrderSearchBusy = false;
+const FACTORY_EXCEPTION_PAGE_SIZE = 20;
+let factoryExceptionRows = [];
+let factoryExceptionPage = 0;
+let factoryExceptionContext = null;
+let factoryExceptionLoad = null;
+let factoryExceptionLoadVersion = 0;
+let factoryExceptionLoaded = false;
+let factoryExceptionSearchTimer;
+let factoryExceptionBadgeVersion = 0;
+const factoryExceptionPhotosBusy = new Set();
 const factorySelectedOutboundOrders = new Set();
 const factoryProcessedBarcodes = new Set();
 const factoryScanHistory = [];
@@ -679,6 +689,7 @@ function setAuthGate(isAllowed) {
     button.classList.toggle("hidden", !isAllowed || !canCreateDouyinOrder());
   });
   document.body?.classList.toggle("has-access", requiresLogin && isAllowed);
+  if (APP_MODE === "factory" && !isAllowed) resetFactoryExceptionView();
   if (requiresLogin && currentUser && !isAllowed) {
     setMessage("authMessage", `当前账号角色为“${currentProfile?.role || "未设置"}”，不能进入${ROLE_LABELS[APP_MODE] || "此"}页面。`, "warn");
   } else if (requiresLogin && !currentUser) {
@@ -2097,7 +2108,7 @@ async function refreshAll({ reusePending = false } = {}) {
     const tasks = [];
     if (APP_MODE === "admin") tasks.push(loadStats(), loadAdmin());
     if (APP_MODE === "courier") tasks.push(loadCourierTasks());
-    if (APP_MODE === "factory") tasks.push(loadFactoryItems(), loadFactoryDailyScans());
+    if (APP_MODE === "factory") tasks.push(loadFactoryItems(), loadFactoryDailyScans(), $("factoryExceptionDialog")?.open ? loadFactoryExceptionTickets() : loadFactoryExceptionBadge());
     await Promise.all(tasks);
     if (APP_MODE === "factory") $("barcodeInput")?.focus();
   })();
@@ -3582,7 +3593,12 @@ async function submitExceptionTicket() {
     await insertLog({ orderId: item.order_id, itemId: item.id, barcode: item.barcode, status: "异常工单待处理", note: `${payload.ticket_type}：${description}` });
     $("exceptionTicketDialog")?.close();
     exceptionActionMessage = `异常工单已提交：${item.barcode}`;
-    await Promise.all([loadStats(), APP_MODE === "admin" ? loadExceptions() : Promise.resolve(), APP_MODE === "factory" ? loadFactoryItems() : Promise.resolve(), APP_MODE === "courier" ? loadCourierTasks() : Promise.resolve()]);
+    await Promise.all([APP_MODE === "admin" ? loadStats() : Promise.resolve(), APP_MODE === "admin" ? loadExceptions() : Promise.resolve(), APP_MODE === "factory" ? loadFactoryItems() : Promise.resolve(), APP_MODE === "courier" ? loadCourierTasks() : Promise.resolve()]);
+    if (APP_MODE === "factory") {
+      if ($("factoryExceptionSearch")) $("factoryExceptionSearch").value = item.barcode || "";
+      if ($("factoryExceptionStatusFilter")) $("factoryExceptionStatusFilter").value = "";
+      await openFactoryExceptionDialog();
+    }
     if (APP_MODE === "courier") alert(createsRetry ? `已上报异常并生成补取任务：${item.barcode}\n其他正常物品仍可点击“已取到”。` : `异常工单已提交：${item.barcode}\n原任务仍保留，请再按实际结果完成。`);
     exceptionTicketContext = null;
   } catch (error) {
@@ -6403,6 +6419,195 @@ async function loadFactoryItems() {
   renderFactoryPendingItems();
 }
 
+function canViewFactoryExceptions() {
+  return APP_MODE === "factory" && Boolean(sb && currentUser) && ["admin", "factory"].includes(currentProfile?.role);
+}
+
+function factoryTicketHasFeedback(ticket) {
+  return Boolean(text(ticket.customer_reply) || text(ticket.resolution));
+}
+
+function setFactoryExceptionBadge(count) {
+  const badge = $("factoryExceptionFeedbackCount");
+  if (!badge) return;
+  badge.textContent = count === null ? "待刷新" : `已反馈 ${count}`;
+  badge.classList.toggle("hidden", count === 0);
+}
+
+function resetFactoryExceptionView() {
+  clearTimeout(factoryExceptionSearchTimer);
+  factoryExceptionLoadVersion += 1;
+  factoryExceptionBadgeVersion += 1;
+  factoryExceptionRows = [];
+  factoryExceptionContext = factoryExceptionLoad = null;
+  factoryExceptionLoaded = false;
+  factoryExceptionPage = 0;
+  $("factoryExceptionDialog")?.close();
+  if ($("factoryExceptionList")) $("factoryExceptionList").innerHTML = "";
+  if ($("factoryExceptionSummary")) $("factoryExceptionSummary").textContent = "工厂上报的工单与客服反馈";
+  if ($("factoryExceptionMessage")) $("factoryExceptionMessage").textContent = "";
+  for (const key of imagePreviewMap.keys()) {
+    if (key.startsWith("factory-exception-")) imagePreviewMap.delete(key);
+  }
+  setFactoryExceptionBadge(0);
+}
+
+async function loadFactoryExceptionBadge() {
+  if (!canViewFactoryExceptions()) return;
+  const client = sb, userId = currentUser.id, version = ++factoryExceptionBadgeVersion;
+  try {
+    const { count, error } = await client.from("exception_tickets").select("id", { count: "exact", head: true })
+      .eq("source", "工厂端").or("customer_reply.neq.,resolution.neq.");
+    if (client !== sb || userId !== currentUser?.id || version !== factoryExceptionBadgeVersion) return;
+    setFactoryExceptionBadge(error ? null : count || 0);
+  } catch {
+    if (client === sb && userId === currentUser?.id && version === factoryExceptionBadgeVersion) setFactoryExceptionBadge(null);
+  }
+}
+
+async function openFactoryExceptionDialog() {
+  if (!canViewFactoryExceptions()) return;
+  const dialog = $("factoryExceptionDialog");
+  if (!dialog) return;
+  factoryExceptionPage = 0;
+  if ($("factoryExceptionBody")) $("factoryExceptionBody").scrollTop = 0;
+  if (!dialog.open) dialog.showModal();
+  await loadFactoryExceptionTickets();
+}
+
+async function loadFactoryExceptionTickets() {
+  if (!canViewFactoryExceptions()) return;
+  const client = sb, userId = currentUser.id;
+  if (factoryExceptionLoad?.client === client && factoryExceptionLoad.userId === userId) return factoryExceptionLoad.promise;
+  if (factoryExceptionContext?.client !== client || factoryExceptionContext.userId !== userId) {
+    factoryExceptionRows = [];
+    factoryExceptionLoaded = false;
+    factoryExceptionPage = 0;
+    factoryExceptionContext = { client, userId };
+    renderFactoryExceptionTickets();
+  }
+  const request = { client, userId, version: ++factoryExceptionLoadVersion };
+  factoryExceptionLoad = request;
+  const isCurrent = () => client === sb && userId === currentUser?.id && request.version === factoryExceptionLoadVersion;
+  if ($("refreshFactoryExceptionsBtn")) $("refreshFactoryExceptionsBtn").disabled = true;
+  setMessage("factoryExceptionMessage", "正在读取最新工单与客服反馈…");
+  request.promise = (async () => {
+    try {
+      await detectExceptionTicketSchemaAvailability(exceptionTicketSchemaAvailable === false);
+      if (!isCurrent()) return;
+      if (!exceptionTicketSchemaAvailable) throw new Error(exceptionTicketSchemaError || "工单暂时无法读取，请点击刷新重试。");
+      const result = await loadRowsById(() => client.from("exception_tickets")
+        .select("id,order_id,item_id,barcode,ticket_type,description,proposed_solution,customer_reply,resolution,evidence_paths,status,priority,source,created_at,updated_at,resolved_at,orders(id,order_no,customer_name,phone,school,campus,building),order_items(id,barcode,product_name,spec,item_status)")
+        .eq("source", "工厂端"));
+      if (!isCurrent()) return;
+      if (result.error) throw result.error;
+      const previous = new Map(factoryExceptionRows.map((row) => [row.id, row]));
+      factoryExceptionRows = hydrateExceptionTicketEvidence((result.data || []).filter((row) => row.source === "工厂端")).map((ticket) => {
+        const order = relationOne(ticket.orders), item = relationOne(ticket.order_items), cached = previous.get(ticket.id);
+        if (cached?.evidenceExpiresAt > Date.now() && JSON.stringify(cached.evidencePaths) === JSON.stringify(ticket.evidencePaths)) {
+          ticket.evidenceUrls = cached.evidenceUrls;
+          ticket.evidenceExpiresAt = cached.evidenceExpiresAt;
+        }
+        ticket.searchText = exceptionSearchText(order, [ticket.barcode, item.barcode, item.product_name, item.spec,
+          ticket.ticket_type, ticket.description, ticket.customer_reply, ticket.resolution]);
+        ticket.updatedMs = parseDate(ticket.updated_at || ticket.created_at)?.getTime() || 0;
+        return ticket;
+      }).sort((left, right) => right.updatedMs - left.updatedMs || compareNaturalText(left.id, right.id));
+      factoryExceptionLoaded = true;
+      factoryExceptionBadgeVersion += 1;
+      const feedback = factoryExceptionRows.filter(factoryTicketHasFeedback).length;
+      const pending = factoryExceptionRows.filter((ticket) => EXCEPTION_OPEN_STATUSES.includes(ticket.status)).length;
+      setFactoryExceptionBadge(feedback);
+      if ($("factoryExceptionSummary")) $("factoryExceptionSummary").textContent = `共 ${factoryExceptionRows.length} 条 · 待处理 ${pending} 条 · 已反馈 ${feedback} 条`;
+      renderFactoryExceptionTickets();
+      setMessage("factoryExceptionMessage", `已更新 ${formatDateTime(new Date(), true)}`);
+    } catch (error) {
+      if (!isCurrent()) return;
+      setMessage("factoryExceptionMessage", `读取最新反馈失败。${error.message || error}${factoryExceptionLoaded ? " 以下保留上次读取的记录。" : " 请点击刷新重试。"}`, "warn");
+      setFactoryExceptionBadge(null);
+    } finally {
+      if (factoryExceptionLoad === request) factoryExceptionLoad = null;
+      if (isCurrent() && $("refreshFactoryExceptionsBtn")) $("refreshFactoryExceptionsBtn").disabled = false;
+    }
+  })();
+  return request.promise;
+}
+
+function renderFactoryExceptionTickets() {
+  const list = $("factoryExceptionList");
+  if (!list) return;
+  const terms = text($("factoryExceptionSearch")?.value).normalize("NFKC").toLowerCase().split(/\s+/).filter(Boolean);
+  const status = $("factoryExceptionStatusFilter")?.value || "";
+  const rows = factoryExceptionRows.filter((ticket) => terms.every((term) => ticket.searchText.includes(term))
+    && (!status || (status === "feedback" ? factoryTicketHasFeedback(ticket) : ticket.status === status)));
+  const pages = Math.max(1, Math.ceil(rows.length / FACTORY_EXCEPTION_PAGE_SIZE));
+  factoryExceptionPage = Math.min(Math.max(0, factoryExceptionPage), pages - 1);
+  list.innerHTML = rows.slice(factoryExceptionPage * FACTORY_EXCEPTION_PAGE_SIZE, (factoryExceptionPage + 1) * FACTORY_EXCEPTION_PAGE_SIZE)
+    .map(renderFactoryExceptionCard).join("") || (factoryExceptionLoaded ? `<p class="hint factory-exception-empty">${factoryExceptionRows.length ? "暂无匹配工单，可清空筛选查看全部上报记录。" : "暂无工厂上报的异常工单。"}</p>` : "");
+  if ($("factoryExceptionPageInfo")) $("factoryExceptionPageInfo").textContent = factoryExceptionLoaded ? `${rows.length} 条 · ${factoryExceptionPage + 1} / ${pages} 页` : "";
+  if ($("factoryExceptionPrevPage")) $("factoryExceptionPrevPage").disabled = factoryExceptionPage === 0;
+  if ($("factoryExceptionNextPage")) $("factoryExceptionNextPage").disabled = factoryExceptionPage >= pages - 1;
+}
+
+function renderFactoryExceptionCard(ticket) {
+  const order = relationOne(ticket.orders), item = relationOne(ticket.order_items);
+  const barcode = displayWashLabelBarcode(item.barcode || ticket.barcode, "未绑定水洗标");
+  const resolution = String(ticket.resolution || "").trim(), reply = String(ticket.customer_reply || "").trim();
+  const feedback = resolution || reply;
+  const feedbackTitle = resolution ? "客服处理结论" : reply ? "客户回复 / 已确认方案" : "等待客服反馈";
+  const waitingText = EXCEPTION_OPEN_STATUSES.includes(ticket.status) ? "客服反馈后会显示在这里，请点击刷新查看最新进展。" : "工单已结案，暂无文字结论，请联系后台确认。";
+  return `<article class="factory-exception-card" data-factory-exception-card="${escapeHtml(ticket.id)}">
+    <div class="factory-exception-card-head"><div><h3>${escapeHtml(barcode)}</h3><p>${escapeHtml(order.customer_name || "未知客户")} · ${escapeHtml(factoryMaskedPhone(order.phone))}</p></div><span class="ticket-status ${exceptionStatusClass(ticket.status)}">${escapeHtml(ticket.status)}</span></div>
+    <p class="factory-exception-item">${escapeHtml(item.spec || item.product_name || "物品待核对")}<span>物品状态 ${escapeHtml(item.item_status || "待核对")}</span></p>
+    <div class="factory-exception-feedback ${feedback ? "has-feedback" : ""}"><strong>${feedbackTitle}</strong><p>${escapeHtml(feedback || waitingText)}</p>${text(ticket.resolution) && text(ticket.customer_reply) ? `<p class="factory-exception-reply">客户回复：${escapeHtml(ticket.customer_reply)}</p>` : ""}</div>
+    <details class="factory-exception-report"><summary>${escapeHtml(ticket.ticket_type)} · 查看上报内容</summary><p>${escapeHtml(ticket.description || "未填写问题说明")}</p>${ticket.proposed_solution ? `<p>工厂建议：${escapeHtml(ticket.proposed_solution)}</p>` : ""}</details>
+    <div class="factory-exception-times"><span>订单 ${escapeHtml(order.order_no || "—")}</span><span>上报 ${escapeHtml(formatDateTime(ticket.created_at, true))}</span><span>更新 ${escapeHtml(formatDateTime(ticket.updated_at, true))}</span></div>
+    <div class="factory-exception-card-actions">${order.id || ticket.order_id ? `<button class="ghost" type="button" data-detail="${escapeHtml(order.id || ticket.order_id)}">查看订单</button>` : ""}${ticket.evidencePaths.length ? `<button class="ghost" type="button" data-factory-exception-evidence="${escapeHtml(ticket.id)}">异常照片（${ticket.evidencePaths.length}）</button>` : ""}</div>
+  </article>`;
+}
+
+async function loadFactoryExceptionEvidence(ticketId, button) {
+  if (!canViewFactoryExceptions() || factoryExceptionPhotosBusy.has(ticketId)) return;
+  const ticket = factoryExceptionRows.find((row) => row.id === ticketId);
+  if (!ticket?.evidencePaths.length) return;
+  const client = sb, userId = currentUser.id, key = `factory-exception-${ticketId}`;
+  factoryExceptionPhotosBusy.add(ticketId);
+  if (button) button.disabled = true;
+  try {
+    let urls = ticket.evidenceExpiresAt > Date.now() ? ticket.evidenceUrls : [];
+    if (!urls.length) {
+      const { data, error } = await client.storage.from("exception-evidence").createSignedUrls(ticket.evidencePaths, 60 * 60);
+      if (error) throw error;
+      urls = (data || []).map((entry) => entry.signedUrl).filter(Boolean);
+      if (!urls.length) throw new Error("未获取到照片，请刷新后重试。");
+      if (client !== sb || userId !== currentUser?.id || !factoryExceptionRows.includes(ticket)) return;
+      ticket.evidenceUrls = urls;
+      ticket.evidenceExpiresAt = Date.now() + 55 * 60 * 1000;
+    }
+    if (client !== sb || userId !== currentUser?.id) return;
+    imagePreviewMap.set(key, urls);
+    showImagePreview(key);
+  } catch (error) {
+    if (client === sb && userId === currentUser?.id) setMessage("factoryExceptionMessage", `异常照片读取失败：${error.message || error}`, "warn");
+  } finally {
+    factoryExceptionPhotosBusy.delete(ticketId);
+    if (button) button.disabled = false;
+  }
+}
+
+function filterFactoryExceptions() {
+  clearTimeout(factoryExceptionSearchTimer);
+  factoryExceptionPage = 0;
+  renderFactoryExceptionTickets();
+  if ($("factoryExceptionBody")) $("factoryExceptionBody").scrollTop = 0;
+}
+
+function changeFactoryExceptionPage(delta) {
+  factoryExceptionPage += delta;
+  renderFactoryExceptionTickets();
+  if ($("factoryExceptionBody")) $("factoryExceptionBody").scrollTop = 0;
+}
+
 function factoryMaskedPhone(value) {
   const phone = text(value);
   if (phone.length < 7) return phone || "未留电话";
@@ -8128,6 +8333,30 @@ function bindEvents() {
   on("refreshAdminBtn", "click", () => refreshAll({ reusePending: true }));
   on("refreshCourierBtn", "click", () => refreshAll({ reusePending: true }));
   on("refreshFactoryBtn", "click", () => refreshAll({ reusePending: true }));
+  on("factoryExceptionBtn", "click", openFactoryExceptionDialog);
+  on("refreshFactoryExceptionsBtn", "click", () => {
+    factoryExceptionPage = 0;
+    if ($("factoryExceptionBody")) $("factoryExceptionBody").scrollTop = 0;
+    loadFactoryExceptionTickets();
+  });
+  on("closeFactoryExceptionsBtn", "click", () => $("factoryExceptionDialog")?.close());
+  on("factoryExceptionDialog", "close", () => clearTimeout(factoryExceptionSearchTimer));
+  on("factoryExceptionSearch", "compositionstart", () => clearTimeout(factoryExceptionSearchTimer));
+  on("factoryExceptionSearch", "input", (event) => {
+    clearTimeout(factoryExceptionSearchTimer);
+    if (event.isComposing) return;
+    const client = sb, userId = currentUser?.id;
+    factoryExceptionSearchTimer = setTimeout(() => {
+      if (client === sb && userId === currentUser?.id) filterFactoryExceptions();
+    }, 180);
+  });
+  on("factoryExceptionStatusFilter", "change", filterFactoryExceptions);
+  on("clearFactoryExceptionFiltersBtn", "click", () => {
+    $("factoryExceptionSearch").value = $("factoryExceptionStatusFilter").value = "";
+    filterFactoryExceptions();
+  });
+  on("factoryExceptionPrevPage", "click", () => changeFactoryExceptionPage(-1));
+  on("factoryExceptionNextPage", "click", () => changeFactoryExceptionPage(1));
   on("refreshFactoryDailyBtn", "click", loadFactoryDailyScans);
   on("factoryOutboundBatchSelect", "change", () => selectFactoryOutboundBatch($("factoryOutboundBatchSelect")?.value || ""));
   on("factoryDailyCollapseBtn", "click", () => toggleFactoryDailyPanel());
@@ -8228,6 +8457,8 @@ function bindEvents() {
     }
     const loadExceptionEvidenceBtn = event.target.closest("[data-load-exception-evidence]");
     if (loadExceptionEvidenceBtn) loadExceptionTicketEvidence(loadExceptionEvidenceBtn.dataset.loadExceptionEvidence);
+    const factoryExceptionEvidenceBtn = event.target.closest("[data-factory-exception-evidence]");
+    if (factoryExceptionEvidenceBtn) loadFactoryExceptionEvidence(factoryExceptionEvidenceBtn.dataset.factoryExceptionEvidence, factoryExceptionEvidenceBtn);
     const fullImageBtn = event.target.closest("[data-full-image]");
     if (fullImageBtn) window.open(fullImageBtn.dataset.fullImage, "_blank", "noopener,noreferrer");
     const dashboardTarget = event.target.closest("[data-dashboard-target]");
@@ -8390,7 +8621,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=101", { updateViaCache: "none" })
+    .register("./sw.js?v=102", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
