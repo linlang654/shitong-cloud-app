@@ -140,6 +140,8 @@ let factoryExceptionLoadVersion = 0;
 let factoryExceptionLoaded = false;
 let factoryExceptionSearchTimer;
 let factoryExceptionBadgeVersion = 0;
+let factoryWorkContext = null;
+let factoryWorkBusy = false;
 const factoryExceptionPhotosBusy = new Set();
 const factorySelectedOutboundOrders = new Set();
 const factoryProcessedBarcodes = new Set();
@@ -702,6 +704,12 @@ function setAuthGate(isAllowed) {
     $("exceptionHandlingDialog").close();
   }
   if (APP_MODE === "factory" && !isAllowed) resetFactoryExceptionView();
+  if (!isAllowed) {
+    factoryWorkContext = null;
+    exceptionTicketContext = null;
+    $("factoryWorkDialog")?.close();
+    $("exceptionTicketDialog")?.close();
+  }
   if (requiresLogin && currentUser && !isAllowed) {
     setMessage("authMessage", `当前账号角色为“${currentProfile?.role || "未设置"}”，不能进入${ROLE_LABELS[APP_MODE] || "此"}页面。`, "warn");
   } else if (requiresLogin && !currentUser) {
@@ -3140,6 +3148,7 @@ async function loadExceptions() {
   const ownerFilter = $("exceptionOwnerFilter")?.value === "mine" ? "mine" : "";
   const decisionFilter = $("exceptionDecisionFilter")?.value || "";
   const dateFilter = readExceptionDateFilter("exception");
+  const targetFilter = $("exceptionTargetFilter")?.value || "";
   $("adminExceptions").innerHTML = `
     <section class="panel exception-center">
       <div class="exception-heading">
@@ -3150,6 +3159,7 @@ async function loadExceptions() {
         </div>
         <div class="toolbar wrap">
           <button type="button" data-new-exception-ticket ${exceptionTicketSchemaAvailable ? "" : "disabled"}>新建异常工单</button>
+          <button type="button" data-new-factory-exception ${exceptionTicketSchemaAvailable ? "" : "disabled"}>发给工厂处理</button>
           <button class="ghost" type="button" data-reprocess-orders>重新识别地址</button>
         </div>
       </div>
@@ -3172,6 +3182,7 @@ async function loadExceptions() {
           <option value="">全部工单</option><option value="mine" ${ownerFilter === "mine" ? "selected" : ""}>我的工单</option>
         </select></label>
         <label class="field-group"><span>处理结果</span><select id="exceptionDecisionFilter" class="input">${exceptionHandlingFilterOptions(decisionFilter)}</select></label>
+        <label class="field-group"><span>处理方向</span><select id="exceptionTargetFilter" class="input">${[["", "全部工单"], ["customer_service", "客服处理"], ["factory", "发给工厂"], ["factory_replied", "工厂已回复，待确认"]].map(([key,label]) => `<option value="${key}" ${targetFilter === key ? "selected" : ""}>${label}</option>`).join("")}</select></label>
         <button id="clearExceptionFilters" class="ghost" type="button">清空筛选</button>
       </div>
       ${renderExceptionDateFilters("exception", dateFilter)}
@@ -3198,9 +3209,11 @@ async function loadExceptions() {
   on("exceptionOwnerFilter", "change", applyExceptionSearch);
   on("exceptionDecisionFilter", "change", applyExceptionSearch);
   bindExceptionDateFilters("exception", applyExceptionSearch);
+  on("exceptionTargetFilter", "change", applyExceptionSearch);
   on("clearExceptionFilters", "click", () => {
     $("exceptionSearch").value = $("exceptionStatusFilter").value = $("exceptionOwnerFilter").value = $("exceptionDecisionFilter").value = "";
     clearExceptionDateFilters("exception");
+    $("exceptionTargetFilter").value = "";
     applyExceptionSearch();
   });
   applyExceptionSearch();
@@ -3340,11 +3353,13 @@ function applyExceptionSearch() {
   const decision = $("exceptionDecisionFilter")?.value || "";
   const dateFilter = readExceptionDateFilter("exception");
   updateExceptionDateHint("exception", dateFilter);
-  const searching = terms.length > 0 || Boolean(statusFilter) || mine || Boolean(decision) || dateFilter.active;
+  const target = $("exceptionTargetFilter")?.value || "";
+  const searching = terms.length > 0 || Boolean(statusFilter) || mine || Boolean(decision) || dateFilter.active || Boolean(target);
   const matchesFilters = (card) => terms.every((term) => card.dataset.exceptionSearch.includes(term))
     && (!statusFilter || card.dataset.exceptionTicketStatus === statusFilter)
     && (!decision || card.dataset.exceptionHandling === decision)
     && exceptionMatchesDate({ created_at: card.dataset.exceptionCreated, updated_at: card.dataset.exceptionUpdated, resolved_at: card.dataset.exceptionResolved }, dateFilter)
+    && (!target || (target === "factory_replied" ? card.dataset.exceptionTarget === "factory" && card.dataset.exceptionFactoryProgress === "replied" && EXCEPTION_OPEN_STATUSES.includes(card.dataset.exceptionTicketStatus) : card.dataset.exceptionTarget === target))
     && (!mine || Boolean(currentUser?.id) && card.dataset.exceptionAssignee === currentUser.id);
   let totalMatches = 0;
   for (const group of $("adminExceptions").querySelectorAll("[data-exception-search-group]")) {
@@ -3401,6 +3416,7 @@ function renderExceptionTicketCard(ticket) {
   const item = relationOne(ticket.order_items);
   const barcode = displayWashLabelBarcode(ticket.barcode || item.barcode, "未绑定水洗标");
   const resolved = !EXCEPTION_OPEN_STATUSES.includes(ticket.status);
+  const toFactory = ticket.target_team === "factory";
   const decision = effectiveExceptionHandlingDecision(ticket);
   const assignee = relationOne(ticket.assignee);
   const assigneeName = ticket.assignee_id
@@ -3411,16 +3427,18 @@ function renderExceptionTicketCard(ticket) {
   const evidencePaths = ticket.evidencePaths || (Array.isArray(ticket.evidence_paths) ? ticket.evidence_paths : []);
   const searchable = exceptionSearchText(order, [
     barcode, displayWashLabelBarcode(item.barcode), ticket.ticket_type, ticket.status, ticket.description,
-    item.product_name, item.spec, exceptionHandlingLabel(decision),
+    item.product_name, item.spec, exceptionHandlingLabel(decision), ticket.factory_reply,
+    toFactory ? factoryWorkStageLabel(ticket) : "客服处理",
   ]);
   if (evidenceUrls.length) imagePreviewMap.set(evidenceKey, evidenceUrls);
   return `
-    <article class="task-card exception-ticket-card ${ticket.priority === "紧急" ? "urgent" : ""}" data-exception-ticket="${ticket.id}" data-exception-ticket-status="${escapeHtml(ticket.status)}" data-exception-assignee="${escapeHtml(ticket.assignee_id || "")}" data-exception-handling="${decision}" ${exceptionDateAttributes(ticket)} data-exception-search="${escapeHtml(searchable)}">
+    <article class="task-card exception-ticket-card ${ticket.priority === "紧急" ? "urgent" : ""}" data-exception-ticket="${ticket.id}" data-exception-ticket-status="${escapeHtml(ticket.status)}" data-exception-assignee="${escapeHtml(ticket.assignee_id || "")}" data-exception-handling="${decision}" data-exception-target="${toFactory ? "factory" : "customer_service"}" data-exception-factory-progress="${escapeHtml(ticket.factory_progress || "")}" ${exceptionDateAttributes(ticket)} data-exception-search="${escapeHtml(searchable)}">
       <div class="card-head">
         <div><h3>${escapeHtml(ticket.ticket_type)}${ticket.priority === "紧急" ? '<span class="urgent-label">紧急</span>' : ""}</h3><p class="hint">${escapeHtml(order.customer_name || "未知客户")} · ${escapeHtml(order.phone || "")} · ${escapeHtml(barcode)}</p></div>
-        <span class="ticket-status ${exceptionStatusClass(ticket.status)}">${escapeHtml(ticket.status)}</span>
+        <span class="ticket-status ${exceptionStatusClass(ticket.status)}">${escapeHtml(toFactory ? factoryWorkStageLabel(ticket) : ticket.status)}</span>
       </div>
       <p class="exception-ticket-description">${escapeHtml(ticket.description || "未填写问题说明")}</p>
+      ${toFactory ? `<p class="hint">后台发给工厂 · 工厂回复后由后台确认结案</p>${renderFactoryWorkReply(ticket)}` : ""}
       <p class="exception-handling-line">处理结论 <strong class="handling-decision ${decision}">${exceptionHandlingLabel(decision)}</strong></p>
       <div class="exception-ticket-meta"><span>订单 ${escapeHtml(order.order_no || "—")}</span><span>${escapeHtml(item.spec || item.product_name || "物品待核对")}</span><span>${escapeHtml(ticket.source || "后台")}</span><span>${escapeHtml(formatDateTime(ticket.created_at, true))}</span><span>负责人 ${escapeHtml(assigneeName)}</span></div>
       ${evidenceUrls.length ? `<div class="exception-evidence-grid">${evidenceUrls.map((url, index) => {
@@ -3434,9 +3452,9 @@ function renderExceptionTicketCard(ticket) {
       ${ticket.resolution ? `<p><strong>处理结果：</strong>${escapeHtml(ticket.resolution)}</p>` : ""}
       <div class="actions exception-ticket-actions">
         ${!resolved && !ticket.assignee_id ? `<button class="ghost" type="button" data-claim-exception-ticket="${escapeHtml(ticket.id)}">认领工单</button>` : ""}
-        <button class="ghost" type="button" data-copy-exception-message="${ticket.id}">复制客户沟通内容</button>
+        ${toFactory ? "" : `<button class="ghost" type="button" data-copy-exception-message="${ticket.id}">复制客户沟通内容</button>`}
         ${item.id && order.id && !resolved ? `<button class="ghost" type="button" data-schedule-retry-item="${escapeHtml(item.id)}" data-retry-order="${escapeHtml(order.id)}" data-retry-ticket="${escapeHtml(ticket.id)}">安排补取</button>` : ""}
-        ${resolved ? `<button class="ghost" type="button" data-edit-exception-handling="${ticket.id}">修改处理结论</button>` : `<button class="ghost" type="button" data-exception-status="${ticket.id}" data-status="待客户">标记待客户</button><button class="ghost" type="button" data-exception-status="${ticket.id}" data-status="处理中">开始处理</button><button type="button" data-exception-status="${ticket.id}" data-status="已解决">处理完成 / 选择结论</button>`}
+        ${resolved ? `<button class="ghost" type="button" data-edit-exception-handling="${ticket.id}">修改处理结论</button>` : toFactory ? ticket.factory_progress === "replied" ? `<button type="button" data-exception-status="${ticket.id}" data-status="已解决">确认处理 / 选择结论</button><button class="ghost" type="button" data-factory-work="${ticket.id}" data-work-action="reopen">退回工厂重处理</button>` : '<span class="hint">等待工厂处理并回复</span>' : `<button class="ghost" type="button" data-exception-status="${ticket.id}" data-status="待客户">标记待客户</button><button class="ghost" type="button" data-exception-status="${ticket.id}" data-status="处理中">开始处理</button><button type="button" data-exception-status="${ticket.id}" data-status="已解决">处理完成 / 选择结论</button>`}
       </div>
     </article>`;
 }
@@ -3473,7 +3491,8 @@ function ensureExceptionTicketDialog() {
   document.body.insertAdjacentHTML("beforeend", `
     <dialog id="exceptionTicketDialog" class="exception-ticket-dialog">
       <form method="dialog" class="exception-ticket-form" onsubmit="return false">
-        <div class="dialog-heading"><div><p class="eyebrow">绑定到单个水洗标</p><h2>上报异常工单</h2></div><button class="ghost small-btn" type="button" data-close-exception-ticket>关闭</button></div>
+        <div class="dialog-heading"><div><p class="eyebrow">绑定到单个水洗标</p><h2 id="exceptionTicketTitle">上报异常工单</h2></div><button class="ghost small-btn" type="button" data-close-exception-ticket>关闭</button></div>
+        <p id="exceptionTicketRouteHint" class="hint"></p>
         <input id="exceptionTicketItemId" type="hidden" />
         <label id="exceptionTicketItemChoice" class="field-group hidden"><span>选择异常物品</span><select id="exceptionTicketItemSelect" class="input"></select></label>
         <label class="field-group"><span>水洗标</span><input id="exceptionTicketBarcode" class="input" placeholder="扫码或输入水洗标" autocomplete="off" /></label>
@@ -3482,23 +3501,29 @@ function ensureExceptionTicketDialog() {
           <label class="field-group"><span>优先级</span><select id="exceptionTicketPriority" class="input"><option value="普通">普通</option><option value="紧急">紧急</option></select></label>
         </div>
         <label id="exceptionTicketRetryDateField" class="field-group hidden"><span>补取日期</span><input id="exceptionTicketRetryDate" class="input" type="date" /><small>选中的水洗标会单独进入补取路线，订单内其他物品不受影响。</small></label>
-        <label class="field-group"><span>问题说明</span><textarea id="exceptionTicketDescription" class="input" rows="3" placeholder="例如：前后logo存在脱落风险，建议先联系客户确认"></textarea></label>
-        <label class="field-group"><span>建议处理方案</span><input id="exceptionTicketSolution" class="input" placeholder="例如：客户确认后继续清洗 / 返洗 / 退洗" /></label>
+        <label class="field-group"><span>问题说明</span><textarea id="exceptionTicketDescription" class="input" rows="3" maxlength="4000" placeholder="说明需要核查或处理的问题"></textarea></label>
+        <label class="field-group"><span>建议处理方案</span><input id="exceptionTicketSolution" class="input" maxlength="1000" placeholder="例如：核查少件原因 / 返洗后反馈结果" /></label>
         <label class="field-group"><span>异常照片（最多 6 张）</span><input id="exceptionTicketFiles" class="input" type="file" accept="image/*" multiple /></label>
         <p class="hint">照片会在上传前缩小并压缩，单张保存约 600KB（上限 800KB）；原图每张最多 100MB。</p>
         <p id="exceptionTicketMessage" class="hint" role="status" aria-live="polite"></p>
         <div class="actions"><button type="button" data-submit-exception-ticket>提交工单</button><button class="ghost" type="button" data-close-exception-ticket>取消</button></div>
       </form>
     </dialog>`);
+  $("exceptionTicketDialog").addEventListener("cancel", (event) => { if (exceptionTicketBusy) event.preventDefault(); });
   return $("exceptionTicketDialog");
 }
 
 function openExceptionTicketDialog(item = null, context = null) {
+  if (exceptionTicketBusy) return;
+  if (context?.type === "admin-to-factory" && (APP_MODE !== "admin" || currentProfile?.role !== "admin")) return;
   if (!exceptionTicketSchemaAvailable) return alert(exceptionTicketMigrationMessage());
   const dialog = ensureExceptionTicketDialog();
   const items = (context?.items?.length ? context.items : item ? [item] : []).filter(Boolean);
   const selectedItem = item || items[0] || null;
   exceptionTicketContext = context ? { ...context, items } : null;
+  if (context?.type === "admin-to-factory") exceptionTicketContext.requestId = crypto.randomUUID();
+  $("exceptionTicketTitle").textContent = context?.type === "admin-to-factory" ? "发给工厂处理" : "上报异常工单";
+  $("exceptionTicketRouteHint").textContent = context?.type === "admin-to-factory" ? "工厂可查看问题和照片，填写处理结果后由后台确认结案。" : "提交后由客服核对、沟通和处理。";
   $("exceptionTicketItemId").value = selectedItem?.id || "";
   $("exceptionTicketBarcode").value = displayWashLabelBarcode(selectedItem?.barcode);
   $("exceptionTicketBarcode").readOnly = Boolean(selectedItem?.barcode);
@@ -3618,6 +3643,9 @@ async function scheduleRetryPickupFromUi(itemId, orderId, ticketId = null) {
 
 async function submitExceptionTicket() {
   if (exceptionTicketBusy) return;
+  const toFactory = exceptionTicketContext?.type === "admin-to-factory";
+  const submissionClient = sb, submissionUser = currentUser?.id, submissionContext = exceptionTicketContext;
+  if (toFactory && (!submissionClient || !submissionUser || APP_MODE !== "admin" || currentProfile?.role !== "admin")) return;
   if (!exceptionTicketSchemaAvailable) return alert(exceptionTicketMigrationMessage());
   const itemId = text($("exceptionTicketItemId")?.value);
   const barcode = text($("exceptionTicketBarcode")?.value);
@@ -3628,7 +3656,8 @@ async function submitExceptionTicket() {
   document.querySelector("[data-submit-exception-ticket]")?.setAttribute("disabled", "disabled");
   setMessage("exceptionTicketMessage", "正在保存异常工单和照片...", "hint");
   try {
-    let itemQuery = sb.from("order_items").select("id,order_id,barcode,product_name,spec,orders(id,order_no)");
+    const reportClient = toFactory ? submissionClient : sb;
+    let itemQuery = reportClient.from("order_items").select("id,order_id,barcode,product_name,spec,orders(id,order_no)");
     itemQuery = itemId ? itemQuery.eq("id", itemId) : itemQuery.eq("barcode", barcode);
     const { data: item, error: itemError } = await itemQuery.maybeSingle();
     if (itemError) throw itemError;
@@ -3636,16 +3665,19 @@ async function submitExceptionTicket() {
     const ticketType = text($("exceptionTicketType")?.value) || "其他异常";
     const createsRetry = exceptionTicketContext?.type === "courier-pickup" && ticketType === "漏取/补取";
     if (createsRetry && !retryPickupSchemaAvailable) throw new Error(retryPickupMigrationMessage());
-    const { data: existingTicket, error: existingError } = await sb
-      .from("exception_tickets")
-      .select("id")
-      .eq("item_id", item.id)
-      .eq("ticket_type", ticketType)
-      .in("status", EXCEPTION_OPEN_STATUSES)
-      .limit(1)
-      .maybeSingle();
-    if (existingError) throw existingError;
-    if (existingTicket) throw new Error("这个水洗标已有同类型待处理工单，请勿重复上报");
+    if (!toFactory) {
+      const { data: existingTicket, error: existingError } = await sb
+        .from("exception_tickets")
+        .select("id")
+        .eq("item_id", item.id)
+        .eq("ticket_type", ticketType)
+        .eq("target_team", "customer_service")
+        .in("status", EXCEPTION_OPEN_STATUSES)
+        .limit(1)
+        .maybeSingle();
+      if (existingError) throw existingError;
+      if (existingTicket) throw new Error("这个水洗标已有同类型待处理工单，请勿重复上报");
+    }
     const files = [...($("exceptionTicketFiles")?.files || [])];
     if (files.length > 6) throw new Error("异常照片最多选择 6 张。");
     if (files.some((file) => !String(file.type || "").startsWith("image/") || file.size > 100 * 1024 * 1024)) {
@@ -3655,11 +3687,12 @@ async function submitExceptionTicket() {
     for (const [index, file] of files.entries()) {
       setMessage("exceptionTicketMessage", `正在压缩并上传第 ${index + 1}/${files.length} 张照片…`, "hint");
       const compressedFile = await prepareReturnDeliveryPhoto(file);
+      if (toFactory && (submissionClient !== sb || submissionUser !== currentUser?.id || submissionContext !== exceptionTicketContext)) return;
       if (compressedFile.size > RETURN_DELIVERY_STORED_MAX_BYTES) {
         throw new Error(`${file.name} 压缩后仍超过 800KB；请转换为 JPG 后重试。`);
       }
       const path = `${item.order_id}/${crypto.randomUUID()}-${safeEvidenceFileName(compressedFile.name)}`;
-      const { error: uploadError } = await sb.storage.from("exception-evidence").upload(path, compressedFile, { contentType: compressedFile.type || "image/jpeg", upsert: false });
+      const { error: uploadError } = await reportClient.storage.from("exception-evidence").upload(path, compressedFile, { contentType: compressedFile.type || "image/jpeg", upsert: false });
       if (uploadError) throw uploadError;
       evidencePaths.push(path);
     }
@@ -3693,27 +3726,34 @@ async function submitExceptionTicket() {
         parentTaskId: exceptionTicketContext?.isRetry ? null : exceptionTicketContext?.taskId || null,
       });
     }
-    const { data: createdTicket, error } = await sb.from("exception_tickets").insert(payload).select("id").single();
+    if (toFactory && (submissionClient !== sb || submissionUser !== currentUser?.id || submissionContext !== exceptionTicketContext)) return;
+    const { data: createdTicket, error } = toFactory
+      ? await submissionClient.rpc("create_factory_exception", { p_ticket_id: submissionContext.requestId, p_item_id: item.id,
+        p_ticket_type: ticketType, p_description: description, p_solution: payload.proposed_solution, p_priority: payload.priority, p_evidence_paths: evidencePaths })
+      : await sb.from("exception_tickets").insert(payload).select("id").single();
     if (error) throw error;
+    if (toFactory && (submissionClient !== sb || submissionUser !== currentUser?.id || submissionContext !== exceptionTicketContext)) return;
+    if (toFactory && (createdTicket?.ticket_id !== submissionContext.requestId || createdTicket?.target_team !== "factory")) throw new Error("未确认保存结果，请刷新工单核对。");
     if (retryId) {
       const { error: linkError } = await sb.from("pickup_retry_tasks").update({ exception_ticket_id: createdTicket.id, updated_at: new Date().toISOString() }).eq("id", retryId);
       if (linkError) throw linkError;
     }
-    await insertLog({ orderId: item.order_id, itemId: item.id, barcode: item.barcode, status: "异常工单待处理", note: `${payload.ticket_type}：${description}` });
+    if (!toFactory) await insertLog({ orderId: item.order_id, itemId: item.id, barcode: item.barcode, status: "异常工单待处理", note: `${payload.ticket_type}：${description}` });
     $("exceptionTicketDialog")?.close();
-    exceptionActionMessage = `异常工单已提交：${item.barcode}`;
+    exceptionActionMessage = `${toFactory ? "已发给工厂处理" : "异常工单已提交"}：${item.barcode}`;
     await Promise.all([APP_MODE === "admin" ? loadStats() : Promise.resolve(), APP_MODE === "admin" ? loadExceptions() : Promise.resolve(), APP_MODE === "factory" ? loadFactoryItems() : Promise.resolve(), APP_MODE === "courier" ? loadCourierTasks() : Promise.resolve()]);
     if (APP_MODE === "factory") {
       if ($("factoryExceptionSearch")) $("factoryExceptionSearch").value = item.barcode || "";
       if ($("factoryExceptionStatusFilter")) $("factoryExceptionStatusFilter").value = "";
       if ($("factoryExceptionDecisionFilter")) $("factoryExceptionDecisionFilter").value = "";
+      if ($("factoryExceptionQueueFilter")) $("factoryExceptionQueueFilter").value = "sent";
       clearExceptionDateFilters("factoryException");
       await openFactoryExceptionDialog();
     }
     if (APP_MODE === "courier") alert(createsRetry ? `已上报异常并生成补取任务：${item.barcode}\n其他正常物品仍可点击“已取到”。` : `异常工单已提交：${item.barcode}\n原任务仍保留，请再按实际结果完成。`);
     exceptionTicketContext = null;
   } catch (error) {
-    setMessage("exceptionTicketMessage", error?.message || "异常工单提交失败", "warn");
+    setMessage("exceptionTicketMessage", ["PGRST202", "42703", "42883"].includes(error?.code) ? "当前业务库尚未启用工厂工单更新，请先完成本次数据库更新。" : error?.message || "异常工单提交失败", "warn");
   } finally {
     exceptionTicketBusy = false;
     document.querySelector("[data-submit-exception-ticket]")?.removeAttribute("disabled");
@@ -3787,14 +3827,15 @@ function openExceptionHandlingDialog(ticketId, status = "") {
   const ticket = currentExceptionTickets.find((row) => row.id === ticketId);
   const dialog = $("exceptionHandlingDialog");
   if (!ticket || !dialog) return;
+  if (ticket.target_team === "factory" && ticket.factory_progress !== "replied") return alert("请先等待工厂回复，再确认结案。");
   exceptionHandlingContext = { client: sb, userId: currentUser.id, ticket: { ...ticket } };
   const order = relationOne(ticket.orders), item = relationOne(ticket.order_items);
-  $("exceptionHandlingSummary").textContent = `${order.customer_name || "未知客户"} · ${displayWashLabelBarcode(item.barcode || ticket.barcode)} · ${ticket.ticket_type}`;
+  $("exceptionHandlingSummary").textContent = `${order.customer_name || "未知客户"} · ${displayWashLabelBarcode(item.barcode || ticket.barcode)} · ${ticket.ticket_type}${ticket.target_team === "factory" ? `；工厂回复：${ticket.factory_reply || "—"}` : ""}`;
   const decision = exceptionHandlingDecision(ticket);
-  $("exceptionHandlingDecision").value = decision === "legacy" ? "" : decision;
+  $("exceptionHandlingDecision").value = ticket.target_team === "factory" && decision === "pending" ? "other" : decision === "legacy" ? "" : decision;
   $("exceptionHandlingStatus").value = status || ticket.status;
   $("exceptionHandlingReply").value = ticket.customer_reply || "";
-  $("exceptionHandlingReason").value = ticket.resolution || "";
+  $("exceptionHandlingReason").value = ticket.resolution || (ticket.target_team === "factory" ? ticket.factory_reply || "" : "");
   setMessage("exceptionHandlingMessage", "");
   updateExceptionHandlingDialog();
   if (!dialog.open) {
@@ -5491,7 +5532,7 @@ async function showOrderDetail(orderId) {
               <td class="order-item-nowrap">${item.image_links ? `<a href="${escapeHtml(item.image_links.split("\n")[0])}" target="_blank">查看</a>` : ""}</td>
               ${canEditItemStatus ? `<td class="order-item-nowrap">${["待取件", "未找到", "待补取", "已取件"].includes(item.item_status)
                 ? `<button class="ghost small-btn" type="button" data-schedule-retry-item="${escapeHtml(item.id)}" data-retry-order="${escapeHtml(order.id)}">安排补取</button>`
-                : "—"}</td>` : ""}
+                : ""}<button class="ghost small-btn" type="button" data-factory-item="${escapeHtml(item.id)}" data-factory-barcode="${escapeHtml(item.barcode || "")}">发给工厂</button></td>` : ""}
             </tr>`;
           }).join("")}</tbody>
         </table>
@@ -6593,8 +6634,96 @@ function canViewFactoryExceptions() {
   return APP_MODE === "factory" && Boolean(sb && currentUser) && ["admin", "factory"].includes(currentProfile?.role);
 }
 
+function factoryWorkStageLabel(ticket) {
+  if (!EXCEPTION_OPEN_STATUSES.includes(ticket.status)) return `已结案 · ${ticket.status}`;
+  return { pending: "待工厂处理", processing: "工厂处理中", replied: "工厂已回复，待后台确认" }[ticket.factory_progress] || "待工厂处理";
+}
+
+function factoryWorkNeedsAction(ticket) {
+  return ticket.target_team === "factory" && EXCEPTION_OPEN_STATUSES.includes(ticket.status) && ticket.factory_progress !== "replied";
+}
+
+function renderFactoryWorkReply(ticket) {
+  if (!ticket.factory_reply) return "";
+  return `<div class="factory-work-reply"><strong>${ticket.factory_progress === "replied" ? "工厂处理结果" : "上次工厂回复"}</strong><p>${escapeHtml(ticket.factory_reply)}</p><small>${escapeHtml(formatDateTime(ticket.factory_replied_at, true))}</small></div>`;
+}
+
+function setFactoryWorkBadge(count) {
+  const badge = $("factoryExceptionWorkCount");
+  if (!badge) return;
+  badge.textContent = count === null ? "待处理需刷新" : `待处理 ${count}`;
+  badge.classList.toggle("hidden", count === 0);
+}
+
+function openFactoryWorkDialog(ticketId, action) {
+  if (factoryWorkBusy || !sb || !currentUser) return;
+  const rows = action === "reopen" ? currentExceptionTickets : factoryExceptionRows;
+  const ticket = rows.find((row) => row.id === ticketId);
+  if (!ticket || ticket.target_team !== "factory" || !EXCEPTION_OPEN_STATUSES.includes(ticket.status)) return;
+  if (action === "reopen" ? currentProfile?.role !== "admin" || ticket.factory_progress !== "replied" : !canViewFactoryExceptions() || !["pending", "processing"].includes(ticket.factory_progress)) return;
+  if (action === "start") return performFactoryWorkAction({ client: sb, userId: currentUser.id, ticket: { ...ticket }, action }, "");
+  if (!$("factoryWorkDialog")) {
+    document.body.insertAdjacentHTML("beforeend", `<dialog id="factoryWorkDialog" class="exception-ticket-dialog" aria-labelledby="factoryWorkTitle"><div class="exception-ticket-form">
+      <div class="dialog-heading"><h2 id="factoryWorkTitle"></h2><button class="ghost" type="button" data-close-factory-work>关闭</button></div>
+      <p id="factoryWorkSummary" class="hint"></p><p id="factoryWorkProblem" class="factory-work-text"></p>
+      <label class="field-group"><span id="factoryWorkMessageLabel"></span><textarea id="factoryWorkMessage" class="input" rows="5" maxlength="4000"></textarea></label>
+      <p class="hint">提交回复后由后台确认结案，不会自动更改物品取送状态。</p>
+      <p id="factoryWorkMessageStatus" role="status" aria-live="polite"></p>
+      <div class="actions"><button type="button" data-save-factory-work>提交</button><button class="ghost" type="button" data-close-factory-work>取消</button></div>
+    </div></dialog>`);
+    $("factoryWorkDialog").addEventListener("cancel", (event) => { if (factoryWorkBusy) event.preventDefault(); });
+    $("factoryWorkDialog").addEventListener("close", () => { if (!$("factoryWorkDialog").open && !factoryWorkBusy) factoryWorkContext = null; });
+  }
+  factoryWorkContext = { client: sb, userId: currentUser.id, ticket: { ...ticket }, action };
+  $("factoryWorkTitle").textContent = action === "reopen" ? "退回工厂重新处理" : "填写工厂处理结果";
+  $("factoryWorkSummary").textContent = `${displayWashLabelBarcode(ticket.barcode || relationOne(ticket.order_items).barcode)} · ${ticket.ticket_type}`;
+  $("factoryWorkProblem").textContent = ticket.description || "";
+  $("factoryWorkMessageLabel").textContent = action === "reopen" ? "重处理原因（必填）" : "处理结果（必填）";
+  $("factoryWorkMessage").value = action === "reopen" ? "" : ticket.factory_reply || "";
+  setMessage("factoryWorkMessageStatus", "");
+  $("factoryWorkDialog").showModal();
+  requestAnimationFrame(() => $("factoryWorkMessage")?.focus());
+}
+
+async function performFactoryWorkAction(context, message) {
+  if (factoryWorkBusy || !context || context.client !== sb || context.userId !== currentUser?.id) return;
+  if (context.action !== "start" && !text(message)) return setMessage("factoryWorkMessageStatus", "请填写处理结果或重处理原因。", "warn");
+  factoryWorkBusy = true;
+  for (const button of document.querySelectorAll("[data-save-factory-work],[data-close-factory-work],[data-factory-work]")) button.disabled = true;
+  if (context.action !== "start") setMessage("factoryWorkMessageStatus", "正在保存…");
+  try {
+    const { data, error } = await context.client.rpc("act_on_factory_exception", { p_ticket_id: context.ticket.id,
+      p_action: context.action, p_message: message, p_expected_updated_at: context.ticket.updated_at || null });
+    if (context.client !== sb || context.userId !== currentUser?.id) return;
+    if (error) throw new Error(["PGRST202", "42883"].includes(error.code) ? "当前业务库尚未启用工厂工单更新。" : error.message);
+    const expected = { start: "processing", reply: "replied", reopen: "pending" }[context.action];
+    if (data?.ticket_id !== context.ticket.id || data?.factory_progress !== expected) throw new Error("未确认保存结果，请刷新核对。");
+    if (factoryWorkContext === context) { $("factoryWorkDialog")?.close(); factoryWorkContext = null; }
+    if (APP_MODE === "admin") {
+      exceptionActionMessage = "已退回工厂重新处理";
+      await loadExceptions();
+    } else {
+      // A read started before the write must finish before fetching its result.
+      if (factoryExceptionLoad?.promise) await factoryExceptionLoad.promise;
+      if (context.client !== sb || context.userId !== currentUser?.id) return;
+      await loadFactoryExceptionTickets();
+      if (context.client === sb && context.userId === currentUser?.id
+          && factoryExceptionRows.some((row) => row.id === context.ticket.id && row.factory_progress === expected)) {
+        setMessage("factoryExceptionMessage", context.action === "reply" ? "处理结果已提交，等待后台确认。" : "已开始处理，请完成后填写处理结果。");
+      }
+    }
+  } catch (error) {
+    if (context.client !== sb || context.userId !== currentUser?.id) return;
+    if (factoryWorkContext === context) setMessage("factoryWorkMessageStatus", error.message || "保存失败，请重试。", "warn");
+    else setMessage("factoryExceptionMessage", error.message || "保存失败，请刷新核对。", "warn");
+  } finally {
+    factoryWorkBusy = false;
+    for (const button of document.querySelectorAll("[data-save-factory-work],[data-close-factory-work],[data-factory-work]")) button.disabled = false;
+  }
+}
+
 function factoryTicketHasFeedback(ticket) {
-  return !["pending", "legacy"].includes(exceptionHandlingDecision(ticket)) || Boolean(text(ticket.customer_reply) || text(ticket.resolution));
+  return ticket.target_team !== "factory" && (!["pending", "legacy"].includes(exceptionHandlingDecision(ticket)) || Boolean(text(ticket.customer_reply) || text(ticket.resolution)));
 }
 
 function setFactoryExceptionBadge(count) {
@@ -6612,6 +6741,8 @@ function resetFactoryExceptionView() {
   factoryExceptionContext = factoryExceptionLoad = null;
   factoryExceptionLoaded = false;
   factoryExceptionPage = 0;
+  factoryWorkContext = null;
+  $("factoryWorkDialog")?.close();
   $("factoryExceptionDialog")?.close();
   if ($("factoryExceptionList")) $("factoryExceptionList").innerHTML = "";
   if ($("factoryExceptionSummary")) $("factoryExceptionSummary").textContent = "工厂上报的工单与客服反馈";
@@ -6620,18 +6751,24 @@ function resetFactoryExceptionView() {
     if (key.startsWith("factory-exception-")) imagePreviewMap.delete(key);
   }
   setFactoryExceptionBadge(0);
+  setFactoryWorkBadge(0);
 }
 
 async function loadFactoryExceptionBadge() {
   if (!canViewFactoryExceptions()) return;
   const client = sb, userId = currentUser.id, version = ++factoryExceptionBadgeVersion;
   try {
-    const { count, error } = await client.from("exception_tickets").select("id", { count: "exact", head: true })
-      .eq("source", "工厂端").or("handling_decision.in.(wash_approved,return_wash,rewash,other),customer_reply.neq.,resolution.neq.");
+    const [feedback, work] = await Promise.all([
+      client.from("exception_tickets").select("id", { count: "exact", head: true })
+        .eq("source", "工厂端").eq("target_team", "customer_service").or("handling_decision.in.(wash_approved,return_wash,rewash,other),customer_reply.neq.,resolution.neq."),
+      client.from("exception_tickets").select("id", { count: "exact", head: true })
+        .eq("target_team", "factory").in("status", EXCEPTION_OPEN_STATUSES).in("factory_progress", ["pending", "processing"]),
+    ]);
     if (client !== sb || userId !== currentUser?.id || version !== factoryExceptionBadgeVersion) return;
-    setFactoryExceptionBadge(error ? null : count || 0);
+    setFactoryExceptionBadge(feedback.error ? null : feedback.count || 0);
+    setFactoryWorkBadge(work.error ? null : work.count || 0);
   } catch {
-    if (client === sb && userId === currentUser?.id && version === factoryExceptionBadgeVersion) setFactoryExceptionBadge(null);
+    if (client === sb && userId === currentUser?.id && version === factoryExceptionBadgeVersion) { setFactoryExceptionBadge(null); setFactoryWorkBadge(null); }
   }
 }
 
@@ -6667,34 +6804,39 @@ async function loadFactoryExceptionTickets() {
       if (!isCurrent()) return;
       if (!exceptionTicketSchemaAvailable) throw new Error(exceptionTicketSchemaError || "工单暂时无法读取，请点击刷新重试。");
       const result = await loadRowsById(() => client.from("exception_tickets")
-        .select("id,order_id,item_id,barcode,ticket_type,description,proposed_solution,customer_reply,resolution,handling_decision,evidence_paths,status,priority,source,created_at,updated_at,resolved_at,orders(id,order_no,customer_name,phone,school,campus,building),order_items(id,barcode,product_name,spec,item_status,wash_decision)")
-        .eq("source", "工厂端"));
+        .select("id,order_id,item_id,barcode,ticket_type,description,proposed_solution,customer_reply,resolution,handling_decision,target_team,factory_progress,factory_reply,factory_handler_id,factory_replied_at,evidence_paths,status,priority,source,created_at,updated_at,resolved_at,orders(id,order_no,customer_name,phone,school,campus,building),order_items(id,barcode,product_name,spec,item_status,wash_decision)")
+        .or("source.eq.工厂端,target_team.eq.factory"));
       if (!isCurrent()) return;
       if (result.error) throw result.error;
       const previous = new Map(factoryExceptionRows.map((row) => [row.id, row]));
-      factoryExceptionRows = hydrateExceptionTicketEvidence((result.data || []).filter((row) => row.source === "工厂端")).map((ticket) => {
+      factoryExceptionRows = hydrateExceptionTicketEvidence((result.data || []).filter((row) => row.source === "工厂端" || row.target_team === "factory")).map((ticket) => {
         const order = relationOne(ticket.orders), item = relationOne(ticket.order_items), cached = previous.get(ticket.id);
         if (cached?.evidenceExpiresAt > Date.now() && JSON.stringify(cached.evidencePaths) === JSON.stringify(ticket.evidencePaths)) {
           ticket.evidenceUrls = cached.evidenceUrls;
           ticket.evidenceExpiresAt = cached.evidenceExpiresAt;
         }
         ticket.searchText = exceptionSearchText(order, [ticket.barcode, item.barcode, item.product_name, item.spec,
-          ticket.ticket_type, ticket.description, ticket.customer_reply, ticket.resolution, exceptionHandlingLabel(effectiveExceptionHandlingDecision(ticket))]);
+          ticket.ticket_type, ticket.description, ticket.customer_reply, ticket.resolution, ticket.factory_reply,
+          ticket.target_team === "factory" ? factoryWorkStageLabel(ticket) : "工厂上报", exceptionHandlingLabel(effectiveExceptionHandlingDecision(ticket))]);
         ticket.updatedMs = parseDate(ticket.updated_at || ticket.created_at)?.getTime() || 0;
         return ticket;
-      }).sort((left, right) => right.updatedMs - left.updatedMs || compareNaturalText(left.id, right.id));
+      }).sort((left, right) => Number(factoryWorkNeedsAction(right)) - Number(factoryWorkNeedsAction(left))
+        || Number(right.priority === "紧急") - Number(left.priority === "紧急") || right.updatedMs - left.updatedMs || compareNaturalText(left.id, right.id));
       factoryExceptionLoaded = true;
       factoryExceptionBadgeVersion += 1;
       const feedback = factoryExceptionRows.filter(factoryTicketHasFeedback).length;
       const pending = factoryExceptionRows.filter((ticket) => EXCEPTION_OPEN_STATUSES.includes(ticket.status)).length;
+      const work = factoryExceptionRows.filter(factoryWorkNeedsAction).length;
       setFactoryExceptionBadge(feedback);
-      if ($("factoryExceptionSummary")) $("factoryExceptionSummary").textContent = `共 ${factoryExceptionRows.length} 条 · 待处理 ${pending} 条 · 已反馈 ${feedback} 条`;
+      setFactoryWorkBadge(work);
+      if ($("factoryExceptionSummary")) $("factoryExceptionSummary").textContent = `共 ${factoryExceptionRows.length} 条 · 待工厂 ${work} 条 · 未结案 ${pending} 条 · 客服已反馈 ${feedback} 条`;
       renderFactoryExceptionTickets();
       setMessage("factoryExceptionMessage", `已更新 ${formatDateTime(new Date(), true)}`);
     } catch (error) {
       if (!isCurrent()) return;
       setMessage("factoryExceptionMessage", `读取最新反馈失败。${error.message || error}${factoryExceptionLoaded ? " 以下保留上次读取的记录。" : " 请点击刷新重试。"}`, "warn");
       setFactoryExceptionBadge(null);
+      setFactoryWorkBadge(null);
     } finally {
       if (factoryExceptionLoad === request) factoryExceptionLoad = null;
       if (isCurrent() && $("refreshFactoryExceptionsBtn")) $("refreshFactoryExceptionsBtn").disabled = false;
@@ -6719,11 +6861,13 @@ function renderFactoryExceptionTickets() {
   const status = $("factoryExceptionStatusFilter")?.value || "";
   const decision = $("factoryExceptionDecisionFilter")?.value || "";
   const dateFilter = readExceptionDateFilter("factoryException");
+  const queue = $("factoryExceptionQueueFilter")?.value || "";
   updateExceptionDateHint("factoryException", dateFilter);
   const rows = factoryExceptionRows.filter((ticket) => terms.every((term) => ticket.searchText.includes(term))
     && factoryTicketMatchesHandling(ticket, decision)
     && exceptionMatchesDate(ticket, dateFilter)
-    && (!status || (status === "feedback" ? factoryTicketHasFeedback(ticket) : ticket.status === status)));
+    && (!queue || (queue === "received" ? ticket.target_team === "factory" : ticket.target_team !== "factory"))
+    && (!status || (status.startsWith("work_") ? ticket.target_team === "factory" && EXCEPTION_OPEN_STATUSES.includes(ticket.status) && ticket.factory_progress === status.slice(5) : status === "feedback" ? factoryTicketHasFeedback(ticket) : ticket.status === status)));
   const pages = Math.max(1, Math.ceil(rows.length / FACTORY_EXCEPTION_PAGE_SIZE));
   factoryExceptionPage = Math.min(Math.max(0, factoryExceptionPage), pages - 1);
   list.innerHTML = rows.slice(factoryExceptionPage * FACTORY_EXCEPTION_PAGE_SIZE, (factoryExceptionPage + 1) * FACTORY_EXCEPTION_PAGE_SIZE)
@@ -6734,6 +6878,7 @@ function renderFactoryExceptionTickets() {
 }
 
 function renderFactoryExceptionCard(ticket) {
+  if (ticket.target_team === "factory") return renderFactoryWorkCard(ticket);
   const order = relationOne(ticket.orders), item = relationOne(ticket.order_items);
   const barcode = displayWashLabelBarcode(item.barcode || ticket.barcode, "未绑定水洗标");
   const resolution = String(ticket.resolution || "").trim(), reply = String(ticket.customer_reply || "").trim();
@@ -6752,6 +6897,25 @@ function renderFactoryExceptionCard(ticket) {
     <details class="factory-exception-report"><summary>${escapeHtml(ticket.ticket_type)} · 查看上报内容</summary><p>${escapeHtml(ticket.description || "未填写问题说明")}</p>${ticket.proposed_solution ? `<p>工厂建议：${escapeHtml(ticket.proposed_solution)}</p>` : ""}</details>
     <div class="factory-exception-times"><span>订单 ${escapeHtml(order.order_no || "—")}</span><span>上报 ${escapeHtml(formatDateTime(ticket.created_at, true))}</span><span>更新 ${escapeHtml(formatDateTime(ticket.updated_at, true))}</span></div>
     <div class="factory-exception-card-actions">${order.id || ticket.order_id ? `<button class="ghost" type="button" data-detail="${escapeHtml(order.id || ticket.order_id)}">查看订单</button>` : ""}${ticket.evidencePaths.length ? `<button class="ghost" type="button" data-factory-exception-evidence="${escapeHtml(ticket.id)}">异常照片（${ticket.evidencePaths.length}）</button>` : ""}</div>
+  </article>`;
+}
+
+function renderFactoryWorkCard(ticket) {
+  const item = relationOne(ticket.order_items), order = relationOne(ticket.orders);
+  const active = factoryWorkNeedsAction(ticket);
+  const mine = !ticket.factory_handler_id || ticket.factory_handler_id === currentUser?.id || currentProfile?.role === "admin";
+  return `<article class="factory-exception-card factory-work-card" data-factory-exception-card="${escapeHtml(ticket.id)}">
+    <div class="factory-exception-card-head"><div><h3>${escapeHtml(displayWashLabelBarcode(item.barcode || ticket.barcode, "未绑定水洗标"))}</h3><p>后台发来 · ${escapeHtml(ticket.ticket_type)}${ticket.priority === "紧急" ? " · 紧急" : ""}</p></div><span class="ticket-status ${active ? "danger" : "done"}">${escapeHtml(factoryWorkStageLabel(ticket))}</span></div>
+    <p class="factory-exception-item">${escapeHtml(item.spec || item.product_name || "物品待核对")}<span>物品状态 ${escapeHtml(item.item_status || "待核对")}</span></p>
+    <div class="factory-work-problem"><strong>需要工厂处理的问题</strong><p>${escapeHtml(ticket.description)}</p>${ticket.proposed_solution ? `<p>后台要求：${escapeHtml(ticket.proposed_solution)}</p>` : ""}</div>
+    <p class="exception-handling-line">后台处理结论 <strong class="handling-decision ${effectiveExceptionHandlingDecision(ticket)}">${exceptionHandlingLabel(effectiveExceptionHandlingDecision(ticket))}</strong></p>
+    ${factoryTicketMatchesHandling(ticket, "return_pending") ? '<p class="warn">退洗待出库，请按退洗流程扫码出库后送回。</p>' : ""}
+    ${renderFactoryWorkReply(ticket)}
+    ${ticket.resolution ? `<p class="factory-work-text"><strong>后台确认：</strong>${escapeHtml(ticket.resolution)}</p>` : ""}
+    <p class="hint">${escapeHtml(order.customer_name || "未知客户")} · ${escapeHtml(factoryMaskedPhone(order.phone))}</p>
+    <div class="factory-exception-times"><span>订单 ${escapeHtml(order.order_no || "—")}</span><span>发起 ${escapeHtml(formatDateTime(ticket.created_at, true))}</span><span>更新 ${escapeHtml(formatDateTime(ticket.updated_at, true))}</span></div>
+    <div class="factory-exception-card-actions">${active && mine ? `${ticket.factory_progress === "pending" ? `<button class="ghost" type="button" data-factory-work="${escapeHtml(ticket.id)}" data-work-action="start">开始处理</button>` : ""}<button type="button" data-factory-work="${escapeHtml(ticket.id)}" data-work-action="reply">填写处理结果</button>` : active ? '<span class="hint">其他工厂同事正在处理</span>' : ""}
+    ${order.id || ticket.order_id ? `<button class="ghost" type="button" data-detail="${escapeHtml(order.id || ticket.order_id)}">查看订单</button>` : ""}${ticket.evidencePaths?.length ? `<button class="ghost" type="button" data-factory-exception-evidence="${escapeHtml(ticket.id)}">问题照片（${ticket.evidencePaths.length}）</button>` : ""}</div>
   </article>`;
 }
 
@@ -8546,10 +8710,12 @@ function bindEvents() {
   });
   on("factoryExceptionStatusFilter", "change", filterFactoryExceptions);
   on("factoryExceptionDecisionFilter", "change", filterFactoryExceptions);
+  on("factoryExceptionQueueFilter", "change", filterFactoryExceptions);
   bindExceptionDateFilters("factoryException", filterFactoryExceptions);
   on("clearFactoryExceptionFiltersBtn", "click", () => {
     $("factoryExceptionSearch").value = $("factoryExceptionStatusFilter").value = $("factoryExceptionDecisionFilter").value = "";
     clearExceptionDateFilters("factoryException");
+    $("factoryExceptionQueueFilter").value = "";
     filterFactoryExceptions();
   });
   on("factoryExceptionPrevPage", "click", () => changeFactoryExceptionPage(-1));
@@ -8623,6 +8789,13 @@ function bindEvents() {
     if (factoryPendingViewBtn) selectFactoryPendingView(factoryPendingViewBtn.dataset.factoryPendingView);
     const newExceptionTicketBtn = event.target.closest("[data-new-exception-ticket]");
     if (newExceptionTicketBtn) openExceptionTicketDialog();
+    if (event.target.closest("[data-new-factory-exception]")) openExceptionTicketDialog(null, { type: "admin-to-factory" });
+    const factoryItemButton = event.target.closest("[data-factory-item]");
+    if (factoryItemButton) openExceptionTicketDialog({ id: factoryItemButton.dataset.factoryItem, barcode: factoryItemButton.dataset.factoryBarcode }, { type: "admin-to-factory" });
+    const factoryWorkButton = event.target.closest("[data-factory-work]");
+    if (factoryWorkButton) openFactoryWorkDialog(factoryWorkButton.dataset.factoryWork, factoryWorkButton.dataset.workAction);
+    if (event.target.closest("[data-save-factory-work]")) performFactoryWorkAction(factoryWorkContext, text($("factoryWorkMessage")?.value));
+    if (event.target.closest("[data-close-factory-work]") && !factoryWorkBusy) { $("factoryWorkDialog")?.close(); factoryWorkContext = null; }
     const reportExceptionBtn = event.target.closest("[data-report-exception]");
     if (reportExceptionBtn) openExceptionTicketDialog(factoryItemRows.find((item) => item.id === reportExceptionBtn.dataset.reportException) || null);
     const pickupExceptionBtn = event.target.closest("[data-report-pickup-exception]");
@@ -8631,6 +8804,7 @@ function bindEvents() {
     if (returnExceptionBtn) openCourierReturnException(returnExceptionBtn.dataset.reportReturnException, returnExceptionBtn.dataset.item, returnExceptionBtn.dataset.order);
     if (event.target.closest("[data-submit-exception-ticket]")) submitExceptionTicket();
     if (event.target.closest("[data-close-exception-ticket]")) {
+      if (exceptionTicketBusy) return;
       exceptionTicketContext = null;
       $("exceptionTicketDialog")?.close();
     }

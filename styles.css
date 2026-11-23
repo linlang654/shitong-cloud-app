@@ -4513,6 +4513,47 @@ code {
   font-size: 12px;
 }
 
+.factory-work-count {
+  padding: 3px 6px;
+  border-radius: 6px;
+  color: #a33700;
+  background: #fff0dd;
+  font-size: 12px;
+}
+
+.factory-work-card {
+  border-left: 4px solid var(--orange, #f97316);
+}
+
+.factory-work-reply,
+.factory-work-problem {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+}
+
+.factory-work-reply {
+  background: #edf8f1;
+}
+
+.factory-work-problem {
+  background: #fff8eb;
+}
+
+.factory-work-reply p,
+.factory-work-problem p,
+.factory-work-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+#factoryWorkDialog :is(button, textarea) {
+  min-height: 44px;
+  font-size: 16px;
+}
+
 .factory-exception-dialog {
   width: min(840px, calc(100vw - 24px));
   max-width: 100%;

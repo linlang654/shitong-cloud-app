@@ -28,20 +28,22 @@ function setup(data = [], mode = 'factory') {
     from(table) {
       assert.equal(table, 'exception_tickets');
       const filters = [];
-      let offset, head = false;
+      let offset, head = false, orFilter = '';
       const query = {
         select(fields, options) { head = Boolean(options?.head); calls.push({ fields, head }); return this; },
         eq(key, value) { filters.push([key, value]); return this; },
-        or(value) { calls.push({ or: value }); return this; },
+        or(value) { orFilter = value; calls.push({ or: value }); return this; },
+        in(key, values) { filters.push([key, values]); return this; },
         order() { return this; }, limit() { return this; },
         gt(_key, value) { offset = value; return this; },
         async then(resolve, reject) {
           try {
             if (waitForData) await waitForData;
-            assert.deepEqual(filters, [['source', '工厂端']]);
-            const filtered = data.filter((row) => row.source === '工厂端');
+            if (!head) assert.equal(orFilter, 'source.eq.工厂端,target_team.eq.factory');
+            const filtered = data.filter((row) => (head || row.source === '工厂端' || row.target_team === 'factory')
+              && filters.every(([key,value]) => Array.isArray(value) ? value.includes(row[key]) : (row[key] ?? (key === 'target_team' ? 'customer_service' : undefined)) === value));
             if (failure) return resolve({ error: new Error(failure) });
-            if (head) return resolve({ count: filtered.filter((row) => row.customer_reply || row.resolution).length });
+            if (head) return resolve({ count: filters.some(([key,value]) => key === 'target_team' && value === 'factory') ? filtered.length : filtered.filter((row) => row.customer_reply || row.resolution).length });
             resolve({ data: filtered.filter((row) => !offset || row.id > offset).slice(0, 300) });
           } catch (error) { reject(error); }
         },
@@ -68,11 +70,11 @@ test('factory list reads beyond one page, keeps only factory reports, and render
   const s = setup([...Array.from({ length: 701 }, (_, i) => ticket(i)), ticket(702, { source: '后台' })]);
   await s.context.loadFactoryExceptionTickets();
   assert.equal(s.run('factoryExceptionRows.length'), 701);
-  assert.equal(s.calls.length, 3);
+  assert.equal(s.calls.filter((call) => call.fields).length, 3);
   assert.equal(s.run('factoryExceptionRows[0].id'), '00700');
   assert.equal((s.node('factoryExceptionList').innerHTML.match(/data-factory-exception-card=/g) || []).length, 20);
   assert.match(s.node('factoryExceptionPageInfo').textContent, /701 条 · 1 \/ 36 页/);
-  assert.ok(s.calls.every((call) => !call.fields.includes('*')));
+  assert.ok(s.calls.filter((call) => call.fields).every((call) => !call.fields.includes('*')));
   assert.equal(s.signedCalls(), 0);
   s.context.changeFactoryExceptionPage(1);
   assert.match(s.node('factoryExceptionPageInfo').textContent, /2 \/ 36/);
@@ -134,7 +136,7 @@ test('duplicates share one load and a signed-out account cannot receive stale re
   s.defer(new Promise((resolve) => { release = resolve; }));
   const first = s.context.loadFactoryExceptionTickets(), duplicate = s.context.loadFactoryExceptionTickets();
   await new Promise(setImmediate);
-  assert.equal(s.calls.length, 1);
+  assert.equal(s.calls.filter((call) => call.fields).length, 1);
   s.run('currentUser = null; resetFactoryExceptionView()');
   release();
   await Promise.all([first, duplicate]);
@@ -199,4 +201,44 @@ test('a factory submission opens its matching feedback list without reloading ad
   assert.equal(inserted[0].reporter_id, 'factory-user');
   assert.equal(s.context.submissionViews[0][0], '261123001');
   assert.equal(s.context.submissionViews[0][1], '');
+});
+
+test('factory inbox includes backend work, excludes unrelated reports, prioritizes work and combines route with date filters', async () => {
+  const rows = [ticket(1, { resolution: '客服已回复' }),
+    ticket(2, { source: '后台', target_team: 'factory', factory_progress: 'pending', status: '处理中' }),
+    ticket(3, { source: '后台', target_team: 'factory', factory_progress: 'replied', factory_reply: '已核查齐全', status: '处理中' }),
+    ticket(4, { source: '后台', target_team: 'customer_service' })];
+  const s = setup(rows);
+  await s.context.loadFactoryExceptionTickets();
+  assert.equal(s.run('factoryExceptionRows.length'), 3);
+  assert.equal(s.run('factoryExceptionRows[0].id'), '00002');
+  assert.equal(s.node('factoryExceptionWorkCount').textContent, '待处理 1');
+  assert.equal(s.node('factoryExceptionFeedbackCount').textContent, '已反馈 1');
+  s.node('factoryExceptionQueueFilter').value = 'received';
+  s.node('factoryExceptionStatusFilter').value = 'work_replied';
+  s.node('factoryExceptionSearch').value = '核查齐全';
+  s.node('factoryExceptionDateStart').value = s.node('factoryExceptionDateEnd').value = '2026-11-23';
+  s.context.filterFactoryExceptions();
+  assert.match(s.node('factoryExceptionPageInfo').textContent, /1 条/);
+  assert.match(s.node('factoryExceptionList').innerHTML, /工厂处理结果/);
+  assert.ok(!s.node('factoryExceptionList').innerHTML.includes('data-factory-work='));
+  s.node('factoryExceptionStatusFilter').value = 'work_pending';
+  s.node('factoryExceptionSearch').value = '';
+  s.context.filterFactoryExceptions();
+  assert.match(s.node('factoryExceptionList').innerHTML, /填写处理结果/);
+  assert.match(s.node('factoryExceptionList').innerHTML, /data-work-action="start"/);
+});
+
+test('factory work shows safe replies and keeps another handler and closed tickets readonly', () => {
+  const s = setup();
+  const row = ticket(1, { target_team: 'factory', factory_progress: 'processing', status: '处理中',
+    factory_handler_id: 'other-factory', factory_reply: '<img src=x onerror=alert(1)>' });
+  const html = s.context.renderFactoryExceptionCard(row);
+  assert.match(html, /其他工厂同事正在处理/);
+  assert.match(html, /&lt;img/);
+  assert.ok(!html.includes('data-factory-work='));
+  row.factory_handler_id = 'factory-user';
+  assert.match(s.context.renderFactoryExceptionCard(row), /data-work-action="reply"/);
+  row.status = '已解决';
+  assert.ok(!s.context.renderFactoryExceptionCard(row).includes('data-factory-work='));
 });

@@ -7,7 +7,7 @@
     <title>工厂扫码台 - 事事通校园配送系统</title>
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/remixicon@4.6.0/fonts/remixicon.css" />
-    <link rel="stylesheet" href="./styles.css?v=104" />
+    <link rel="stylesheet" href="./styles.css?v=105" />
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   </head>
   <body data-app-mode="factory" class="role-page factory-page">
@@ -37,8 +37,8 @@
 
       <section class="workspace hidden" data-auth-only>
         <div class="factory-feedback-entry-bar">
-          <button id="factoryExceptionBtn" class="ghost" type="button"><i class="ri-message-2-line" aria-hidden="true"></i> 异常工单 <span id="factoryExceptionFeedbackCount" class="factory-feedback-count hidden" aria-live="polite"></span></button>
-          <span class="hint">查看上报进度和客服处理结论</span>
+          <button id="factoryExceptionBtn" class="ghost" type="button"><i class="ri-message-2-line" aria-hidden="true"></i> 异常工单 <span id="factoryExceptionWorkCount" class="factory-work-count hidden" aria-live="polite"></span><span id="factoryExceptionFeedbackCount" class="factory-feedback-count hidden" aria-live="polite"></span></button>
+          <span class="hint">处理后台发来的问题，查看客服反馈</span>
         </div>
         <div class="split factory-grid">
           <section class="panel scanner-panel">
@@ -208,13 +208,14 @@
     <dialog id="factoryExceptionDialog" class="factory-exception-dialog" aria-labelledby="factoryExceptionTitle">
       <div class="factory-exception-sheet">
         <header class="factory-exception-heading">
-          <div><h2 id="factoryExceptionTitle">异常工单</h2><p id="factoryExceptionSummary" class="hint">工厂上报的工单与客服反馈</p></div>
+          <div><h2 id="factoryExceptionTitle">异常工单</h2><p id="factoryExceptionSummary" class="hint">后台发来的问题、工厂上报与客服反馈</p></div>
           <div class="actions"><button id="refreshFactoryExceptionsBtn" class="ghost" type="button">刷新</button><button id="closeFactoryExceptionsBtn" class="ghost" type="button">关闭</button></div>
         </header>
         <div class="factory-exception-filters">
           <label class="field-group"><span>搜索工单</span><input id="factoryExceptionSearch" class="input" type="search" placeholder="水洗标、订单号、姓名、手机号或处理结论" autocomplete="off" /></label>
           <div class="factory-exception-filter-row">
-            <label class="field-group"><span>显示范围</span><select id="factoryExceptionStatusFilter" class="input"><option value="">全部工单</option><option value="feedback">已有反馈</option><option value="待客服">待客服</option><option value="待客户">待客户</option><option value="处理中">处理中</option><option value="已解决">已解决</option><option value="已关闭">已关闭</option></select></label>
+            <label class="field-group"><span>工单来源</span><select id="factoryExceptionQueueFilter" class="input"><option value="">全部工单</option><option value="received">后台发来</option><option value="sent">工厂上报</option></select></label>
+            <label class="field-group"><span>处理进度</span><select id="factoryExceptionStatusFilter" class="input"><option value="">全部进度</option><option value="work_pending">待工厂处理</option><option value="work_processing">工厂处理中</option><option value="work_replied">工厂已回复，待确认</option><option value="feedback">客服已有反馈</option><option value="待客服">待客服</option><option value="待客户">待客户</option><option value="处理中">处理中</option><option value="已解决">已解决</option><option value="已关闭">已关闭</option></select></label>
             <label class="field-group"><span>处理结果</span><select id="factoryExceptionDecisionFilter" class="input"><option value="">全部结果</option><option value="pending">待确认</option><option value="wash_approved">同意清洗</option><option value="return_pending">退洗待出库</option><option value="return_wash">退洗（全部）</option><option value="rewash">返洗</option><option value="other">其他处理</option><option value="legacy">历史未分类</option></select></label>
             <button id="clearFactoryExceptionFiltersBtn" class="ghost" type="button">清空筛选</button>
           </div>
@@ -259,6 +260,6 @@
       <div id="orderDialogBody" class="stack"></div>
     </dialog>
 
-    <script src="./app.js?v=104"></script>
+    <script src="./app.js?v=105"></script>
   </body>
 </html>
