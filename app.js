@@ -5270,47 +5270,14 @@ async function showOrderDetail(orderId) {
   const groupedStatusLogs = groupOrderStatusLogs(logResult.data || []);
   $("orderDialogTitle").textContent = `订单详情：${order.order_no}`;
   $("orderDialogBody").innerHTML = `
-    <section class="panel">
+    <section class="panel order-detail-overview">
       <h3>${escapeHtml(order.customer_name)} · <span data-order-phone-display>${escapeHtml(order.phone)}</span></h3>
-      <p>${escapeHtml(order.address || "")}</p>
-      <p>宿舍：${escapeHtml(`${order.school || ""}${orderCampusName(order)}${order.building || ""}`)}</p>
-      <p>状态：${escapeHtml(order.order_status || "")}　金额：${escapeHtml(order.paid_amount ?? "")}</p>
-      ${order.source === "douyin" ? "<p>来源：抖音团购</p>" : ""}
+      <p class="order-detail-address">${escapeHtml(order.address || "")}</p>
+      <p class="order-detail-facts"><span>宿舍：${escapeHtml(`${order.school || ""}${orderCampusName(order)}${order.building || ""}`)}</span><span>状态：${escapeHtml(order.order_status || "")}</span><span>金额：${escapeHtml(order.paid_amount ?? "")}</span>${order.source === "douyin" ? "<span>来源：抖音团购</span>" : ""}</p>
+      ${order.pay_time || order.order_time ? `<p class="hint order-detail-facts">${order.pay_time ? `<span>付款：${escapeHtml(formatDateTime(order.pay_time, true))}</span>` : ""}${order.order_time ? `<span>下单：${escapeHtml(formatDateTime(order.order_time, true))}</span>` : ""}</p>` : ""}
       ${order.exception_note ? `<p class="warn">异常：${escapeHtml(order.exception_note)}</p>` : ""}
-      ${canEditOrderPhone() ? `<details class="order-address-editor">
-        <summary>编辑联系电话</summary>
-        <form data-order-phone-form>
-          <label class="field-group"><span>客户手机号</span><input class="input" name="phone" type="tel" inputmode="tel" autocomplete="tel" maxlength="24" value="${escapeHtml(order.phone)}" placeholder="11 位手机号" /></label>
-          <div class="actions"><button type="submit">保存手机号</button></div>
-          <div data-order-phone-message aria-live="polite"></div>
-        </form>
-      </details>` : ""}
-      ${canEditAddress ? `<details class="order-address-editor">
-        <summary>编辑订单地址</summary>
-        <div class="edit-grid order-address-grid">
-          <label class="field-group order-address-full"><span>完整地址</span><input class="input" data-detail-address="${escapeHtml(order.id)}" value="${escapeHtml(order.address || "")}" placeholder="完整收货地址" /></label>
-          <label class="field-group"><span>学校</span><input class="input" data-detail-school="${escapeHtml(order.id)}" value="${escapeHtml(order.school || "")}" placeholder="学校" /></label>
-          <label class="field-group"><span>校区</span><input class="input" data-detail-campus="${escapeHtml(order.id)}" value="${escapeHtml(orderCampusName(order))}" placeholder="校区" /></label>
-          <label class="field-group"><span>楼栋 / 地点</span><input class="input" data-detail-building="${escapeHtml(order.id)}" value="${escapeHtml(order.building || "")}" placeholder="楼栋或固定取件地点" /></label>
-        </div>
-        <div class="actions"><button type="button" data-save-order-address="${escapeHtml(order.id)}">保存地址</button></div>
-        <div data-order-address-message="${escapeHtml(order.id)}" aria-live="polite"></div>
-      </details>` : ""}
-      ${canDeleteOrder() ? `<div class="actions"><button class="ghost danger" type="button" data-delete-order="${escapeHtml(order.id)}" ${orderDeletesBusy.has(order.id) ? "disabled" : ""}>删除订单</button></div>
-      <div id="orderDeleteMessage" aria-live="polite"></div>` : ""}
-    </section>
-    <section class="panel">
-      <h3>订单图片（${orderImages.length}）</h3>
-      ${previewButton(`detail-${order.id}`, orderImages)}
-      ${orderImages.length ? "" : '<p class="hint">暂无订单图片，可由后台补传。</p>'}
-      ${canEditItemStatus ? `<label class="field-group"><span>补传订单图片</span><input class="input" type="file" accept="image/jpeg,image/png,image/webp" multiple data-order-photo-files="${escapeHtml(order.id)}" /></label>
-      <p class="hint">一次最多 6 张，支持 JPG、PNG、WebP；原图每张不超过 10MB，自动压缩后保存不超过 800KB。追加到本单所有物品，保留原图，不改变订单状态。</p>
-      <div class="actions"><button type="button" data-upload-order-photos="${escapeHtml(order.id)}">上传订单图片</button></div>
-      <div data-order-photo-message="${escapeHtml(order.id)}" aria-live="polite"></div>` : ""}
-    </section>
-    <section class="panel table-panel">
-      <h3 id="orderItemTableTitle">物品 / 水洗标</h3>
-      ${canEditItemStatus ? '<p class="hint">这里修改只影响当前水洗标；整单状态会按该订单下所有水洗标的最慢进度自动汇总。</p>' : ""}
+      <div class="order-detail-items">
+      <h3 id="orderItemTableTitle">物品 / 水洗标（${(itemResult.data || []).length}）</h3>
       <p class="hint order-item-scroll-hint">左右滑动查看完整表格。</p>
       <div class="table-wrap" role="region" aria-labelledby="orderItemTableTitle" tabindex="0">
         <table class="order-item-table">
@@ -5343,6 +5310,39 @@ async function showOrderDetail(orderId) {
           }).join("")}</tbody>
         </table>
       </div>
+      ${canEditItemStatus ? '<p class="hint order-detail-status-help">修改只影响当前水洗标；整单状态按所有水洗标的最慢进度汇总。</p>' : ""}
+      </div>
+      ${canEditOrderPhone() || canEditAddress || canDeleteOrder() ? '<details class="order-detail-tools"><summary>订单操作</summary>' : ""}
+      ${canEditOrderPhone() ? `<details class="order-address-editor">
+        <summary>编辑联系电话</summary>
+        <form data-order-phone-form>
+          <label class="field-group"><span>客户手机号</span><input class="input" name="phone" type="tel" inputmode="tel" autocomplete="tel" maxlength="24" value="${escapeHtml(order.phone)}" placeholder="11 位手机号" /></label>
+          <div class="actions"><button type="submit">保存手机号</button></div>
+          <div data-order-phone-message aria-live="polite"></div>
+        </form>
+      </details>` : ""}
+      ${canEditAddress ? `<details class="order-address-editor">
+        <summary>编辑订单地址</summary>
+        <div class="edit-grid order-address-grid">
+          <label class="field-group order-address-full"><span>完整地址</span><input class="input" data-detail-address="${escapeHtml(order.id)}" value="${escapeHtml(order.address || "")}" placeholder="完整收货地址" /></label>
+          <label class="field-group"><span>学校</span><input class="input" data-detail-school="${escapeHtml(order.id)}" value="${escapeHtml(order.school || "")}" placeholder="学校" /></label>
+          <label class="field-group"><span>校区</span><input class="input" data-detail-campus="${escapeHtml(order.id)}" value="${escapeHtml(orderCampusName(order))}" placeholder="校区" /></label>
+          <label class="field-group"><span>楼栋 / 地点</span><input class="input" data-detail-building="${escapeHtml(order.id)}" value="${escapeHtml(order.building || "")}" placeholder="楼栋或固定取件地点" /></label>
+        </div>
+        <div class="actions"><button type="button" data-save-order-address="${escapeHtml(order.id)}">保存地址</button></div>
+        <div data-order-address-message="${escapeHtml(order.id)}" aria-live="polite"></div>
+      </details>` : ""}
+      ${canDeleteOrder() ? `<div class="actions"><button class="ghost danger" type="button" data-delete-order="${escapeHtml(order.id)}" ${orderDeletesBusy.has(order.id) ? "disabled" : ""}>删除订单</button></div>
+      <div id="orderDeleteMessage" aria-live="polite"></div>` : ""}
+      ${canEditOrderPhone() || canEditAddress || canDeleteOrder() ? "</details>" : ""}
+    </section>
+    <section class="panel order-detail-photos">
+      <div class="order-detail-photo-heading"><h3>订单图片（${orderImages.length}）</h3>${previewButton(`detail-${order.id}`, orderImages)}</div>
+      ${orderImages.length ? "" : '<p class="hint">暂无订单图片，可由后台补传。</p>'}
+      ${canEditItemStatus ? `<details class="order-detail-tools"><summary>补传订单图片</summary><label class="field-group"><span>选择图片</span><input class="input" type="file" accept="image/jpeg,image/png,image/webp" multiple data-order-photo-files="${escapeHtml(order.id)}" /></label>
+      <p class="hint">一次最多 6 张，支持 JPG、PNG、WebP；原图每张不超过 10MB，自动压缩后保存不超过 800KB。追加到本单所有物品，保留原图，不改变订单状态。</p>
+      <div class="actions"><button type="button" data-upload-order-photos="${escapeHtml(order.id)}">上传订单图片</button></div>
+      <div data-order-photo-message="${escapeHtml(order.id)}" aria-live="polite"></div></details>` : ""}
     </section>
     <section class="panel">
       <h3>状态时间线</h3>
@@ -5367,7 +5367,10 @@ async function showOrderDetail(orderId) {
     </section>`;
   $("orderDialogBody").querySelector("[data-order-phone-form]")?.addEventListener("submit", (event) => saveOrderPhoneFromDialog(event, order));
   $("orderDialogBody").querySelector("[data-delete-order]")?.addEventListener("click", (event) => deleteOrderFromDialog(order, event.currentTarget));
-  if (!$("orderDialog").open) $("orderDialog").showModal();
+  if (!$("orderDialog").open) {
+    $("orderDialog").showModal();
+    $("orderDialog").scrollTop = 0;
+  }
 }
 
 function groupOrderStatusLogs(logs) {
@@ -8387,7 +8390,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=100", { updateViaCache: "none" })
+    .register("./sw.js?v=101", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }

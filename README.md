@@ -78,6 +78,10 @@ build 100 支持按待客服、待客户、处理中、已解决、已关闭筛�
 
 员工登录支持邮箱和用户名。用户名按小写映射至 `用户名@staff.shitong.invalid`，在当前业务库 Supabase Authentication 创建对应邮箱账号，再配置 `profiles` 角色。`xiaoshi` 对应 `xiaoshi@staff.shitong.invalid`，管理员资料名称为 `xiaoshi`。内部邮箱不接收邮件，账号密码通过 Auth 管理，前端不保存账号密码。筛选、认领复用既有 `assignee_id` 字段，无需数据库结构迁移。
 
+## 订单详情截图布局
+
+build 101 将联系人、完整地址、宿舍、状态、金额和付款/下单时间与「物品 / 水洗标」放在同一面板，优先完整展示物品表格。编辑电话、编辑地址和删除入口收纳到「订单操作」，订单图片区域位于物品下方，补传图片默认收起。重新打开详情时回到顶部，便于截图。本次仅调整展示，无需数据库迁移。
+
 ## 抖音团购后台录单
 
 发布前，在当前业务库（`bjlimqtrkdokmjpdcraa`）执行 `supabase-manual-wash-order-migration.sql`。

@@ -2704,6 +2704,85 @@ button.danger,
   padding: 12px;
 }
 
+.order-detail-overview {
+  min-width: 0;
+  padding: 12px;
+}
+
+.order-detail-overview > h3,
+.order-detail-photo-heading h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.order-detail-overview > p {
+  margin: 6px 0;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.order-detail-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+}
+
+.order-detail-items {
+  min-width: 0;
+  margin-top: 12px;
+}
+
+.order-detail-items h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.order-detail-items .order-item-table {
+  font-size: 14px;
+}
+
+.order-detail-items :is(th, td) {
+  padding: 6px;
+}
+
+.order-detail-status-help {
+  margin: 5px 0 0;
+  line-height: 1.4;
+}
+
+.order-detail-tools {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.order-detail-tools > summary {
+  color: var(--orange-deep);
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.order-detail-tools[open] > summary {
+  margin-bottom: 10px;
+}
+
+.order-detail-tools > .actions {
+  margin-top: 10px;
+}
+
+.order-detail-photos {
+  min-width: 0;
+  padding: 12px;
+}
+
+.order-detail-photo-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
 .timeline {
   margin: 0;
   padding-left: 18px;
