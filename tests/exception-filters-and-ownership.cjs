@@ -99,13 +99,12 @@ test('status changes automatically claim unassigned tickets and preserve an exis
   const processing = s.addTicket('processing');
   const owned = s.addTicket('owned', 'admin-b', '处理中');
   await s.context.updateExceptionTicketStatus('waiting', '待客户');
-  await s.context.updateExceptionTicketStatus('processing', '处理中');
-  await s.context.updateExceptionTicketStatus('owned', '已解决');
+  await s.context.updateExceptionTicketStatus('processing', '待客户');
+  await s.context.updateExceptionTicketStatus('owned', '待客户');
   assert.equal(waiting.assignee_id, 'admin-a');
   assert.equal(processing.assignee_id, 'admin-a');
   assert.equal(owned.assignee_id, 'admin-b');
-  assert.equal(owned.status, '已解决');
-  assert.ok(owned.resolved_at);
+  assert.equal(owned.status, '待客户');
 });
 
 test('concurrent claim or status update conflicts do not overwrite another administrator', async () => {
@@ -114,7 +113,7 @@ test('concurrent claim or status update conflicts do not overwrite another admin
     const record = s.addTicket('conflict');
     record.assignee_id = 'admin-b';
     if (action === 'claim') await s.context.claimExceptionTicket('conflict');
-    else await s.context.updateExceptionTicketStatus('conflict', '处理中');
+    else await s.context.updateExceptionTicketStatus('conflict', '待客户');
     assert.equal(record.assignee_id, 'admin-b');
     assert.equal(record.status, '待客服');
     assert.equal(s.logs.length, 0);

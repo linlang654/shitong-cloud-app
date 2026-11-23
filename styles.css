@@ -2046,6 +2046,41 @@ button.danger,
   border-left-color: #dc2626;
 }
 
+.exception-handling-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0;
+  font-size: 14px;
+}
+
+.handling-decision {
+  display: inline-block;
+  padding: 4px 9px;
+  border-radius: 6px;
+  color: #62584b;
+  background: #f0ece5;
+}
+
+.handling-decision.wash_approved { color: #176344; background: #e5f6ec; }
+.handling-decision.return_wash { color: #ae2d22; background: #ffe8e4; }
+.handling-decision.rewash { color: #225d96; background: #e6f1fc; }
+.handling-decision.pending { color: #855500; background: #fff2cd; }
+
+#exceptionHandlingDialog :is(button, .input) {
+  min-height: 44px;
+  font-size: 16px;
+}
+
+#exceptionHandlingDialog .dialog-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 6px 0;
+  background: var(--bg);
+}
+
 .exception-customer-group {
   min-width: 0;
   padding: 12px;
@@ -4494,10 +4529,14 @@ code {
 
 .factory-exception-filter-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: end;
   gap: 8px;
   margin-top: 8px;
+}
+
+.factory-exception-filter-row > button {
+  grid-column: 1 / -1;
 }
 
 #factoryExceptionMessage {
@@ -4571,6 +4610,12 @@ code {
   border-color: #badfca;
   background: #effaf4;
   color: #176344;
+}
+
+.factory-exception-feedback.is-return {
+  color: #922b22;
+  border-color: #efc0b8;
+  background: #fff2ef;
 }
 
 .factory-exception-feedback p {

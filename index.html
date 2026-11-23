@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#f26a1b" />
     <title>事事通校园配送系统</title>
     <link rel="manifest" href="./manifest.webmanifest" />
-    <link rel="stylesheet" href="./styles.css?v=102" />
+    <link rel="stylesheet" href="./styles.css?v=103" />
     <script src="./vendor/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   </head>
@@ -382,6 +382,20 @@
       </section>
     </main>
 
+    <dialog id="exceptionHandlingDialog" class="exception-ticket-dialog" aria-labelledby="exceptionHandlingTitle">
+      <div class="exception-ticket-form">
+        <div class="dialog-heading"><h2 id="exceptionHandlingTitle">设置处理结论</h2><button id="closeExceptionHandlingBtn" class="ghost" type="button">关闭</button></div>
+        <p id="exceptionHandlingSummary" class="hint"></p>
+        <label class="field-group"><span>处理结论</span><select id="exceptionHandlingDecision" class="input"><option value="">请选择处理结论</option><option value="pending">待确认</option><option value="wash_approved">同意清洗</option><option value="return_wash">退洗</option><option value="rewash">返洗</option><option value="other">其他处理</option></select></label>
+        <label class="field-group"><span>处理进度</span><select id="exceptionHandlingStatus" class="input"><option value="待客服">待客服</option><option value="待客户">待客户</option><option value="处理中">处理中</option><option value="已解决">已解决</option><option value="已关闭">已关闭</option></select></label>
+        <label class="field-group"><span>客户回复（选填）</span><textarea id="exceptionHandlingReply" class="input" rows="2" maxlength="1000" placeholder="记录客户的确认内容"></textarea></label>
+        <label class="field-group"><span id="exceptionHandlingReasonLabel">处理说明（选填）</span><textarea id="exceptionHandlingReason" class="input" rows="3" maxlength="1000" placeholder="补充需要工厂知道的信息"></textarea></label>
+        <p id="exceptionHandlingHelp" class="hint"></p>
+        <div id="exceptionHandlingMessage" role="status" aria-live="polite"></div>
+        <div class="actions"><button id="saveExceptionHandlingBtn" type="button">保存处理结论</button></div>
+      </div>
+    </dialog>
+
     <dialog id="orderDialog" class="modal">
       <div class="modal-head">
         <h2 id="orderDialogTitle">订单详情</h2>
@@ -475,6 +489,6 @@
       </div>
     </template>
 
-    <script src="./app.js?v=102"></script>
+    <script src="./app.js?v=103"></script>
   </body>
 </html>
