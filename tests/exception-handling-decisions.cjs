@@ -10,7 +10,7 @@ function setup() {
   const nodes = new Map(), calls = [], refreshed = [];
   let error;
   const node = (id) => {
-    if (!nodes.has(id)) nodes.set(id, { value: '', dataset: {}, disabled: false,
+    if (!nodes.has(id)) nodes.set(id, { value: '', dataset: {}, disabled: false, classList: { toggle() {} },
       showModal() { this.open = true; }, close() { this.open = false; } });
     return nodes.get(id);
   };

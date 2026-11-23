@@ -3139,6 +3139,7 @@ async function loadExceptions() {
   const statusFilter = $("exceptionStatusFilter")?.value || "";
   const ownerFilter = $("exceptionOwnerFilter")?.value === "mine" ? "mine" : "";
   const decisionFilter = $("exceptionDecisionFilter")?.value || "";
+  const dateFilter = readExceptionDateFilter("exception");
   $("adminExceptions").innerHTML = `
     <section class="panel exception-center">
       <div class="exception-heading">
@@ -3170,9 +3171,11 @@ async function loadExceptions() {
         <label class="field-group"><span>工单范围</span><select id="exceptionOwnerFilter" class="input">
           <option value="">全部工单</option><option value="mine" ${ownerFilter === "mine" ? "selected" : ""}>我的工单</option>
         </select></label>
-        <label class="field-group"><span>处理结论</span><select id="exceptionDecisionFilter" class="input">${exceptionHandlingFilterOptions(decisionFilter)}</select></label>
+        <label class="field-group"><span>处理结果</span><select id="exceptionDecisionFilter" class="input">${exceptionHandlingFilterOptions(decisionFilter)}</select></label>
         <button id="clearExceptionFilters" class="ghost" type="button">清空筛选</button>
       </div>
+      ${renderExceptionDateFilters("exception", dateFilter)}
+      <p class="hint">地址/历史异常按订单创建或更新时间筛选。</p>
       <p class="hint">点击“认领工单”“开始处理”或“标记待客户”可认领未分配的工单，“我的工单”显示当前账号负责的工单。</p>
       <p id="exceptionSearchResult" class="hint hidden" role="status"></p>
       <section class="exception-worklist" aria-labelledby="openExceptionTicketsTitle" data-exception-search-group>
@@ -3194,8 +3197,10 @@ async function loadExceptions() {
   on("exceptionStatusFilter", "change", applyExceptionSearch);
   on("exceptionOwnerFilter", "change", applyExceptionSearch);
   on("exceptionDecisionFilter", "change", applyExceptionSearch);
+  bindExceptionDateFilters("exception", applyExceptionSearch);
   on("clearExceptionFilters", "click", () => {
     $("exceptionSearch").value = $("exceptionStatusFilter").value = $("exceptionOwnerFilter").value = $("exceptionDecisionFilter").value = "";
+    clearExceptionDateFilters("exception");
     applyExceptionSearch();
   });
   applyExceptionSearch();
@@ -3211,6 +3216,65 @@ function exceptionHandlingDecision(ticket) {
   return !EXCEPTION_OPEN_STATUSES.includes(ticket.status) || text(ticket.resolution) || text(ticket.customer_reply) ? "legacy" : "pending";
 }
 
+function exceptionDateKey(value) {
+  if (!value) return "";
+  const milliseconds = new Date(value).getTime();
+  return Number.isFinite(milliseconds) ? new Date(milliseconds + 8 * 60 * 60 * 1000).toISOString().slice(0, 10) : "";
+}
+
+function readExceptionDateFilter(prefix) {
+  const selected = $(prefix + "DateField")?.value;
+  const field = ["created_at", "updated_at", "resolved_at"].includes(selected) ? selected : "created_at";
+  const start = $(prefix + "DateStart")?.value || "";
+  const end = $(prefix + "DateEnd")?.value || "";
+  return { field, start, end, active: Boolean(start || end), invalid: Boolean(start && end && start > end) };
+}
+
+function exceptionMatchesDate(row, filter) {
+  if (!filter.active) return true;
+  if (filter.invalid) return false;
+  const day = exceptionDateKey(row[filter.field]);
+  return Boolean(day) && (!filter.start || day >= filter.start) && (!filter.end || day <= filter.end);
+}
+
+function renderExceptionDateFilters(prefix, filter = readExceptionDateFilter(prefix)) {
+  return `<div class="exception-date-filters">
+    <label class="field-group"><span>日期依据</span><select id="${prefix}DateField" class="input">${[["created_at", "上报日期"], ["updated_at", "最近更新日期"], ["resolved_at", "结案日期"]].map(([key, label]) => `<option value="${key}" ${filter.field === key ? "selected" : ""}>${label}</option>`).join("")}</select></label>
+    <label class="field-group"><span>开始日期</span><input id="${prefix}DateStart" class="input" type="date" value="${escapeHtml(filter.start)}" /></label>
+    <label class="field-group"><span>结束日期</span><input id="${prefix}DateEnd" class="input" type="date" value="${escapeHtml(filter.end)}" /></label>
+    <p id="${prefix}DateHint" class="hint exception-date-hint" role="status"></p>
+  </div>`;
+}
+
+function updateExceptionDateHint(prefix, filter) {
+  const hint = $(prefix + "DateHint");
+  if (!hint) return;
+  hint.textContent = filter.invalid ? "开始日期不能晚于结束日期，请重新选择。" : `按北京时间筛选，包含开始和结束当天。${filter.field === "resolved_at" ? "结案日期仅匹配有结案时间的工单。" : ""}`;
+  hint.classList.toggle("warn", filter.invalid);
+  if ($(prefix + "DateStart")) $(prefix + "DateStart").max = filter.end;
+  if ($(prefix + "DateEnd")) $(prefix + "DateEnd").min = filter.start;
+  const summary = $(prefix + "DateSummary");
+  if (summary) {
+    const label = { created_at: "上报", updated_at: "更新", resolved_at: "结案" }[filter.field];
+    summary.textContent = filter.active ? `${label}：${filter.start || "不限"} 至 ${filter.end || "不限"}` : "不限日期";
+  }
+}
+
+function bindExceptionDateFilters(prefix, handler) {
+  for (const suffix of ["DateField", "DateStart", "DateEnd"]) on(prefix + suffix, "change", handler);
+}
+
+function clearExceptionDateFilters(prefix) {
+  for (const suffix of ["DateStart", "DateEnd"]) {
+    if ($(prefix + suffix)) $(prefix + suffix).value = "";
+  }
+  if ($(prefix + "DateField")) $(prefix + "DateField").value = "created_at";
+}
+
+function exceptionDateAttributes(row) {
+  return `data-exception-created="${escapeHtml(row.created_at || "")}" data-exception-updated="${escapeHtml(row.updated_at || "")}" data-exception-resolved="${escapeHtml(row.resolved_at || "")}"`;
+}
+
 function effectiveExceptionHandlingDecision(ticket) {
   const item = relationOne(ticket.order_items);
   return washDecisionIsReturn(item) || item.item_status === "退洗" ? "return_wash" : exceptionHandlingDecision(ticket);
@@ -3221,7 +3285,7 @@ function exceptionHandlingLabel(key) {
 }
 
 function exceptionHandlingFilterOptions(selected = "") {
-  return '<option value="">全部结论</option>' + [...EXCEPTION_HANDLING_OPTIONS, { key: "legacy", label: "历史未分类" }]
+  return '<option value="">全部结果</option>' + [...EXCEPTION_HANDLING_OPTIONS, { key: "legacy", label: "历史未分类" }]
     .map((option) => `<option value="${option.key}" ${option.key === selected ? "selected" : ""}>${option.label}</option>`).join("");
 }
 
@@ -3274,10 +3338,13 @@ function applyExceptionSearch() {
   const statusFilter = $("exceptionStatusFilter")?.value || "";
   const mine = $("exceptionOwnerFilter")?.value === "mine";
   const decision = $("exceptionDecisionFilter")?.value || "";
-  const searching = terms.length > 0 || Boolean(statusFilter) || mine || Boolean(decision);
+  const dateFilter = readExceptionDateFilter("exception");
+  updateExceptionDateHint("exception", dateFilter);
+  const searching = terms.length > 0 || Boolean(statusFilter) || mine || Boolean(decision) || dateFilter.active;
   const matchesFilters = (card) => terms.every((term) => card.dataset.exceptionSearch.includes(term))
     && (!statusFilter || card.dataset.exceptionTicketStatus === statusFilter)
     && (!decision || card.dataset.exceptionHandling === decision)
+    && exceptionMatchesDate({ created_at: card.dataset.exceptionCreated, updated_at: card.dataset.exceptionUpdated, resolved_at: card.dataset.exceptionResolved }, dateFilter)
     && (!mine || Boolean(currentUser?.id) && card.dataset.exceptionAssignee === currentUser.id);
   let totalMatches = 0;
   for (const group of $("adminExceptions").querySelectorAll("[data-exception-search-group]")) {
@@ -3306,7 +3373,7 @@ function applyExceptionSearch() {
     }
   }
   result.classList.toggle("hidden", !searching);
-  result.textContent = totalMatches ? `找到 ${totalMatches} 条记录` : "未找到匹配的工单或地址异常。";
+  result.textContent = dateFilter.invalid ? "日期范围有误，请调整后查看结果。" : totalMatches ? `找到 ${totalMatches} 条记录` : "未找到匹配的工单或地址异常。";
 }
 
 function relationOne(value) {
@@ -3348,7 +3415,7 @@ function renderExceptionTicketCard(ticket) {
   ]);
   if (evidenceUrls.length) imagePreviewMap.set(evidenceKey, evidenceUrls);
   return `
-    <article class="task-card exception-ticket-card ${ticket.priority === "紧急" ? "urgent" : ""}" data-exception-ticket="${ticket.id}" data-exception-ticket-status="${escapeHtml(ticket.status)}" data-exception-assignee="${escapeHtml(ticket.assignee_id || "")}" data-exception-handling="${decision}" data-exception-search="${escapeHtml(searchable)}">
+    <article class="task-card exception-ticket-card ${ticket.priority === "紧急" ? "urgent" : ""}" data-exception-ticket="${ticket.id}" data-exception-ticket-status="${escapeHtml(ticket.status)}" data-exception-assignee="${escapeHtml(ticket.assignee_id || "")}" data-exception-handling="${decision}" ${exceptionDateAttributes(ticket)} data-exception-search="${escapeHtml(searchable)}">
       <div class="card-head">
         <div><h3>${escapeHtml(ticket.ticket_type)}${ticket.priority === "紧急" ? '<span class="urgent-label">紧急</span>' : ""}</h3><p class="hint">${escapeHtml(order.customer_name || "未知客户")} · ${escapeHtml(order.phone || "")} · ${escapeHtml(barcode)}</p></div>
         <span class="ticket-status ${exceptionStatusClass(ticket.status)}">${escapeHtml(ticket.status)}</span>
@@ -3640,6 +3707,7 @@ async function submitExceptionTicket() {
       if ($("factoryExceptionSearch")) $("factoryExceptionSearch").value = item.barcode || "";
       if ($("factoryExceptionStatusFilter")) $("factoryExceptionStatusFilter").value = "";
       if ($("factoryExceptionDecisionFilter")) $("factoryExceptionDecisionFilter").value = "";
+      clearExceptionDateFilters("factoryException");
       await openFactoryExceptionDialog();
     }
     if (APP_MODE === "courier") alert(createsRetry ? `已上报异常并生成补取任务：${item.barcode}\n其他正常物品仍可点击“已取到”。` : `异常工单已提交：${item.barcode}\n原任务仍保留，请再按实际结果完成。`);
@@ -3826,7 +3894,7 @@ function renderExceptionCard(order) {
     ...(order.order_items || []).map((item) => displayWashLabelBarcode(item.barcode)),
   ]);
   return `
-    <article class="task-card ${quickConfirm ? "review" : "alert"}" data-exception-card="${order.id}" data-exception-search="${escapeHtml(searchable)}">
+    <article class="task-card ${quickConfirm ? "review" : "alert"}" data-exception-card="${order.id}" ${exceptionDateAttributes(order)} data-exception-search="${escapeHtml(searchable)}">
       <div class="card-head">
         <h3>${escapeHtml(order.customer_name)} · ${escapeHtml(order.phone)}</h3>
         <span class="confidence-badge ${quickConfirm ? "confirm" : "review"}">${levelLabel}</span>
@@ -6650,13 +6718,16 @@ function renderFactoryExceptionTickets() {
   const terms = text($("factoryExceptionSearch")?.value).normalize("NFKC").toLowerCase().split(/\s+/).filter(Boolean);
   const status = $("factoryExceptionStatusFilter")?.value || "";
   const decision = $("factoryExceptionDecisionFilter")?.value || "";
+  const dateFilter = readExceptionDateFilter("factoryException");
+  updateExceptionDateHint("factoryException", dateFilter);
   const rows = factoryExceptionRows.filter((ticket) => terms.every((term) => ticket.searchText.includes(term))
     && factoryTicketMatchesHandling(ticket, decision)
+    && exceptionMatchesDate(ticket, dateFilter)
     && (!status || (status === "feedback" ? factoryTicketHasFeedback(ticket) : ticket.status === status)));
   const pages = Math.max(1, Math.ceil(rows.length / FACTORY_EXCEPTION_PAGE_SIZE));
   factoryExceptionPage = Math.min(Math.max(0, factoryExceptionPage), pages - 1);
   list.innerHTML = rows.slice(factoryExceptionPage * FACTORY_EXCEPTION_PAGE_SIZE, (factoryExceptionPage + 1) * FACTORY_EXCEPTION_PAGE_SIZE)
-    .map(renderFactoryExceptionCard).join("") || (factoryExceptionLoaded ? `<p class="hint factory-exception-empty">${factoryExceptionRows.length ? "暂无匹配工单，可清空筛选查看全部上报记录。" : "暂无工厂上报的异常工单。"}</p>` : "");
+    .map(renderFactoryExceptionCard).join("") || (factoryExceptionLoaded ? `<p class="hint factory-exception-empty">${dateFilter.invalid ? "日期范围有误，请调整后查看结果。" : factoryExceptionRows.length ? "暂无匹配工单，可清空筛选查看全部上报记录。" : "暂无工厂上报的异常工单。"}</p>` : "");
   if ($("factoryExceptionPageInfo")) $("factoryExceptionPageInfo").textContent = factoryExceptionLoaded ? `${rows.length} 条 · ${factoryExceptionPage + 1} / ${pages} 页` : "";
   if ($("factoryExceptionPrevPage")) $("factoryExceptionPrevPage").disabled = factoryExceptionPage === 0;
   if ($("factoryExceptionNextPage")) $("factoryExceptionNextPage").disabled = factoryExceptionPage >= pages - 1;
@@ -8475,8 +8546,10 @@ function bindEvents() {
   });
   on("factoryExceptionStatusFilter", "change", filterFactoryExceptions);
   on("factoryExceptionDecisionFilter", "change", filterFactoryExceptions);
+  bindExceptionDateFilters("factoryException", filterFactoryExceptions);
   on("clearFactoryExceptionFiltersBtn", "click", () => {
     $("factoryExceptionSearch").value = $("factoryExceptionStatusFilter").value = $("factoryExceptionDecisionFilter").value = "";
+    clearExceptionDateFilters("factoryException");
     filterFactoryExceptions();
   });
   on("factoryExceptionPrevPage", "click", () => changeFactoryExceptionPage(-1));
