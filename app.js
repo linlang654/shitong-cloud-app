@@ -2727,6 +2727,7 @@ function renderOrderManagement() {
         <input id="orderSearch" class="input" placeholder="搜索订单号、姓名、电话、学校、楼栋、水洗标" value="${escapeHtml(keyword)}" />
         <select id="orderStatusFilter" class="input">
           <option value="">全部状态</option>
+          <option value="return_wash" ${selectedStatus === "return_wash" ? "selected" : ""}>退洗（含部分退洗）</option>
           ${ORDER_STATUSES.map((status) => `<option value="${escapeHtml(status)}" ${status === selectedStatus ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}
         </select>
         <select id="orderOverdueFilter" class="input" aria-label="超时天数">
@@ -2760,7 +2761,9 @@ function filteredOrderRows(rows, { keyword, selectedStatus, startDate, endDate }
   return rows.filter((order) => {
     const searchable = `${order.order_no} ${order.customer_name} ${order.phone} ${order.school} ${order.campus} ${orderCampusName(order)} ${order.building} ${order.address} ${order.source === "douyin" ? "抖音团购" : ""} ${(order.order_items || []).map((item) => `${item.barcode} ${item.product_name} ${item.spec}`).join(" ")}`.toLowerCase();
     if (keyword && !searchable.includes(keyword)) return false;
-    if (selectedStatus && order.order_status !== selectedStatus) return false;
+    if (selectedStatus === "return_wash") {
+      if (!(order.order_items || []).some((item) => washDecisionIsReturn(item) || item.item_status === "退洗")) return false;
+    } else if (selectedStatus && order.order_status !== selectedStatus) return false;
     if (!matchesOverdueDashboardFilter(order)) return false;
     return inDateRange(order, startDate, endDate);
   });
@@ -2778,6 +2781,11 @@ async function applyOrderFilters() {
     startDate: text($("orderStartDate")?.value),
     endDate: text($("orderEndDate")?.value),
   };
+  if (filters.selectedStatus === "return_wash") return loadReturnWashOrderManagementPage(load, filters, table, summary);
+  if (load.rowsBeforeReturnWash) {
+    orderManagementRows = load.rowsBeforeReturnWash;
+    load.rowsBeforeReturnWash = null;
+  }
   if (load.remote) return loadOrderManagementPage(load, filters, table, summary);
   if (load.status === "loading-recent") return;
   const searchHistory = Boolean(filters.keyword || filters.selectedStatus || filters.startDate || filters.endDate || orderDashboardFilter);
@@ -2813,6 +2821,61 @@ function orderFilterHelp() {
   return orderDashboardFilter
     ? "超时按距上次更新的时长计算，每满 24 小时算 1 天。"
     : "时间筛选优先按付款时间，付款时间为空时按下单时间。";
+}
+
+async function loadReturnWashOrderManagementPage(load, filters, table, summary) {
+  clearTimeout(load.timer);
+  const request = ++load.request;
+  const isCurrent = () => isCurrentOrderManagementLoad(load) && request === load.request
+    && $("orderStatusFilter")?.value === "return_wash";
+  const previous = $("orderPreviousPage");
+  const next = $("orderNextPage");
+  previous.disabled = next.disabled = true;
+  table.replaceChildren();
+  summary.textContent = "正在查询退洗订单…";
+  try {
+    if (!load.returnWashRowsPromise) {
+      load.returnWashRowsPromise = (async () => {
+        const { data: items, error } = await loadRowsById(() => load.client.from("order_items")
+          .select("id,order_id")
+          .or("item_status.eq.退洗,wash_decision.in.(return_pending,returned,return_cancelled)"));
+        if (error) throw error;
+        const orderIds = [...new Set(items.map((item) => item.order_id).filter(Boolean))];
+        const rows = [];
+        const columns = ORDER_MANAGEMENT_SELECT.replace("item_status,", "item_status,wash_decision,");
+        for (let offset = 0; offset < orderIds.length; offset += 100) {
+          const result = await loadRowsById(() => load.client.from("orders").select(columns)
+            .in("id", orderIds.slice(offset, offset + 100)));
+          if (result.error) throw result.error;
+          rows.push(...result.data);
+        }
+        return rows.sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at)
+          || left.id.localeCompare(right.id));
+      })().catch((error) => {
+        load.returnWashRowsPromise = null;
+        throw error;
+      });
+    }
+    const allRows = await load.returnWashRowsPromise;
+    if (!isCurrent()) return;
+    const rows = filteredOrderRows(allRows, filters);
+    load.total = rows.length;
+    const pageCount = Math.max(1, Math.ceil(load.total / ORDER_MANAGEMENT_PAGE_SIZE));
+    load.page = Math.min(load.page, pageCount - 1);
+    if (!load.rowsBeforeReturnWash) load.rowsBeforeReturnWash = orderManagementRows;
+    orderManagementRows = rows.slice(load.page * ORDER_MANAGEMENT_PAGE_SIZE, (load.page + 1) * ORDER_MANAGEMENT_PAGE_SIZE);
+    table.innerHTML = renderOrderRows(orderManagementRows);
+    const overdue = orderDashboardFilter ? `${overdueFilterLabel()}，` : "";
+    summary.textContent = `退洗订单（含部分退洗），${overdue}共 ${load.total} 单。包含待退回、已退回和未取件退单。${orderFilterHelp()}`;
+    $("orderPagination").classList.toggle("hidden", pageCount <= 1);
+    $("orderPageSummary").textContent = `第 ${load.page + 1} / ${pageCount} 页`;
+    previous.disabled = load.page === 0;
+    next.disabled = load.page + 1 >= pageCount;
+  } catch (error) {
+    if (!isCurrent()) return;
+    $("orderPagination").classList.add("hidden");
+    summary.textContent = "退洗订单读取失败，请重新筛选或刷新后重试。";
+  }
 }
 
 async function loadOrderManagementPage(load, filters, table, summary) {
