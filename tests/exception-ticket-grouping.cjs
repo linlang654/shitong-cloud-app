@@ -15,7 +15,7 @@ function setup() {
   };
   const context = vm.createContext({
     URL, URLSearchParams, window: { location: { search: '' } },
-    document: { getElementById: node },
+    document: { getElementById: node, querySelector: () => null },
   });
   const run = (code) => vm.runInContext(code, context);
   run(source.slice(0, startup));
