@@ -170,6 +170,7 @@ const courierReturnProofFiles = new Map();
 let currentExceptionRows = [];
 let currentExceptionTickets = [];
 let exceptionLoadVersion = 0;
+let exceptionSearchOffsetObserver = null;
 let exceptionActionMessage = "";
 let exceptionTicketSchemaAvailable = null;
 let exceptionTicketSchemaError = "";
@@ -3235,7 +3236,10 @@ async function loadExceptions() {
       </div>
       ${exceptionTicketSchemaAvailable ? "" : `<p class="warn exception-migration-note">${escapeHtml(exceptionTicketMigrationMessage())}</p>`}
       ${exceptionActionMessage ? `<p class="success-note">${escapeHtml(exceptionActionMessage)}</p>` : ""}
-      <label class="field-group"><span>搜索异常工单</span><input id="exceptionSearch" class="input" type="search" value="${escapeHtml(searchValue)}" placeholder="订单号、水洗标、姓名、手机号或异常类型" autocomplete="off" /></label>
+      <div class="exception-search-bar" role="search" aria-label="搜索异常工单">
+        <label class="field-group"><span>搜索异常工单</span><input id="exceptionSearch" class="input" type="search" value="${escapeHtml(searchValue)}" placeholder="订单号、水洗标、姓名、手机号或异常类型" autocomplete="off" /></label>
+        <p id="exceptionSearchResult" class="hint hidden" role="status"></p>
+      </div>
       <div class="toolbar wrap exception-filter-toolbar">
         <label class="field-group"><span>工单状态</span><select id="exceptionStatusFilter" class="input">
           <option value="">全部状态</option>
@@ -3251,7 +3255,6 @@ async function loadExceptions() {
       ${renderExceptionDateFilters("exception", dateFilter)}
       <p class="hint">地址/历史异常按订单创建或更新时间筛选。</p>
       <p class="hint">点击“认领工单”“开始处理”或“标记待客户”可认领未分配的工单，“我的工单”显示当前账号负责的工单。</p>
-      <p id="exceptionSearchResult" class="hint hidden" role="status"></p>
       <section class="exception-worklist" aria-labelledby="openExceptionTicketsTitle" data-exception-search-group>
         <div class="section-heading compact-heading"><div><h3 id="openExceptionTicketsTitle">处理中工单</h3><p class="hint">按联系电话归组，同一客户的工单集中显示；有紧急工单的客户优先，组内紧急、较早提交的工单在前。</p></div><strong data-exception-match-count>${openTickets.length} 单</strong></div>
         <div class="card-list">${renderExceptionTicketGroups(openTickets, "暂无处理中工单")}</div>
@@ -3267,6 +3270,7 @@ async function loadExceptions() {
       </details>
       ${closedTickets.length ? `<details class="exception-legacy-section" data-exception-search-group><summary><span><strong>已结案工单</strong><small>按客户归组，仅供查询，不计入红色提醒</small></span><b data-exception-match-count>${closedTickets.length}</b></summary><div class="card-list">${renderExceptionTicketGroups(closedTickets)}</div></details>` : ""}
     </section>`;
+  updateExceptionSearchOffset();
   on("exceptionSearch", "input", applyExceptionSearch);
   on("exceptionStatusFilter", "change", applyExceptionSearch);
   on("exceptionOwnerFilter", "change", applyExceptionSearch);
@@ -3281,6 +3285,20 @@ async function loadExceptions() {
   });
   applyExceptionSearch();
   exceptionActionMessage = "";
+}
+
+function updateExceptionSearchOffset() {
+  exceptionSearchOffsetObserver?.disconnect();
+  exceptionSearchOffsetObserver = null;
+  const container = $("adminExceptions");
+  const topbar = document.querySelector(".topbar");
+  if (!container || !topbar) return;
+  const update = () => container.style.setProperty("--exception-top-offset", `${Math.ceil(topbar.getBoundingClientRect().height)}px`);
+  update();
+  if (typeof ResizeObserver !== "undefined") {
+    exceptionSearchOffsetObserver = new ResizeObserver(update);
+    exceptionSearchOffsetObserver.observe(topbar);
+  }
 }
 
 function exceptionHandlingDecision(ticket) {
@@ -9057,7 +9075,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=103", { updateViaCache: "none" })
+    .register("./sw.js?v=109", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }

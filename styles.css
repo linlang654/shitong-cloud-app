@@ -2029,6 +2029,29 @@ button.danger,
   border-top: 1px solid var(--line);
 }
 
+.exception-search-bar {
+  position: sticky;
+  top: var(--exception-top-offset, 80px);
+  z-index: 9;
+  padding: 8px 0 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  box-shadow: 0 6px 10px -10px rgba(31, 24, 16, 0.35);
+}
+
+.exception-search-bar .field-group {
+  min-width: 0;
+}
+
+.exception-search-bar .input {
+  min-height: 44px;
+  font-size: 16px;
+}
+
+.exception-search-bar .hint {
+  margin-bottom: 0;
+}
+
 .exception-filter-toolbar {
   align-items: end;
   margin-top: 12px;
