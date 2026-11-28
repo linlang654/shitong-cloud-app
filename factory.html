@@ -7,10 +7,10 @@
     <title>工厂扫码台 - 事事通校园配送系统</title>
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/remixicon@4.6.0/fonts/remixicon.css" />
-    <link rel="stylesheet" href="./styles.css?v=113" />
+    <link rel="stylesheet" href="./styles.css?v=114" />
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <link rel="stylesheet" href="./local-ui.css?v=113" />
-    <link rel="stylesheet" href="./mobile-ui.css?v=113" />
+    <link rel="stylesheet" href="./local-ui.css?v=114" />
+    <link rel="stylesheet" href="./mobile-ui.css?v=114" />
   </head>
   <body data-app-mode="factory" class="role-page factory-page">
     <header class="topbar">
@@ -225,7 +225,7 @@
             <button id="factoryExceptionReported" type="button" class="ghost" aria-pressed="false"><span>已上报 · 待处理</span><span id="factoryExceptionReportedCount"></span></button>
           </div>
           <div class="factory-exception-search-row">
-            <label class="field-group"><span>搜索工单</span><input id="factoryExceptionSearch" class="input" type="search" placeholder="水洗标 / 单号 / 姓名 / 手机号" autocomplete="off" /></label>
+            <label class="field-group"><span>搜索工单</span><input id="factoryExceptionSearch" class="input" type="search" placeholder="水洗标（可搜末四位）/ 单号 / 姓名 / 手机号" autocomplete="off" /></label>
             <div class="factory-exception-mobile-tools">
               <button id="factoryExceptionHistoryToggle" type="button" class="ghost" aria-pressed="false">历史</button>
               <button id="factoryExceptionFiltersToggle" type="button" class="ghost" aria-expanded="false" aria-controls="factoryExceptionAdvanced">筛选</button>
@@ -248,6 +248,7 @@
               </div>
             </details>
           </div>
+          <p id="factoryExceptionReceipt" class="success-note hidden" role="status"></p>
           <p id="factoryExceptionMessage" class="hint" role="status" aria-live="polite"></p>
         </div>
         <div id="factoryExceptionBody" class="factory-exception-body">
@@ -280,8 +281,8 @@
       <div id="orderDialogBody" class="stack"></div>
     </dialog>
 
-    <script src="./app.js?v=113"></script>
-    <script src="./local-ui.js?v=113"></script>
-    <script src="./mobile-ui.js?v=113"></script>
+    <script src="./app.js?v=114"></script>
+    <script src="./local-ui.js?v=114"></script>
+    <script src="./mobile-ui.js?v=114"></script>
   </body>
 </html>

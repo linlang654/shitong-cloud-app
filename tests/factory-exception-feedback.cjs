@@ -203,6 +203,68 @@ test('a factory submission opens its matching feedback list without reloading ad
   assert.equal(s.context.submissionViews[0][1], '');
 });
 
+test('a multi-item report trusts the selected label, even if the duplicate form fields still hold the first item', async () => {
+  const s = setup();
+  const lookedUp = [], inserted = [];
+  const items = [
+    { id: 'item-a', order_id: 'same-order', barcode: '261128306' },
+    { id: 'item-b', order_id: 'same-order', barcode: '261128307' },
+  ];
+  s.context.items = items;
+  s.context.client.from = (table) => {
+    if (table === 'order_items') {
+      return { select: () => ({ eq(_column, id) {
+        lookedUp.push(id);
+        return { maybeSingle: async () => ({ data: items.find((item) => item.id === id) }) };
+      } }) };
+    }
+    assert.equal(table, 'exception_tickets');
+    const query = { eq() { return this; }, in() { return this; }, limit() { return this; }, maybeSingle: async () => ({ data: null }) };
+    return { select: () => query, insert(payload) {
+      inserted.push(payload);
+      return { select: () => ({ single: async () => ({ data: { id: 'new-ticket' } }) }) };
+    } };
+  };
+  s.run(`
+    exceptionTicketContext = { type: 'factory-order-search', orderId: 'same-order', items: items.map(item => ({...item})) };
+    loadFactoryItems = insertLog = openFactoryExceptionDialog = async () => {};
+    document.querySelector = () => null;
+  `);
+  s.node('exceptionTicketItemId').value = items[0].id;
+  s.node('exceptionTicketBarcode').value = items[0].barcode;
+  s.node('exceptionTicketDescription').value = '此件存在掉色风险';
+  await s.context.submitExceptionTicket();
+  assert.deepEqual(lookedUp, []);
+  assert.match(s.node('exceptionTicketMessage').innerHTML, /请先选择/);
+  s.node('exceptionTicketItemSelect').value = items[1].id;
+  items[1].barcode = '261128399';
+  await s.context.submitExceptionTicket();
+  assert.equal(inserted.length, 0);
+  assert.match(s.node('exceptionTicketMessage').innerHTML, /已变更/);
+  items[1].barcode = '261128307';
+  await s.context.submitExceptionTicket();
+  assert.deepEqual(lookedUp, ['item-b', 'item-b']);
+  assert.equal(inserted.length, 1);
+  assert.equal(inserted[0].item_id, 'item-b');
+  assert.equal(inserted[0].barcode, '261128307');
+  assert.equal(s.run('factoryExceptionSubmission.id'), 'new-ticket');
+});
+
+test('a label suffix matches the linked item and excludes another ticket that only mentions that suffix', async () => {
+  const s = setup([
+    ticket(1, { barcode: '2611283006', description: '这件和 3007、3008 在同一单', order_items: { barcode: '2611283006' } }),
+    ticket(2, { barcode: '2611283007', order_items: { barcode: '2611283007' } }),
+  ]);
+  await s.context.loadFactoryExceptionTickets();
+  s.node('factoryExceptionSearch').value = '3007';
+  s.context.filterFactoryExceptions();
+  assert.match(s.node('factoryExceptionList').innerHTML, /2611283007/);
+  assert.doesNotMatch(s.node('factoryExceptionList').innerHTML, /2611283006/);
+  s.node('factoryExceptionSearch').value = '3008';
+  s.context.filterFactoryExceptions();
+  assert.match(s.node('factoryExceptionPageInfo').textContent, /0 条/);
+});
+
 test('factory inbox includes backend work, excludes unrelated reports, prioritizes work and combines route with date filters', async () => {
   const rows = [ticket(1, { resolution: '客服已回复' }),
     ticket(2, { source: '后台', target_team: 'factory', factory_progress: 'pending', status: '处理中' }),

@@ -142,6 +142,7 @@ let factoryExceptionLoad = null;
 let factoryExceptionLoadVersion = 0;
 let factoryExceptionLoaded = false;
 let factoryExceptionSearchTimer;
+let factoryExceptionSubmission = null;
 let factoryExceptionBadgeVersion = 0;
 let factoryWorkContext = null;
 let factoryWorkBusy = false;
@@ -3633,6 +3634,8 @@ function ensureExceptionTicketDialog() {
       </form>
     </dialog>`);
   $("exceptionTicketDialog").addEventListener("cancel", (event) => { if (exceptionTicketBusy) event.preventDefault(); });
+  on("exceptionTicketItemSelect", "input", syncExceptionTicketItemSelection);
+  on("exceptionTicketItemSelect", "change", syncExceptionTicketItemSelection);
   return $("exceptionTicketDialog");
 }
 
@@ -3642,20 +3645,22 @@ function openExceptionTicketDialog(item = null, context = null) {
   if (!exceptionTicketSchemaAvailable) return alert(exceptionTicketMigrationMessage());
   const dialog = ensureExceptionTicketDialog();
   const items = (context?.items?.length ? context.items : item ? [item] : []).filter(Boolean);
-  const selectedItem = item || items[0] || null;
+  const requireSelection = context?.type === "factory-order-search" && items.length > 1;
+  const selectedItem = requireSelection ? null : item || items[0] || null;
   exceptionTicketContext = context ? { ...context, items } : null;
   if (context?.type === "admin-to-factory") exceptionTicketContext.requestId = crypto.randomUUID();
   $("exceptionTicketTitle").textContent = context?.type === "admin-to-factory" ? "发给工厂处理" : "上报异常工单";
   $("exceptionTicketRouteHint").textContent = context?.type === "admin-to-factory" ? "工厂可查看问题和照片，填写处理结果后由后台确认结案。" : "提交后由客服核对、沟通和处理。";
   $("exceptionTicketItemId").value = selectedItem?.id || "";
   $("exceptionTicketBarcode").value = displayWashLabelBarcode(selectedItem?.barcode);
-  $("exceptionTicketBarcode").readOnly = Boolean(selectedItem?.barcode);
+  $("exceptionTicketBarcode").readOnly = requireSelection || Boolean(selectedItem?.barcode);
   const itemChoice = $("exceptionTicketItemChoice");
   const itemSelect = $("exceptionTicketItemSelect");
   if (itemChoice && itemSelect) {
     itemChoice.classList.toggle("hidden", items.length <= 1);
-    itemSelect.innerHTML = items.map((row) => `<option value="${escapeHtml(row.id || "")}" data-barcode="${escapeHtml(displayWashLabelBarcode(row.barcode))}">${escapeHtml(`${displayWashLabelBarcode(row.barcode, "无条码")}｜${row.spec || row.product_name || "物品未填写"}`)}</option>`).join("");
-    itemSelect.value = selectedItem?.id || items[0]?.id || "";
+    const prompt = requireSelection ? '<option value="" disabled>请选择要上报的水洗标</option>' : "";
+    itemSelect.innerHTML = prompt + items.map((row) => `<option value="${escapeHtml(row.id || "")}">${escapeHtml(`${displayWashLabelBarcode(row.barcode, "无条码")}｜${row.spec || row.product_name || "物品未填写"}`)}</option>`).join("");
+    itemSelect.value = selectedItem?.id || "";
   }
   $("exceptionTicketType").value = "原有破损";
   if (context?.type === "courier-pickup") $("exceptionTicketType").value = "漏取/补取";
@@ -3666,9 +3671,18 @@ function openExceptionTicketDialog(item = null, context = null) {
   $("exceptionTicketDescription").value = "";
   $("exceptionTicketSolution").value = "";
   $("exceptionTicketFiles").value = "";
-  setMessage("exceptionTicketMessage", item?.barcode ? `水洗标 ${item.barcode}` : "输入水洗标后提交", "hint");
+  setMessage("exceptionTicketMessage", requireSelection ? "这个订单有多件物品，请先选中本次异常对应的水洗标。"
+    : selectedItem?.barcode ? `水洗标 ${displayWashLabelBarcode(selectedItem.barcode)}` : "输入水洗标后提交", "hint");
   dialog.showModal();
-  requestAnimationFrame(() => (selectedItem?.barcode ? $("exceptionTicketDescription") : $("exceptionTicketBarcode"))?.focus());
+  requestAnimationFrame(() => (requireSelection ? itemSelect : selectedItem?.barcode ? $("exceptionTicketDescription") : $("exceptionTicketBarcode"))?.focus());
+}
+
+function syncExceptionTicketItemSelection(event) {
+  if (!event.target.matches("#exceptionTicketItemSelect")) return;
+  const selected = exceptionTicketContext?.items?.find((item) => item.id === event.target.value);
+  if ($("exceptionTicketItemId")) $("exceptionTicketItemId").value = selected?.id || "";
+  if ($("exceptionTicketBarcode")) $("exceptionTicketBarcode").value = displayWashLabelBarcode(selected?.barcode);
+  if (selected) setMessage("exceptionTicketMessage", `本次上报：${displayWashLabelBarcode(selected.barcode, "无条码")} · ${washItemShortName(selected)}`);
 }
 
 function openCourierPickupException(taskId) {
@@ -3770,12 +3784,19 @@ async function submitExceptionTicket() {
   const submissionClient = sb, submissionUser = currentUser?.id, submissionContext = exceptionTicketContext;
   if (toFactory && (!submissionClient || !submissionUser || APP_MODE !== "admin" || currentProfile?.role !== "admin")) return;
   if (!exceptionTicketSchemaAvailable) return alert(exceptionTicketMigrationMessage());
-  const itemId = text($("exceptionTicketItemId")?.value);
-  const barcode = text($("exceptionTicketBarcode")?.value);
+  const itemSelect = $("exceptionTicketItemSelect");
+  const candidateItems = submissionContext?.items || [];
+  const selected = candidateItems.length > 1
+    ? candidateItems.find((item) => item.id === itemSelect?.value)
+    : candidateItems[0];
+  if (candidateItems.length > 1 && !selected) return setMessage("exceptionTicketMessage", "请先选择本次异常对应的水洗标。", "warn");
+  const itemId = selected?.id || text($("exceptionTicketItemId")?.value);
+  const barcode = text(selected?.barcode || $("exceptionTicketBarcode")?.value);
   const description = text($("exceptionTicketDescription")?.value);
   if (!barcode) return setMessage("exceptionTicketMessage", "请先输入水洗标", "warn");
   if (!description) return setMessage("exceptionTicketMessage", "请填写问题说明", "warn");
   exceptionTicketBusy = true;
+  if (itemSelect) itemSelect.disabled = true;
   document.querySelector("[data-submit-exception-ticket]")?.setAttribute("disabled", "disabled");
   setMessage("exceptionTicketMessage", "正在保存异常工单和照片...", "hint");
   try {
@@ -3785,6 +3806,10 @@ async function submitExceptionTicket() {
     const { data: item, error: itemError } = await itemQuery.maybeSingle();
     if (itemError) throw itemError;
     if (!item) throw new Error("没有找到这个水洗标");
+    if ((selected && (selected.id !== item.id || (selected.barcode && barcode !== text(item.barcode))))
+      || (submissionContext?.orderId && submissionContext.orderId !== item.order_id)) {
+      throw new Error("所选物品和水洗标已变更，请重新查单后上报。");
+    }
     const ticketType = text($("exceptionTicketType")?.value) || "其他异常";
     const createsRetry = exceptionTicketContext?.type === "courier-pickup" && ticketType === "漏取/补取";
     if (createsRetry && !retryPickupSchemaAvailable) throw new Error(retryPickupMigrationMessage());
@@ -3866,6 +3891,9 @@ async function submitExceptionTicket() {
     exceptionActionMessage = `${toFactory ? "已发给工厂处理" : "异常工单已提交"}：${item.barcode}`;
     await Promise.all([APP_MODE === "admin" ? loadStats() : Promise.resolve(), APP_MODE === "admin" ? loadExceptions() : Promise.resolve(), APP_MODE === "factory" ? loadFactoryItems() : Promise.resolve(), APP_MODE === "courier" ? loadCourierTasks() : Promise.resolve()]);
     if (APP_MODE === "factory") {
+      if (factoryExceptionLoad?.promise) await factoryExceptionLoad.promise;
+      if (submissionClient !== sb || submissionUser !== currentUser?.id) return;
+      factoryExceptionSubmission = { id: createdTicket.id, barcode: displayWashLabelBarcode(item.barcode, "无条码") };
       if ($("factoryExceptionSearch")) $("factoryExceptionSearch").value = item.barcode || "";
       if ($("factoryExceptionStatusFilter")) $("factoryExceptionStatusFilter").value = "";
       if ($("factoryExceptionDecisionFilter")) $("factoryExceptionDecisionFilter").value = "";
@@ -3880,6 +3908,7 @@ async function submitExceptionTicket() {
     setMessage("exceptionTicketMessage", ["PGRST202", "42703", "42883"].includes(error?.code) ? "当前业务库尚未启用工厂工单更新，请先完成本次数据库更新。" : error?.message || "异常工单提交失败", "warn");
   } finally {
     exceptionTicketBusy = false;
+    if (itemSelect) itemSelect.disabled = false;
     document.querySelector("[data-submit-exception-ticket]")?.removeAttribute("disabled");
   }
 }
@@ -7046,6 +7075,7 @@ function resetFactoryExceptionView() {
   factoryExceptionRows = [];
   factoryExceptionContext = factoryExceptionLoad = null;
   factoryExceptionLoaded = false;
+  factoryExceptionSubmission = null;
   factoryExceptionPage = 0;
   setFactoryExceptionMobileQueue("received");
   for (const id of ["factoryExceptionNeedsWorkCount", "factoryExceptionReportedCount"]) {
@@ -7194,12 +7224,29 @@ function renderFactoryExceptionTickets() {
   }
   const status = statusFilter?.value || "";
   updateExceptionDateHint("factoryException", dateFilter);
-  const rows = factoryExceptionRows.filter((ticket) => terms.every((term) => ticket.searchText.includes(term))
+  const barcodeQuery = terms.length === 1 && /^\d{4,}$/.test(terms[0]) ? terms[0] : "";
+  const barcodeMatches = barcodeQuery ? factoryExceptionRows.filter((ticket) => {
+    const barcode = factoryExceptionBarcode(ticket);
+    return barcode === barcodeQuery || (barcodeQuery.length === 4 && /^\d{5,}$/.test(barcode) && barcode.endsWith(barcodeQuery));
+  }) : [];
+  const matchingBarcodes = barcodeMatches.length || barcodeQuery.length === 4 ? new Set(barcodeMatches.map((ticket) => ticket.id)) : null;
+  const matchesSearch = (ticket) => {
+    if (matchingBarcodes) return matchingBarcodes.has(ticket.id);
+    if (/^\d{9,10}$/.test(barcodeQuery)) return text(relationOne(ticket.orders).order_no) === barcodeQuery;
+    return terms.every((term) => ticket.searchText.includes(term));
+  };
+  const rows = factoryExceptionRows.filter((ticket) => factoryExceptionSubmission ? ticket.id === factoryExceptionSubmission.id
+    : matchesSearch(ticket)
     && factoryTicketMatchesHandling(ticket, decision)
     && exceptionMatchesDate(ticket, dateFilter)
     && (!queue || (queue === "received" ? ticket.target_team === "factory" : ticket.target_team !== "factory"))
     && (!mobile || (queue === "received" ? factoryWorkNeedsAction(ticket) : factoryReportedIsOpen(ticket)) !== history)
     && (!status || (status.startsWith("work_") ? ticket.target_team === "factory" && EXCEPTION_OPEN_STATUSES.includes(ticket.status) && ticket.factory_progress === status.slice(5) : status === "feedback" ? factoryTicketHasFeedback(ticket) : ticket.status === status)));
+  const receipt = $("factoryExceptionReceipt");
+  if (receipt) {
+    receipt.textContent = factoryExceptionSubmission ? `已提交 · 水洗标 ${factoryExceptionSubmission.barcode}` : "";
+    receipt.classList.toggle("hidden", !factoryExceptionSubmission);
+  }
   const pages = Math.max(1, Math.ceil(rows.length / FACTORY_EXCEPTION_PAGE_SIZE));
   factoryExceptionPage = Math.min(Math.max(0, factoryExceptionPage), pages - 1);
   list.innerHTML = rows.slice(factoryExceptionPage * FACTORY_EXCEPTION_PAGE_SIZE, (factoryExceptionPage + 1) * FACTORY_EXCEPTION_PAGE_SIZE)
@@ -7209,10 +7256,14 @@ function renderFactoryExceptionTickets() {
   if ($("factoryExceptionNextPage")) $("factoryExceptionNextPage").disabled = factoryExceptionPage >= pages - 1;
 }
 
+function factoryExceptionBarcode(ticket) {
+  return displayWashLabelBarcode(relationOne(ticket.order_items).barcode || ticket.barcode, "未绑定水洗标");
+}
+
 function renderFactoryExceptionCard(ticket) {
   if (ticket.target_team === "factory") return renderFactoryWorkCard(ticket);
   const order = relationOne(ticket.orders), item = relationOne(ticket.order_items);
-  const barcode = displayWashLabelBarcode(item.barcode || ticket.barcode, "未绑定水洗标");
+  const barcode = factoryExceptionBarcode(ticket);
   const resolution = String(ticket.resolution || "").trim(), reply = String(ticket.customer_reply || "").trim();
   const decision = effectiveExceptionHandlingDecision(ticket);
   const feedback = resolution || reply;
@@ -7237,7 +7288,7 @@ function renderFactoryWorkCard(ticket) {
   const active = factoryWorkNeedsAction(ticket);
   const mine = !ticket.factory_handler_id || ticket.factory_handler_id === currentUser?.id || currentProfile?.role === "admin";
   return `<article class="factory-exception-card factory-work-card" data-factory-exception-card="${escapeHtml(ticket.id)}">
-    <div class="factory-exception-card-head"><div><h3>${escapeHtml(displayWashLabelBarcode(item.barcode || ticket.barcode, "未绑定水洗标"))}</h3><p>后台发来 · ${escapeHtml(ticket.ticket_type)}${ticket.priority === "紧急" ? " · 紧急" : ""}</p></div><span class="ticket-status ${active ? "danger" : "done"}">${escapeHtml(factoryWorkStageLabel(ticket))}</span></div>
+    <div class="factory-exception-card-head"><div><h3>${escapeHtml(factoryExceptionBarcode(ticket))}</h3><p>后台发来 · ${escapeHtml(ticket.ticket_type)}${ticket.priority === "紧急" ? " · 紧急" : ""}</p></div><span class="ticket-status ${active ? "danger" : "done"}">${escapeHtml(factoryWorkStageLabel(ticket))}</span></div>
     <p class="factory-exception-item">${escapeHtml(item.spec || item.product_name || "物品待核对")}<span>物品状态 ${escapeHtml(item.item_status || "待核对")}</span></p>
     <div class="factory-work-problem"><strong>需要工厂处理的问题</strong><p>${escapeHtml(ticket.description)}</p>${ticket.proposed_solution ? `<p>后台要求：${escapeHtml(ticket.proposed_solution)}</p>` : ""}</div>
     <p class="exception-handling-line">后台处理结论 <strong class="handling-decision ${effectiveExceptionHandlingDecision(ticket)}">${exceptionHandlingLabel(effectiveExceptionHandlingDecision(ticket))}</strong></p>
@@ -7282,6 +7333,7 @@ async function loadFactoryExceptionEvidence(ticketId, button) {
 
 function filterFactoryExceptions() {
   clearTimeout(factoryExceptionSearchTimer);
+  factoryExceptionSubmission = null;
   factoryExceptionPage = 0;
   renderFactoryExceptionTickets();
   if ($("factoryExceptionBody")) $("factoryExceptionBody").scrollTop = 0;
@@ -7410,7 +7462,7 @@ function openFactoryOrderException(orderId) {
   const items = factorySearchOrderItems(order);
   if (!order || !items.length) return alert("这单暂无可绑定的水洗标");
   closeFactoryOrderSearchDialog();
-  openExceptionTicketDialog(items[0], { type: "factory-order-search", orderId, items });
+  openExceptionTicketDialog(null, { type: "factory-order-search", orderId, items });
 }
 
 function factoryTodayRange(dateText = todayDate()) {
@@ -9086,7 +9138,10 @@ function bindEvents() {
     loadFactoryExceptionTickets();
   });
   on("closeFactoryExceptionsBtn", "click", () => $("factoryExceptionDialog")?.close());
-  on("factoryExceptionDialog", "close", () => clearTimeout(factoryExceptionSearchTimer));
+  on("factoryExceptionDialog", "close", () => {
+    clearTimeout(factoryExceptionSearchTimer);
+    factoryExceptionSubmission = null;
+  });
   on("factoryExceptionSearch", "compositionstart", () => clearTimeout(factoryExceptionSearchTimer));
   on("factoryExceptionSearch", "input", (event) => {
     clearTimeout(factoryExceptionSearchTimer);
@@ -9332,11 +9387,6 @@ function bindEvents() {
       selectCourierReturnProof(returnProofInput.dataset.returnProof, returnProofInput.files?.[0]);
       return;
     }
-    if (event.target.matches("#exceptionTicketItemSelect")) {
-      const option = event.target.selectedOptions?.[0];
-      if ($("exceptionTicketItemId")) $("exceptionTicketItemId").value = event.target.value || "";
-      if ($("exceptionTicketBarcode")) $("exceptionTicketBarcode").value = option?.dataset.barcode || "";
-    }
     if (event.target.matches("#exceptionTicketType") && exceptionTicketContext?.type === "courier-pickup") {
       $("exceptionTicketRetryDateField")?.classList.toggle("hidden", event.target.value !== "漏取/补取");
     }
@@ -9412,7 +9462,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=113", { updateViaCache: "none" })
+    .register("./sw.js?v=114", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
