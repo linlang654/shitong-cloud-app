@@ -133,6 +133,8 @@ let factoryReturnWork = null;
 let factoryOrderSearchRows = [];
 let factoryOrderSearchBusy = false;
 const FACTORY_EXCEPTION_PAGE_SIZE = 20;
+const FACTORY_WORK_PHOTO_LIMIT = 6;
+const FACTORY_WORK_PHOTO_MAX_BYTES = 100 * 1024 * 1024;
 let factoryExceptionRows = [];
 let factoryExceptionPage = 0;
 let factoryExceptionContext = null;
@@ -6881,7 +6883,9 @@ function setFactoryExceptionMobileQueue(queue) {
 
 function renderFactoryWorkReply(ticket) {
   if (!ticket.factory_reply) return "";
-  return `<div class="factory-work-reply"><strong>${ticket.factory_progress === "replied" ? "工厂处理结果" : "上次工厂回复"}</strong><p>${escapeHtml(ticket.factory_reply)}</p><small>${escapeHtml(formatDateTime(ticket.factory_replied_at, true))}</small></div>`;
+  const photos = (ticket.evidencePaths || ticket.evidence_paths || [])
+    .filter((path) => path.split("/")[1] === "factory-reply").length;
+  return `<div class="factory-work-reply"><strong>${ticket.factory_progress === "replied" ? "工厂处理结果" : "上次工厂回复"}</strong><p>${escapeHtml(ticket.factory_reply)}</p><small>${escapeHtml(formatDateTime(ticket.factory_replied_at, true))}${photos ? ` · 工厂回传 ${photos} 张照片` : ""}</small></div>`;
 }
 
 function setFactoryWorkBadge(count) {
@@ -6896,42 +6900,100 @@ function openFactoryWorkDialog(ticketId, action) {
   const rows = action === "reopen" ? currentExceptionTickets : factoryExceptionRows;
   const ticket = rows.find((row) => row.id === ticketId);
   if (!ticket || ticket.target_team !== "factory" || !EXCEPTION_OPEN_STATUSES.includes(ticket.status)) return;
-  if (action === "reopen" ? currentProfile?.role !== "admin" || ticket.factory_progress !== "replied" : !canViewFactoryExceptions() || !["pending", "processing"].includes(ticket.factory_progress)) return;
+  if (action === "reopen" ? currentProfile?.role !== "admin" || ticket.factory_progress !== "replied"
+    : !canViewFactoryExceptions() || !["pending", "processing"].includes(ticket.factory_progress)
+      || (ticket.factory_handler_id && ticket.factory_handler_id !== currentUser.id && currentProfile?.role !== "admin")) return;
   if (action === "start") return performFactoryWorkAction({ client: sb, userId: currentUser.id, ticket: { ...ticket }, action }, "");
   if (!$("factoryWorkDialog")) {
     document.body.insertAdjacentHTML("beforeend", `<dialog id="factoryWorkDialog" class="exception-ticket-dialog" aria-labelledby="factoryWorkTitle"><div class="exception-ticket-form">
       <div class="dialog-heading"><h2 id="factoryWorkTitle"></h2><button class="ghost" type="button" data-close-factory-work>关闭</button></div>
       <p id="factoryWorkSummary" class="hint"></p><p id="factoryWorkProblem" class="factory-work-text"></p>
       <label class="field-group"><span id="factoryWorkMessageLabel"></span><textarea id="factoryWorkMessage" class="input" rows="5" maxlength="4000"></textarea></label>
-      <p class="hint">提交回复后由后台确认结案，不会自动更改物品取送状态。</p>
+      <div id="factoryWorkPhotos" class="field-group">
+        <label class="file-button ghost-file factory-work-photo-picker"><span>选择处理照片</span><input id="factoryWorkFiles" type="file" accept="image/*" multiple aria-describedby="factoryWorkFilesHint factoryWorkFilesSelection" /></label>
+        <p id="factoryWorkFilesHint" class="hint">可一次选 ${FACTORY_WORK_PHOTO_LIMIT} 张，照片随回复提交。</p>
+        <p id="factoryWorkFilesSelection" class="hint" role="status"></p>
+      </div>
       <p id="factoryWorkMessageStatus" role="status" aria-live="polite"></p>
       <div class="actions"><button type="button" data-save-factory-work>提交</button><button class="ghost" type="button" data-close-factory-work>取消</button></div>
     </div></dialog>`);
     $("factoryWorkDialog").addEventListener("cancel", (event) => { if (factoryWorkBusy) event.preventDefault(); });
     $("factoryWorkDialog").addEventListener("close", () => { if (!$("factoryWorkDialog").open && !factoryWorkBusy) factoryWorkContext = null; });
+    on("factoryWorkFiles", "change", (event) => {
+      const count = event.target.files.length;
+      $("factoryWorkFilesSelection").textContent = count ? `已选择 ${count} 张` : "";
+      const problem = factoryWorkPhotoProblem([...event.target.files]);
+      setMessage("factoryWorkMessageStatus", problem, problem ? "warn" : "hint");
+    });
   }
   factoryWorkContext = { client: sb, userId: currentUser.id, ticket: { ...ticket }, action };
   $("factoryWorkTitle").textContent = action === "reopen" ? "退回工厂重新处理" : "填写工厂处理结果";
   $("factoryWorkSummary").textContent = `${displayWashLabelBarcode(ticket.barcode || relationOne(ticket.order_items).barcode)} · ${ticket.ticket_type}`;
   $("factoryWorkProblem").textContent = ticket.description || "";
-  $("factoryWorkMessageLabel").textContent = action === "reopen" ? "重处理原因（必填）" : "处理结果（必填）";
+  $("factoryWorkMessageLabel").textContent = action === "reopen" ? "重处理原因（必填）" : "处理说明";
   $("factoryWorkMessage").value = action === "reopen" ? "" : ticket.factory_reply || "";
+  $("factoryWorkPhotos").classList.toggle("hidden", action !== "reply");
+  $("factoryWorkFiles").value = "";
+  $("factoryWorkFilesSelection").textContent = "";
   setMessage("factoryWorkMessageStatus", "");
   $("factoryWorkDialog").showModal();
-  requestAnimationFrame(() => $("factoryWorkMessage")?.focus());
+  if (action === "reopen") requestAnimationFrame(() => $("factoryWorkMessage")?.focus());
 }
 
-async function performFactoryWorkAction(context, message) {
+function factoryWorkPhotoProblem(files) {
+  if (files.length > FACTORY_WORK_PHOTO_LIMIT) return `每次最多选择 ${FACTORY_WORK_PHOTO_LIMIT} 张照片。`;
+  if (files.some((file) => !String(file.type || "").startsWith("image/") || !file.size || file.size > FACTORY_WORK_PHOTO_MAX_BYTES)) {
+    return "请选择图片文件，每张原图不能超过 100MB。";
+  }
+  return "";
+}
+
+async function performFactoryWorkAction(context, message, files = []) {
   if (factoryWorkBusy || !context || context.client !== sb || context.userId !== currentUser?.id) return;
-  if (context.action !== "start" && !text(message)) return setMessage("factoryWorkMessageStatus", "请填写处理结果或重处理原因。", "warn");
+  const photos = context.action === "reply" ? files : [];
+  const photoProblem = factoryWorkPhotoProblem(photos);
+  if (photoProblem) return setMessage("factoryWorkMessageStatus", photoProblem, "warn");
+  if (context.action !== "start" && !text(message) && !photos.length) {
+    return setMessage("factoryWorkMessageStatus", context.action === "reply" ? "请填写处理说明或选择照片。" : "请填写重处理原因。", "warn");
+  }
+  const isCurrent = () => context.client === sb && context.userId === currentUser?.id;
   factoryWorkBusy = true;
   for (const button of document.querySelectorAll("[data-save-factory-work],[data-close-factory-work],[data-factory-work]")) button.disabled = true;
+  if ($("factoryWorkFiles")) $("factoryWorkFiles").disabled = true;
   if (context.action !== "start") setMessage("factoryWorkMessageStatus", "正在保存…");
+  const photoPaths = [];
+  let photoCommitPossible = false;
   try {
-    const { data, error } = await context.client.rpc("act_on_factory_exception", { p_ticket_id: context.ticket.id,
-      p_action: context.action, p_message: message, p_expected_updated_at: context.ticket.updated_at || null });
-    if (context.client !== sb || context.userId !== currentUser?.id) return;
-    if (error) throw new Error(["PGRST202", "42883"].includes(error.code) ? "当前业务库尚未启用工厂工单更新。" : error.message);
+    for (const [index, file] of photos.entries()) {
+      setMessage("factoryWorkMessageStatus", `正在上传第 ${index + 1}/${photos.length} 张照片…`);
+      const prepared = await prepareReturnDeliveryPhoto(file);
+      if (!isCurrent()) return;
+      if (prepared.size > RETURN_DELIVERY_STORED_MAX_BYTES) throw new Error(`${file.name} 压缩后仍超过 800KB，请换一张图片重试。`);
+      const path = `${context.ticket.order_id}/factory-reply/${context.ticket.id}/${crypto.randomUUID()}-${safeEvidenceFileName(prepared.name)}`;
+      const { error } = await context.client.storage.from("exception-evidence").upload(path, prepared, {
+        contentType: prepared.type, upsert: false,
+      });
+      if (error) throw new Error(`第 ${index + 1} 张上传失败：${error.message}`);
+      photoPaths.push(path);
+      if (!isCurrent()) return;
+    }
+    const request = {
+      p_ticket_id: context.ticket.id,
+      p_message: message,
+      p_expected_updated_at: context.ticket.updated_at || null,
+    };
+    photoCommitPossible = photoPaths.length > 0;
+    const { data, error } = photoCommitPossible
+      ? await context.client.rpc("reply_to_factory_exception_with_photos", { ...request, p_evidence_paths: photoPaths })
+      : await context.client.rpc("act_on_factory_exception", { ...request, p_action: context.action });
+    if (error) {
+      if (["PGRST202", "42883", "40001", "42501", "22023", "P0001"].includes(error.code)) photoCommitPossible = false;
+      if (["PGRST202", "42883"].includes(error.code)) {
+        throw new Error(photos.length ? "当前业务库尚未启用工厂处理照片。" : "当前业务库尚未启用工厂工单更新。");
+      }
+      throw new Error(error.message);
+    }
+    if (!isCurrent()) return;
     const expected = { start: "processing", reply: "replied", reopen: "pending" }[context.action];
     if (data?.ticket_id !== context.ticket.id || data?.factory_progress !== expected) throw new Error("未确认保存结果，请刷新核对。");
     if (factoryWorkContext === context) { $("factoryWorkDialog")?.close(); factoryWorkContext = null; }
@@ -6953,7 +7015,15 @@ async function performFactoryWorkAction(context, message) {
     if (factoryWorkContext === context) setMessage("factoryWorkMessageStatus", error.message || "保存失败，请重试。", "warn");
     else setMessage("factoryExceptionMessage", error.message || "保存失败，请刷新核对。", "warn");
   } finally {
+    if (photoPaths.length && !photoCommitPossible && isCurrent()) {
+      try {
+        await context.client.storage.from("exception-evidence").remove(photoPaths);
+      } catch {
+        // Keep the original upload or save error visible.
+      }
+    }
     factoryWorkBusy = false;
+    if ($("factoryWorkFiles")) $("factoryWorkFiles").disabled = false;
     for (const button of document.querySelectorAll("[data-save-factory-work],[data-close-factory-work],[data-factory-work]")) button.disabled = false;
   }
 }
@@ -7176,8 +7246,8 @@ function renderFactoryWorkCard(ticket) {
     ${ticket.resolution ? `<p class="factory-work-text"><strong>后台确认：</strong>${escapeHtml(ticket.resolution)}</p>` : ""}
     <p class="hint">${escapeHtml(order.customer_name || "未知客户")} · ${escapeHtml(factoryMaskedPhone(order.phone))}</p>
     <div class="factory-exception-times"><span>订单 ${escapeHtml(order.order_no || "—")}</span><span>发起 ${escapeHtml(formatDateTime(ticket.created_at, true))}</span><span>更新 ${escapeHtml(formatDateTime(ticket.updated_at, true))}</span></div>
-    <div class="factory-exception-card-actions">${active && mine ? `${ticket.factory_progress === "pending" ? `<button class="ghost" type="button" data-factory-work="${escapeHtml(ticket.id)}" data-work-action="start">开始处理</button>` : ""}<button type="button" data-factory-work="${escapeHtml(ticket.id)}" data-work-action="reply">填写处理结果</button>` : active ? '<span class="hint">其他工厂同事正在处理</span>' : ""}
-    ${order.id || ticket.order_id ? `<button class="ghost" type="button" data-detail="${escapeHtml(order.id || ticket.order_id)}">查看订单</button>` : ""}${ticket.evidencePaths?.length ? `<button class="ghost" type="button" data-factory-exception-evidence="${escapeHtml(ticket.id)}">问题照片（${ticket.evidencePaths.length}）</button>` : ""}</div>
+    <div class="factory-exception-card-actions">${active && mine ? `${ticket.factory_progress === "pending" ? `<button class="ghost" type="button" data-factory-work="${escapeHtml(ticket.id)}" data-work-action="start">开始处理</button>` : ""}<button type="button" data-factory-work="${escapeHtml(ticket.id)}" data-work-action="reply">填写处理结果 / 传照片</button>` : active ? '<span class="hint">其他工厂同事正在处理</span>' : ""}
+    ${order.id || ticket.order_id ? `<button class="ghost" type="button" data-detail="${escapeHtml(order.id || ticket.order_id)}">查看订单</button>` : ""}${ticket.evidencePaths?.length ? `<button class="ghost" type="button" data-factory-exception-evidence="${escapeHtml(ticket.id)}">工单照片（${ticket.evidencePaths.length}）</button>` : ""}</div>
   </article>`;
 }
 
@@ -9140,7 +9210,9 @@ function bindEvents() {
     if (factoryItemButton) openExceptionTicketDialog({ id: factoryItemButton.dataset.factoryItem, barcode: factoryItemButton.dataset.factoryBarcode }, { type: "admin-to-factory" });
     const factoryWorkButton = event.target.closest("[data-factory-work]");
     if (factoryWorkButton) openFactoryWorkDialog(factoryWorkButton.dataset.factoryWork, factoryWorkButton.dataset.workAction);
-    if (event.target.closest("[data-save-factory-work]")) performFactoryWorkAction(factoryWorkContext, text($("factoryWorkMessage")?.value));
+    if (event.target.closest("[data-save-factory-work]")) {
+      performFactoryWorkAction(factoryWorkContext, text($("factoryWorkMessage")?.value), [...($("factoryWorkFiles")?.files || [])]);
+    }
     if (event.target.closest("[data-close-factory-work]") && !factoryWorkBusy) { $("factoryWorkDialog")?.close(); factoryWorkContext = null; }
     const reportExceptionBtn = event.target.closest("[data-report-exception]");
     if (reportExceptionBtn) openExceptionTicketDialog(factoryItemRows.find((item) => item.id === reportExceptionBtn.dataset.reportException) || null);
@@ -9340,7 +9412,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=112", { updateViaCache: "none" })
+    .register("./sw.js?v=113", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }

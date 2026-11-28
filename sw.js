@@ -1,14 +1,14 @@
-const CACHE_NAME = "shitong-cloud-v112";
+const CACHE_NAME = "shitong-cloud-v113";
 const ASSETS = [
   "./",
   "./index.html",
-  "./styles.css?v=112",
-  "./app.js?v=112",
-  "./local-ui.css?v=112",
-  "./local-ui.js?v=112",
-  "./mobile-ui.css?v=112",
-  "./mobile-ui.js?v=112",
-  "./floating-search.css?v=112",
+  "./styles.css?v=113",
+  "./app.js?v=113",
+  "./local-ui.css?v=113",
+  "./local-ui.js?v=113",
+  "./mobile-ui.css?v=113",
+  "./mobile-ui.js?v=113",
+  "./floating-search.css?v=113",
   "./manifest.webmanifest",
   "./courier.html",
   "./factory.html",
