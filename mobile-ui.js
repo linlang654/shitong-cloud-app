@@ -17,9 +17,31 @@
   const note=el('p','mobile-step-note','① 选入库 / 出库　② 扫码　③ 核对并提交');document.querySelector('.scanner-heading').after(note);
   const manual=document.querySelector('.factory-manual-scan');const camera=$('factoryCameraToggleBtn');manual.before(camera);
   const history=document.querySelector('.scan-history-panel'), detail=el('details','mobile-history');detail.append(el('summary','','最近处理记录'));history.before(detail);detail.append(history);detail.open=!mq.matches;
-  function view(key){if(key!=='scan'&&workspace.dataset.mobileView==='scan'&&!$('factoryCameraPanel').classList.contains('hidden'))$('factoryCameraToggleBtn').click();workspace.dataset.mobileView=key;active(key);if(key==='daily'){if(daily.classList.contains('is-collapsed'))$('factoryDailyCollapseBtn').click();}if(key==='pending')pending.open=true;scrollToTop()}
+  const exceptions=$('factoryExceptionDialog');
+  function stopCamera(){
+    if(workspace.dataset.mobileView==='scan'&&!$('factoryCameraPanel').classList.contains('hidden'))$('factoryCameraToggleBtn').click();
+  }
+  function view(key){if(exceptions.open)exceptions.close();if(key!=='scan')stopCamera();workspace.dataset.mobileView=key;active(key);if(key==='daily'){if(daily.classList.contains('is-collapsed'))$('factoryDailyCollapseBtn').click();}if(key==='pending')pending.open=true;scrollToTop()}
   tab('scan','▣','扫码作业',()=>view('scan'));tab('daily','▤','今日清单',()=>view('daily'));tab('pending','☷','待办物品',()=>view('pending'));const ex=tab('exception','!','异常工单',()=>$('factoryExceptionBtn').click());
-  const badge=el('span','mobile-nav-count');ex.append(badge);const counts=[$('factoryExceptionWorkCount'),$('factoryExceptionFeedbackCount')];const sync=()=>{const n=counts.reduce((s,e)=>s+(e&&!e.classList.contains('hidden')?(Number(e.textContent.match(/\d+/)?.[0])||0):0),0);badge.textContent=n?String(n):'';badge.hidden=!n};counts.forEach(e=>e&&new MutationObserver(sync).observe(e,{attributes:true,childList:true,subtree:true,characterData:true}));sync();view('scan');
+  new MutationObserver(()=>{
+    if(exceptions.open&&mq.matches){
+      stopCamera();
+      active('exception');
+    }else{
+      active(workspace.dataset.mobileView);
+    }
+  }).observe(exceptions,{attributes:true,attributeFilter:['open']});
+  const badge=el('span','mobile-nav-count');
+  ex.append(badge);
+  const workCount=$('factoryExceptionWorkCount');
+  const sync=()=>{
+    const count=workCount.classList.contains('hidden')?0:Number(workCount.textContent.match(/\d+/)?.[0])||0;
+    badge.textContent=count?String(count):'';
+    badge.hidden=!count;
+  };
+  new MutationObserver(sync).observe(workCount,{attributes:true,childList:true,subtree:true,characterData:true});
+  sync();
+  view('scan');
  }else{
   const filter=document.querySelector('.courier-filterbar'), history=el('details','mobile-history-filter');history.append(el('summary','','历史日期 / 全部未完成'));filter.append(history);history.append(filter.querySelector('.date-filter'),$('courierTodayBtn'));history.open=!mq.matches;mq.addEventListener('change',()=>{history.open=!mq.matches});
   const list=$('courierRouteTaskList');const search=$('courierSearch');search.placeholder='姓名 / 电话 / 楼栋 / 水洗标';search.setAttribute('aria-label','搜索配送任务');

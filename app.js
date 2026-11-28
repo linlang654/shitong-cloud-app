@@ -153,6 +153,15 @@ let orderManagementLoad = null;
 const orderStatusEditsBusy = new Set();
 let orderStatusStatsTimer;
 let orderDashboardFilter = "";
+let pendingDashboardOrderStatus = null;
+const DASHBOARD_ORDER_STATUSES = {
+  "pickup-today": "未取件（含补取）",
+  "pending-in": "待入库",
+  "pending-out": "待出库",
+  "pending-return": "待送回",
+  exceptions: "待处理异常",
+};
+const DASHBOARD_ORDER_EXCEPTION_MATCH = "exception_note.neq.,school.eq.学校未识别,campus.eq.校区未识别,building.eq.楼栋未识别,order_status.eq.异常,order_status.eq.未找到";
 let courierDashboardFilter = "";
 let factoryDashboardFilter = "";
 let courierPickupTaskRows = [];
@@ -777,35 +786,15 @@ function switchAdminSection(sectionName) {
 }
 
 function openDashboardTarget(target) {
-  orderDashboardFilter = "";
-  courierDashboardFilter = "";
-  factoryDashboardFilter = "";
-
-  if (target === "pickup-today") {
-    courierDashboardFilter = "pickup-today";
-    if ($("courierPickupDate")) $("courierPickupDate").value = "";
-    switchView("courier");
-    return;
+  const stage = Object.hasOwn(DASHBOARD_ORDER_STATUSES, target);
+  const overdue = target === "overdue" || target.startsWith("overdue-");
+  if (!stage && !overdue) return;
+  pendingDashboardOrderStatus = stage ? target : "";
+  orderDashboardFilter = overdue ? target : "";
+  for (const id of ["orderSearch", "orderStartDate", "orderEndDate"]) {
+    if ($(id)) $(id).value = "";
   }
-  if (target === "pending-return") {
-    courierDashboardFilter = "pending-return";
-    switchView("courier");
-    return;
-  }
-  if (target === "pending-in" || target === "pending-out") {
-    factoryDashboardFilter = target;
-    switchView("factory");
-    return;
-  }
-  switchView("admin");
-  if (target === "exceptions") {
-    switchAdminSection("exceptions");
-    return;
-  }
-  if (target === "overdue" || target.startsWith("overdue-")) {
-    orderDashboardFilter = target;
-    switchAdminSection("orders");
-  }
+  switchAdminSection("orders");
 }
 
 function renderActiveFilter(targetId, label, scope) {
@@ -2153,7 +2142,7 @@ async function loadStats() {
     sb.from("order_items").select("id", { count: "exact", head: true }).eq("item_status", "已取件"),
     sb.from("order_items").select("id", { count: "exact", head: true }).in("item_status", ["已入厂", "清洗中"]),
     sb.from("return_tasks").select("id", { count: "exact", head: true }).eq("status", "待送回"),
-    sb.from("orders").select("id", { count: "exact", head: true }).or("exception_note.neq.,school.eq.学校未识别,campus.eq.校区未识别,building.eq.楼栋未识别,order_status.eq.异常,order_status.eq.未找到"),
+    sb.from("orders").select("id", { count: "exact", head: true }).or(DASHBOARD_ORDER_EXCEPTION_MATCH),
     exceptionTicketsQuery,
     sb.from("orders").select("id,order_status,updated_at").neq("order_status", "已送达").neq("order_status", "已退单").neq("order_status", "已完结").lt("updated_at", overdueBefore),
   ]);
@@ -2714,7 +2703,8 @@ function isCurrentOrderManagementLoad(load) {
 
 function renderOrderManagement() {
   const keyword = text($("orderSearch")?.value).toLowerCase();
-  const selectedStatus = text($("orderStatusFilter")?.value);
+  const selectedStatus = pendingDashboardOrderStatus ?? text($("orderStatusFilter")?.value);
+  pendingDashboardOrderStatus = null;
   const startDate = text($("orderStartDate")?.value);
   const endDate = text($("orderEndDate")?.value);
   const overdueOptions = ["", "overdue", "overdue-2", "overdue-day-3", "overdue-day-4", "overdue-day-5",
@@ -2728,6 +2718,7 @@ function renderOrderManagement() {
         <input id="orderSearch" class="input" placeholder="搜索订单号、姓名、电话、学校、楼栋、水洗标" value="${escapeHtml(keyword)}" />
         <select id="orderStatusFilter" class="input">
           <option value="">全部状态</option>
+          ${Object.entries(DASHBOARD_ORDER_STATUSES).map(([status, label]) => `<option value="${status}" ${status === selectedStatus ? "selected" : ""}>${label}</option>`).join("")}
           <option value="return_wash" ${selectedStatus === "return_wash" ? "selected" : ""}>退洗（含部分退洗）</option>
           ${ORDER_STATUSES.map((status) => `<option value="${escapeHtml(status)}" ${status === selectedStatus ? "selected" : ""}>${escapeHtml(status)}</option>`).join("")}
         </select>
@@ -2764,7 +2755,7 @@ function filteredOrderRows(rows, { keyword, selectedStatus, startDate, endDate }
     if (keyword && !searchable.includes(keyword)) return false;
     if (selectedStatus === "return_wash") {
       if (!(order.order_items || []).some((item) => washDecisionIsReturn(item) || item.item_status === "退洗")) return false;
-    } else if (selectedStatus && order.order_status !== selectedStatus) return false;
+    } else if (selectedStatus && !Object.hasOwn(DASHBOARD_ORDER_STATUSES, selectedStatus) && order.order_status !== selectedStatus) return false;
     if (!matchesOverdueDashboardFilter(order)) return false;
     return inDateRange(order, startDate, endDate);
   });
@@ -2782,12 +2773,15 @@ async function applyOrderFilters() {
     startDate: text($("orderStartDate")?.value),
     endDate: text($("orderEndDate")?.value),
   };
-  if (filters.selectedStatus === "return_wash") return loadReturnWashOrderManagementPage(load, filters, table, summary);
-  if (load.rowsBeforeReturnWash) {
-    orderManagementRows = load.rowsBeforeReturnWash;
-    load.rowsBeforeReturnWash = null;
+  if (filters.selectedStatus === "return_wash" || Object.hasOwn(DASHBOARD_ORDER_STATUSES, filters.selectedStatus)) {
+    return loadOrderManagementStagePage(load, filters, table, summary);
+  }
+  if (load.rowsBeforeStageFilter) {
+    orderManagementRows = load.rowsBeforeStageFilter;
+    load.rowsBeforeStageFilter = null;
   }
   if (load.remote) return loadOrderManagementPage(load, filters, table, summary);
+  $("orderPagination")?.classList.add("hidden");
   if (load.status === "loading-recent") return;
   const searchHistory = Boolean(filters.keyword || filters.selectedStatus || filters.startDate || filters.endDate || orderDashboardFilter);
 
@@ -2824,50 +2818,81 @@ function orderFilterHelp() {
     : "时间筛选优先按付款时间，付款时间为空时按下单时间。";
 }
 
-async function loadReturnWashOrderManagementPage(load, filters, table, summary) {
+async function loadOrderManagementStageRows(client, stage) {
+  const find = (table, fields, filter) => loadRowsById(() => filter(client.from(table).select(fields)));
+  let sources;
+  if (stage === "pickup-today") {
+    sources = [find("pickup_tasks", "id,order_id", (query) => query.in("status", [...PICKUP_OPEN_STATUSES]))];
+    if (retryPickupSchemaAvailable) {
+      sources.push(find("pickup_retry_tasks", "id,order_id", (query) => query.in("status", [...RETRY_PICKUP_OPEN_STATUSES])));
+    }
+  } else if (stage === "pending-return") {
+    sources = [find("return_tasks", "id,order_items(order_id)", (query) => query.eq("status", "待送回"))];
+  } else if (stage === "exceptions") {
+    sources = [find("orders", "id", (query) => query.or(DASHBOARD_ORDER_EXCEPTION_MATCH))];
+    if (exceptionTicketSchemaAvailable) {
+      sources.push(find("exception_tickets", "id,order_id", (query) => query.in("status", EXCEPTION_OPEN_STATUSES)));
+    }
+  } else {
+    const conditions = {
+      "pending-in": (query) => query.eq("item_status", "已取件"),
+      "pending-out": (query) => query.in("item_status", ["已入厂", "清洗中"]),
+      return_wash: (query) => query.or("item_status.eq.退洗,wash_decision.in.(return_pending,returned,return_cancelled)"),
+    };
+    sources = [find("order_items", "id,order_id", conditions[stage])];
+  }
+  const results = await Promise.all(sources);
+  const orderIds = new Set();
+  for (const [index, { data, error }] of results.entries()) {
+    if (error) throw error;
+    for (const row of data) {
+      const id = stage === "exceptions" && index === 0 ? row.id : (row.order_id || relationOne(row.order_items).order_id);
+      if (id) orderIds.add(id);
+    }
+  }
+  const ids = [...orderIds];
+  const columns = stage === "return_wash" ? ORDER_MANAGEMENT_SELECT.replace("item_status,", "item_status,wash_decision,") : ORDER_MANAGEMENT_SELECT;
+  const rows = [];
+  for (let offset = 0; offset < ids.length; offset += 100) {
+    const { data, error } = await find("orders", columns, (query) => query.in("id", ids.slice(offset, offset + 100)));
+    if (error) throw error;
+    rows.push(...data);
+  }
+  return rows.sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at) || left.id.localeCompare(right.id));
+}
+
+async function loadOrderManagementStagePage(load, filters, table, summary) {
   clearTimeout(load.timer);
   const request = ++load.request;
+  const stage = filters.selectedStatus;
+  const label = stage === "return_wash" ? "退洗订单（含部分退洗）" : DASHBOARD_ORDER_STATUSES[stage];
   const isCurrent = () => isCurrentOrderManagementLoad(load) && request === load.request
-    && $("orderStatusFilter")?.value === "return_wash";
+    && $("orderStatusFilter")?.value === stage;
   const previous = $("orderPreviousPage");
   const next = $("orderNextPage");
   previous.disabled = next.disabled = true;
   table.replaceChildren();
-  summary.textContent = "正在查询退洗订单…";
+  summary.textContent = `正在查询${label}…`;
   try {
-    if (!load.returnWashRowsPromise) {
-      load.returnWashRowsPromise = (async () => {
-        const { data: items, error } = await loadRowsById(() => load.client.from("order_items")
-          .select("id,order_id")
-          .or("item_status.eq.退洗,wash_decision.in.(return_pending,returned,return_cancelled)"));
-        if (error) throw error;
-        const orderIds = [...new Set(items.map((item) => item.order_id).filter(Boolean))];
-        const rows = [];
-        const columns = ORDER_MANAGEMENT_SELECT.replace("item_status,", "item_status,wash_decision,");
-        for (let offset = 0; offset < orderIds.length; offset += 100) {
-          const result = await loadRowsById(() => load.client.from("orders").select(columns)
-            .in("id", orderIds.slice(offset, offset + 100)));
-          if (result.error) throw result.error;
-          rows.push(...result.data);
-        }
-        return rows.sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at)
-          || left.id.localeCompare(right.id));
-      })().catch((error) => {
-        load.returnWashRowsPromise = null;
+    load.stageRows ||= new Map();
+    if (!load.stageRows.has(stage)) {
+      load.stageRows.set(stage, loadOrderManagementStageRows(load.client, stage).catch((error) => {
+        load.stageRows.delete(stage);
         throw error;
-      });
+      }));
     }
-    const allRows = await load.returnWashRowsPromise;
+    const allRows = await load.stageRows.get(stage);
     if (!isCurrent()) return;
     const rows = filteredOrderRows(allRows, filters);
     load.total = rows.length;
     const pageCount = Math.max(1, Math.ceil(load.total / ORDER_MANAGEMENT_PAGE_SIZE));
     load.page = Math.min(load.page, pageCount - 1);
-    if (!load.rowsBeforeReturnWash) load.rowsBeforeReturnWash = orderManagementRows;
+    if (!load.rowsBeforeStageFilter) load.rowsBeforeStageFilter = orderManagementRows;
     orderManagementRows = rows.slice(load.page * ORDER_MANAGEMENT_PAGE_SIZE, (load.page + 1) * ORDER_MANAGEMENT_PAGE_SIZE);
     table.innerHTML = renderOrderRows(orderManagementRows);
     const overdue = orderDashboardFilter ? `${overdueFilterLabel()}，` : "";
-    summary.textContent = `退洗订单（含部分退洗），${overdue}共 ${load.total} 单。包含待退回、已退回和未取件退单。${orderFilterHelp()}`;
+    const returnHelp = stage === "return_wash" ? "包含待退回、已退回和未取件退单。" : "";
+    summary.textContent = `${label}，${overdue}共 ${load.total} 单。${returnHelp}${orderFilterHelp()}`;
     $("orderPagination").classList.toggle("hidden", pageCount <= 1);
     $("orderPageSummary").textContent = `第 ${load.page + 1} / ${pageCount} 页`;
     previous.disabled = load.page === 0;
@@ -2875,7 +2900,7 @@ async function loadReturnWashOrderManagementPage(load, filters, table, summary) 
   } catch (error) {
     if (!isCurrent()) return;
     $("orderPagination").classList.add("hidden");
-    summary.textContent = "退洗订单读取失败，请重新筛选或刷新后重试。";
+    summary.textContent = `${label}读取失败，请重新筛选或刷新后重试。`;
   }
 }
 
@@ -3828,6 +3853,7 @@ async function submitExceptionTicket() {
       if ($("factoryExceptionStatusFilter")) $("factoryExceptionStatusFilter").value = "";
       if ($("factoryExceptionDecisionFilter")) $("factoryExceptionDecisionFilter").value = "";
       if ($("factoryExceptionQueueFilter")) $("factoryExceptionQueueFilter").value = "sent";
+      setFactoryExceptionMobileQueue("sent");
       clearExceptionDateFilters("factoryException");
       await openFactoryExceptionDialog();
     }
@@ -6724,6 +6750,24 @@ function factoryWorkNeedsAction(ticket) {
   return ticket.target_team === "factory" && EXCEPTION_OPEN_STATUSES.includes(ticket.status) && ticket.factory_progress !== "replied";
 }
 
+function factoryReportedIsOpen(ticket) {
+  return ticket.source === "工厂端" && ticket.target_team !== "factory" && EXCEPTION_OPEN_STATUSES.includes(ticket.status);
+}
+
+function usesFactoryMobileExceptionLayout() {
+  return Boolean($("factoryExceptionNeedsWork") && globalThis.matchMedia?.("(max-width: 760px)").matches);
+}
+
+function setFactoryExceptionMobileQueue(queue) {
+  $("factoryExceptionNeedsWork")?.setAttribute("aria-pressed", String(queue === "received"));
+  $("factoryExceptionReported")?.setAttribute("aria-pressed", String(queue === "sent"));
+  const history = $("factoryExceptionHistoryToggle");
+  if (history) {
+    history.setAttribute("aria-pressed", "false");
+    history.textContent = "历史";
+  }
+}
+
 function renderFactoryWorkReply(ticket) {
   if (!ticket.factory_reply) return "";
   return `<div class="factory-work-reply"><strong>${ticket.factory_progress === "replied" ? "工厂处理结果" : "上次工厂回复"}</strong><p>${escapeHtml(ticket.factory_reply)}</p><small>${escapeHtml(formatDateTime(ticket.factory_replied_at, true))}</small></div>`;
@@ -6822,6 +6866,10 @@ function resetFactoryExceptionView() {
   factoryExceptionContext = factoryExceptionLoad = null;
   factoryExceptionLoaded = false;
   factoryExceptionPage = 0;
+  setFactoryExceptionMobileQueue("received");
+  for (const id of ["factoryExceptionNeedsWorkCount", "factoryExceptionReportedCount"]) {
+    if ($(id)) $(id).textContent = "";
+  }
   factoryWorkContext = null;
   $("factoryWorkDialog")?.close();
   $("factoryExceptionDialog")?.close();
@@ -6859,7 +6907,11 @@ async function openFactoryExceptionDialog() {
   if (!dialog) return;
   factoryExceptionPage = 0;
   if ($("factoryExceptionBody")) $("factoryExceptionBody").scrollTop = 0;
-  if (!dialog.open) dialog.showModal();
+  if (!dialog.open) {
+    if (usesFactoryMobileExceptionLayout()) dialog.show();
+    else dialog.showModal();
+  }
+  renderFactoryExceptionTickets();
   await loadFactoryExceptionTickets();
 }
 
@@ -6910,9 +6962,11 @@ async function loadFactoryExceptionTickets() {
       const work = factoryExceptionRows.filter(factoryWorkNeedsAction).length;
       setFactoryExceptionBadge(feedback);
       setFactoryWorkBadge(work);
+      if ($("factoryExceptionNeedsWorkCount")) $("factoryExceptionNeedsWorkCount").textContent = String(work);
+      if ($("factoryExceptionReportedCount")) $("factoryExceptionReportedCount").textContent = String(factoryExceptionRows.filter(factoryReportedIsOpen).length);
       if ($("factoryExceptionSummary")) $("factoryExceptionSummary").textContent = `共 ${factoryExceptionRows.length} 条 · 待工厂 ${work} 条 · 未结案 ${pending} 条 · 客服已反馈 ${feedback} 条`;
       renderFactoryExceptionTickets();
-      setMessage("factoryExceptionMessage", `已更新 ${formatDateTime(new Date(), true)}`);
+      setMessage("factoryExceptionMessage", `已更新 ${formatDateTime(new Date(), true)}`, "factory-exception-updated");
     } catch (error) {
       if (!isCurrent()) return;
       setMessage("factoryExceptionMessage", `读取最新反馈失败。${error.message || error}${factoryExceptionLoaded ? " 以下保留上次读取的记录。" : " 请点击刷新重试。"}`, "warn");
@@ -6939,20 +6993,36 @@ function renderFactoryExceptionTickets() {
   const list = $("factoryExceptionList");
   if (!list) return;
   const terms = text($("factoryExceptionSearch")?.value).normalize("NFKC").toLowerCase().split(/\s+/).filter(Boolean);
-  const status = $("factoryExceptionStatusFilter")?.value || "";
+  const statusFilter = $("factoryExceptionStatusFilter");
   const decision = $("factoryExceptionDecisionFilter")?.value || "";
   const dateFilter = readExceptionDateFilter("factoryException");
-  const queue = $("factoryExceptionQueueFilter")?.value || "";
+  const mobile = usesFactoryMobileExceptionLayout();
+  const queue = mobile
+    ? ($("factoryExceptionNeedsWork").getAttribute("aria-pressed") === "true" ? "received" : "sent")
+    : $("factoryExceptionQueueFilter")?.value || "";
+  const history = mobile && $("factoryExceptionHistoryToggle").getAttribute("aria-pressed") === "true";
+  if (statusFilter?.options) {
+    const closed = ["已解决", "已关闭"];
+    const allowed = queue === "received"
+      ? (history ? ["work_replied", ...closed] : ["work_pending", "work_processing"])
+      : (history ? ["feedback", ...closed] : [...EXCEPTION_OPEN_STATUSES, "feedback"]);
+    for (const option of statusFilter.options) {
+      option.hidden = option.disabled = Boolean(mobile && option.value && !allowed.includes(option.value));
+    }
+    if (statusFilter.selectedOptions[0]?.disabled) statusFilter.value = "";
+  }
+  const status = statusFilter?.value || "";
   updateExceptionDateHint("factoryException", dateFilter);
   const rows = factoryExceptionRows.filter((ticket) => terms.every((term) => ticket.searchText.includes(term))
     && factoryTicketMatchesHandling(ticket, decision)
     && exceptionMatchesDate(ticket, dateFilter)
     && (!queue || (queue === "received" ? ticket.target_team === "factory" : ticket.target_team !== "factory"))
+    && (!mobile || (queue === "received" ? factoryWorkNeedsAction(ticket) : factoryReportedIsOpen(ticket)) !== history)
     && (!status || (status.startsWith("work_") ? ticket.target_team === "factory" && EXCEPTION_OPEN_STATUSES.includes(ticket.status) && ticket.factory_progress === status.slice(5) : status === "feedback" ? factoryTicketHasFeedback(ticket) : ticket.status === status)));
   const pages = Math.max(1, Math.ceil(rows.length / FACTORY_EXCEPTION_PAGE_SIZE));
   factoryExceptionPage = Math.min(Math.max(0, factoryExceptionPage), pages - 1);
   list.innerHTML = rows.slice(factoryExceptionPage * FACTORY_EXCEPTION_PAGE_SIZE, (factoryExceptionPage + 1) * FACTORY_EXCEPTION_PAGE_SIZE)
-    .map(renderFactoryExceptionCard).join("") || (factoryExceptionLoaded ? `<p class="hint factory-exception-empty">${dateFilter.invalid ? "日期范围有误，请调整后查看结果。" : factoryExceptionRows.length ? "暂无匹配工单，可清空筛选查看全部上报记录。" : "暂无工厂上报的异常工单。"}</p>` : "");
+    .map(renderFactoryExceptionCard).join("") || (factoryExceptionLoaded ? `<p class="hint factory-exception-empty">${dateFilter.invalid ? "日期范围有误，请调整后查看结果。" : "当前没有符合条件的工单。"}</p>` : "");
   if ($("factoryExceptionPageInfo")) $("factoryExceptionPageInfo").textContent = factoryExceptionLoaded ? `${rows.length} 条 · ${factoryExceptionPage + 1} / ${pages} 页` : "";
   if ($("factoryExceptionPrevPage")) $("factoryExceptionPrevPage").disabled = factoryExceptionPage === 0;
   if ($("factoryExceptionNextPage")) $("factoryExceptionNextPage").disabled = factoryExceptionPage >= pages - 1;
@@ -8792,6 +8862,34 @@ function bindEvents() {
   on("factoryExceptionStatusFilter", "change", filterFactoryExceptions);
   on("factoryExceptionDecisionFilter", "change", filterFactoryExceptions);
   on("factoryExceptionQueueFilter", "change", filterFactoryExceptions);
+  on("factoryExceptionNeedsWork", "click", () => {
+    setFactoryExceptionMobileQueue("received");
+    filterFactoryExceptions();
+  });
+  on("factoryExceptionReported", "click", () => {
+    setFactoryExceptionMobileQueue("sent");
+    filterFactoryExceptions();
+  });
+  on("factoryExceptionHistoryToggle", "click", (event) => {
+    const button = event.currentTarget;
+    const history = button.getAttribute("aria-pressed") !== "true";
+    button.setAttribute("aria-pressed", String(history));
+    button.textContent = history ? "待处理" : "历史";
+    filterFactoryExceptions();
+  });
+  on("factoryExceptionFiltersToggle", "click", (event) => {
+    const button = event.currentTarget;
+    const expanded = button.getAttribute("aria-expanded") !== "true";
+    button.setAttribute("aria-expanded", String(expanded));
+    $("factoryExceptionAdvanced").classList.toggle("is-expanded", expanded);
+  });
+  if ($("factoryExceptionNeedsWork")) globalThis.matchMedia?.("(max-width: 760px)").addEventListener("change", () => {
+    const dialog = $("factoryExceptionDialog");
+    if (dialog.open) {
+      dialog.close();
+      openFactoryExceptionDialog();
+    }
+  });
   bindExceptionDateFilters("factoryException", filterFactoryExceptions);
   on("clearFactoryExceptionFiltersBtn", "click", () => {
     $("factoryExceptionSearch").value = $("factoryExceptionStatusFilter").value = $("factoryExceptionDecisionFilter").value = "";
@@ -9075,7 +9173,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=110", { updateViaCache: "none" })
+    .register("./sw.js?v=111", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }

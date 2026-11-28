@@ -7,10 +7,10 @@
     <title>工厂扫码台 - 事事通校园配送系统</title>
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/remixicon@4.6.0/fonts/remixicon.css" />
-    <link rel="stylesheet" href="./styles.css?v=110" />
+    <link rel="stylesheet" href="./styles.css?v=111" />
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <link rel="stylesheet" href="./local-ui.css?v=110" />
-    <link rel="stylesheet" href="./mobile-ui.css?v=110" />
+    <link rel="stylesheet" href="./local-ui.css?v=111" />
+    <link rel="stylesheet" href="./mobile-ui.css?v=111" />
   </head>
   <body data-app-mode="factory" class="role-page factory-page">
     <header class="topbar">
@@ -214,22 +214,34 @@
           <div class="actions"><button id="refreshFactoryExceptionsBtn" class="ghost" type="button">刷新</button><button id="closeFactoryExceptionsBtn" class="ghost" type="button">关闭</button></div>
         </header>
         <div class="factory-exception-filters">
-          <label class="field-group"><span>搜索工单</span><input id="factoryExceptionSearch" class="input" type="search" placeholder="水洗标、订单号、姓名、手机号或处理结论" autocomplete="off" /></label>
-          <div class="factory-exception-filter-row">
-            <label class="field-group"><span>工单来源</span><select id="factoryExceptionQueueFilter" class="input"><option value="">全部工单</option><option value="received">后台发来</option><option value="sent">工厂上报</option></select></label>
-            <label class="field-group"><span>处理进度</span><select id="factoryExceptionStatusFilter" class="input"><option value="">全部进度</option><option value="work_pending">待工厂处理</option><option value="work_processing">工厂处理中</option><option value="work_replied">工厂已回复，待确认</option><option value="feedback">客服已有反馈</option><option value="待客服">待客服</option><option value="待客户">待客户</option><option value="处理中">处理中</option><option value="已解决">已解决</option><option value="已关闭">已关闭</option></select></label>
-            <label class="field-group"><span>处理结果</span><select id="factoryExceptionDecisionFilter" class="input"><option value="">全部结果</option><option value="pending">待确认</option><option value="wash_approved">同意清洗</option><option value="return_pending">退洗待出库</option><option value="return_wash">退洗（全部）</option><option value="rewash">返洗</option><option value="other">其他处理</option><option value="legacy">历史未分类</option></select></label>
-            <button id="clearFactoryExceptionFiltersBtn" class="ghost" type="button">清空筛选</button>
+          <div class="factory-exception-mobile-queues" role="group" aria-label="工单分类">
+            <button id="factoryExceptionNeedsWork" type="button" class="ghost" aria-pressed="true"><span>需要工厂处理</span><span id="factoryExceptionNeedsWorkCount"></span></button>
+            <button id="factoryExceptionReported" type="button" class="ghost" aria-pressed="false"><span>已上报 · 待处理</span><span id="factoryExceptionReportedCount"></span></button>
           </div>
-          <details class="factory-exception-date-panel">
-            <summary>日期筛选 <span id="factoryExceptionDateSummary">不限日期</span></summary>
-            <div class="exception-date-filters">
-              <label class="field-group"><span>日期依据</span><select id="factoryExceptionDateField" class="input"><option value="created_at">上报日期</option><option value="updated_at">最近更新日期</option><option value="resolved_at">结案日期</option></select></label>
-              <label class="field-group"><span>开始日期</span><input id="factoryExceptionDateStart" class="input" type="date" /></label>
-              <label class="field-group"><span>结束日期</span><input id="factoryExceptionDateEnd" class="input" type="date" /></label>
-              <p id="factoryExceptionDateHint" class="hint exception-date-hint" role="status">按北京时间筛选，包含开始和结束当天。</p>
+          <div class="factory-exception-search-row">
+            <label class="field-group"><span>搜索工单</span><input id="factoryExceptionSearch" class="input" type="search" placeholder="水洗标 / 单号 / 姓名 / 手机号" autocomplete="off" /></label>
+            <div class="factory-exception-mobile-tools">
+              <button id="factoryExceptionHistoryToggle" type="button" class="ghost" aria-pressed="false">历史</button>
+              <button id="factoryExceptionFiltersToggle" type="button" class="ghost" aria-expanded="false" aria-controls="factoryExceptionAdvanced">筛选</button>
             </div>
-          </details>
+          </div>
+          <div id="factoryExceptionAdvanced" class="factory-exception-advanced">
+            <div class="factory-exception-filter-row">
+              <label class="field-group factory-exception-source"><span>工单来源</span><select id="factoryExceptionQueueFilter" class="input"><option value="">全部工单</option><option value="received">后台发来</option><option value="sent">工厂上报</option></select></label>
+              <label class="field-group"><span>处理进度</span><select id="factoryExceptionStatusFilter" class="input"><option value="">全部进度</option><option value="work_pending">待工厂处理</option><option value="work_processing">工厂处理中</option><option value="work_replied">工厂已回复，待确认</option><option value="feedback">客服已有反馈</option><option value="待客服">待客服</option><option value="待客户">待客户</option><option value="处理中">处理中</option><option value="已解决">已解决</option><option value="已关闭">已关闭</option></select></label>
+              <label class="field-group"><span>处理结果</span><select id="factoryExceptionDecisionFilter" class="input"><option value="">全部结果</option><option value="pending">待确认</option><option value="wash_approved">同意清洗</option><option value="return_pending">退洗待出库</option><option value="return_wash">退洗（全部）</option><option value="rewash">返洗</option><option value="other">其他处理</option><option value="legacy">历史未分类</option></select></label>
+              <button id="clearFactoryExceptionFiltersBtn" class="ghost" type="button">清空筛选</button>
+            </div>
+            <details class="factory-exception-date-panel">
+              <summary>日期筛选 <span id="factoryExceptionDateSummary">不限日期</span></summary>
+              <div class="exception-date-filters">
+                <label class="field-group"><span>日期依据</span><select id="factoryExceptionDateField" class="input"><option value="created_at">上报日期</option><option value="updated_at">最近更新日期</option><option value="resolved_at">结案日期</option></select></label>
+                <label class="field-group"><span>开始日期</span><input id="factoryExceptionDateStart" class="input" type="date" /></label>
+                <label class="field-group"><span>结束日期</span><input id="factoryExceptionDateEnd" class="input" type="date" /></label>
+                <p id="factoryExceptionDateHint" class="hint exception-date-hint" role="status">按北京时间筛选，包含开始和结束当天。</p>
+              </div>
+            </details>
+          </div>
           <p id="factoryExceptionMessage" class="hint" role="status" aria-live="polite"></p>
         </div>
         <div id="factoryExceptionBody" class="factory-exception-body">
@@ -262,8 +274,8 @@
       <div id="orderDialogBody" class="stack"></div>
     </dialog>
 
-    <script src="./app.js?v=110"></script>
-    <script src="./local-ui.js?v=110"></script>
-    <script src="./mobile-ui.js?v=110"></script>
+    <script src="./app.js?v=111"></script>
+    <script src="./local-ui.js?v=111"></script>
+    <script src="./mobile-ui.js?v=111"></script>
   </body>
 </html>

@@ -14,3 +14,107 @@
 }
 
 @media(max-width:760px){.factory-page .scanner-heading{display:flex;flex-direction:row;justify-content:space-between;align-items:center}.factory-page .scanner-heading>div{flex:1}.factory-page .scanner-heading h2{text-align:left}.factory-page .mobile-batch-indicator .mobile-queue-jump{min-height:32px;padding:4px 8px;font-size:12px;border:0;color:#275e8a;background:transparent}.factory-page .factory-scan-queue-panel{scroll-margin-top:10px}.factory-page .factory-batch-actions button.ghost:not(.mobile-queue-jump){min-height:44px}.factory-page .workspace[data-mobile-view=scan]{padding-bottom:165px}}
+.factory-exception-mobile-queues,
+.factory-exception-mobile-tools {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .factory-page:has(.factory-exception-dialog[open]:not(:modal)) {
+    overflow: hidden;
+  }
+
+  .factory-page .factory-exception-dialog:not(:modal) {
+    position: fixed;
+    inset: 0 0 calc(65px + env(safe-area-inset-bottom));
+    z-index: 29;
+    width: 100%;
+    height: auto;
+    max-height: none;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    overflow: hidden;
+  }
+
+  .factory-exception-dialog .factory-exception-sheet {
+    height: 100%;
+    max-height: none;
+  }
+
+  .factory-exception-dialog .factory-exception-body {
+    flex: 1;
+    padding: 8px 10px 12px;
+  }
+
+  .factory-exception-dialog #factoryExceptionSummary,
+  .factory-exception-dialog .factory-exception-source,
+  .factory-exception-advanced:not(.is-expanded) {
+    display: none;
+  }
+
+  .factory-exception-mobile-queues {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .factory-page .factory-exception-mobile-queues button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 6px;
+    font-size: 13px;
+  }
+
+  .factory-exception-mobile-queues button[aria-pressed="true"] {
+    border-color: #e3915d;
+    background: #fff0e5;
+    color: #963b0c;
+  }
+
+  .factory-exception-mobile-queues button span:last-child:not(:empty) {
+    padding: 1px 6px;
+    border-radius: 12px;
+    background: #f1e8e0;
+    font-size: 12px;
+  }
+
+  .factory-exception-search-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .factory-exception-search-row label > span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .factory-exception-mobile-tools {
+    display: flex;
+    gap: 6px;
+  }
+
+  .factory-page .factory-exception-mobile-tools button {
+    padding: 5px 8px;
+    white-space: nowrap;
+  }
+
+  .factory-exception-mobile-tools button:is([aria-pressed="true"], [aria-expanded="true"]) {
+    background: #fff0e5;
+    color: #963b0c;
+  }
+
+  #factoryExceptionMessage:empty,
+  #factoryExceptionMessage:has(.factory-exception-updated) {
+    display: none;
+  }
+}
