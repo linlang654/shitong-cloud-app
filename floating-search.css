@@ -1,0 +1,24 @@
+/* Keep the search controls below the measured header on this local layout. */
+.local-filter-strip {
+  position: sticky;
+  top: var(--exception-top-offset, 74px);
+  z-index: 9;
+  padding: 8px 0;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+@media (max-width: 1150px) {
+  .local-filter-strip {
+    display: contents;
+  }
+
+  .local-filter-strip .exception-search-bar {
+    position: sticky !important;
+    padding: 8px 0 !important;
+  }
+
+  .local-filter-strip .exception-filter-toolbar {
+    margin-top: 8px !important;
+  }
+}

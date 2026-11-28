@@ -9075,7 +9075,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=109", { updateViaCache: "none" })
+    .register("./sw.js?v=110", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
