@@ -3140,6 +3140,35 @@ button.danger,
   background: var(--red-soft);
 }
 
+.factory-return-scan-alert {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 8px 0;
+  padding: 12px;
+  border: 2px solid #bf3326;
+  border-radius: 10px;
+  background: #fff1ed;
+  color: #882013;
+  overflow-wrap: anywhere;
+}
+
+.factory-return-scan-alert strong {
+  font-size: 18px;
+}
+
+.factory-return-scan-alert p {
+  margin: 4px 0 0;
+}
+
+.factory-return-scan-alert button {
+  flex-shrink: 0;
+}
+
 .factory-scan-queue-panel {
   margin-top: 12px;
   border: 1px solid #e1c880;
@@ -4939,6 +4968,25 @@ code {
 
 .factory-pending-quick.out strong {
   color: #245b92;
+}
+
+.factory-pending-quick.return {
+  grid-column: 1 / -1;
+  border-color: #f2b9ad;
+}
+
+.factory-pending-quick.return strong {
+  color: #a42a1e;
+}
+
+.factory-pending-quick.return.active {
+  background: #fff1ed;
+  border-color: #bf3326;
+}
+
+.factory-return-record {
+  margin: 6px 0;
+  overflow-wrap: anywhere;
 }
 
 .factory-pending-quick.in.active {

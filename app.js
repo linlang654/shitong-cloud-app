@@ -129,6 +129,7 @@ let factoryScanBatchSchemaAvailable = null;
 let factoryItemRows = [];
 let factoryItemTotalCount = 0;
 let factoryPendingView = "";
+let factoryReturnWork = null;
 let factoryOrderSearchRows = [];
 let factoryOrderSearchBusy = false;
 const FACTORY_EXCEPTION_PAGE_SIZE = 20;
@@ -376,6 +377,13 @@ function washDecisionLabel(item) {
 
 function washDecisionIsReturn(item) {
   return [WASH_DECISION_RETURN_PENDING, WASH_DECISION_RETURNED, WASH_DECISION_RETURN_CANCELLED].includes(text(item?.wash_decision));
+}
+
+function factoryWashReturnLabel(item) {
+  if (item.wash_decision === WASH_DECISION_RETURN_CANCELLED) return "已退单";
+  if (item.wash_decision === WASH_DECISION_RETURNED) return "已退回";
+  if (item.wash_decision === WASH_DECISION_RETURN_PENDING || item.item_status === "退洗") return "退洗";
+  return "";
 }
 
 function washSupplementAmount(item) {
@@ -713,7 +721,14 @@ function setAuthGate(isAllowed) {
     exceptionHandlingContext = null;
     $("exceptionHandlingDialog").close();
   }
-  if (APP_MODE === "factory" && !isAllowed) resetFactoryExceptionView();
+  if (APP_MODE === "factory" && !isAllowed) {
+    resetFactoryExceptionView();
+    factoryReturnWork = null;
+    $("factoryReturnScanAlert")?.classList.add("hidden");
+    if ($("factoryReturnScanDetail")) $("factoryReturnScanDetail").textContent = "";
+    if ($("factoryPendingWashReturnSearch")) $("factoryPendingWashReturnSearch").value = "";
+    if (factoryPendingView === "pending-wash-return") renderFactoryPendingItems();
+  }
   if (!isAllowed) {
     factoryWorkContext = null;
     exceptionTicketContext = null;
@@ -6672,6 +6687,8 @@ function renderFactoryPendingItems() {
     if (factoryPendingView === "pending-out") return factoryItemNeedsOutbound(item);
     return false;
   });
+  const showingReturns = factoryPendingView === "pending-wash-return";
+  $("factoryPendingWashReturnSearchLabel")?.classList.toggle("hidden", !showingReturns);
   document.querySelectorAll("[data-factory-pending-view]").forEach((button) => {
     const active = button.dataset.factoryPendingView === factoryPendingView;
     button.setAttribute("aria-pressed", String(active));
@@ -6679,12 +6696,17 @@ function renderFactoryPendingItems() {
   });
   if ($("factoryPendingInQuickCount")) $("factoryPendingInQuickCount").textContent = `${pendingIn} 件`;
   if ($("factoryPendingOutQuickCount")) $("factoryPendingOutQuickCount").textContent = `${pendingOut} 件`;
+  if ($("factoryPendingWashReturnCount")) {
+    const count = factoryReturnWork?.count;
+    $("factoryPendingWashReturnCount").textContent = count == null ? "—" : `${count} 件`;
+  }
   if ($("factoryPendingOverviewCount")) $("factoryPendingOverviewCount").textContent = `入 ${pendingIn} / 出 ${pendingOut}`;
+  if (showingReturns) return renderFactoryReturnWork();
   if ($("factoryPendingOverviewHint")) {
     const loadedNote = factoryItemTotalCount > factoryItemRows.length ? `，当前加载最近 ${factoryItemRows.length} 件` : "";
     $("factoryPendingOverviewHint").textContent = factoryPendingView
       ? `${factoryPendingView === "pending-in" ? "待入库" : "待出库"}共 ${rows.length} 件${loadedNote}`
-      : "选择上方“待入库”或“待出库”后再显示明细；查单请使用订单查询。";
+      : "选择待办类型查看明细。";
   }
   if (!$("factoryItemList")) return;
   $("factoryItemList").innerHTML = rows.map((item) => {
@@ -6698,13 +6720,101 @@ function renderFactoryPendingItems() {
 }
 
 function selectFactoryPendingView(view) {
-  const nextView = ["pending-in", "pending-out"].includes(view) ? view : "";
+  const nextView = ["pending-in", "pending-out", "pending-wash-return"].includes(view) ? view : "";
   factoryPendingView = factoryPendingView === nextView ? "" : nextView;
   if ($("factoryPendingPanel")) $("factoryPendingPanel").open = true;
+  if (factoryPendingView === "pending-wash-return") return loadFactoryReturnWork();
   renderFactoryPendingItems();
 }
 
+function queryFactoryReturnWork(client, columns, options) {
+  return client.from("order_items").select(columns, options)
+    .or("wash_decision.eq.return_pending,item_status.eq.退洗")
+    .not("wash_decision", "in", "(returned,return_cancelled)")
+    .not("item_status", "in", "(已出库,配送中,已送达)");
+}
+
+async function loadFactoryReturnWork() {
+  if (!$("factoryPendingWashReturnCount") || !canViewFactoryExceptions()) return;
+  const client = sb;
+  const userId = currentUser.id;
+  const withRecords = factoryPendingView === "pending-wash-return";
+  const work = { count: factoryReturnWork?.count, rows: null, records: null };
+  factoryReturnWork = work;
+  const isCurrent = () => factoryReturnWork === work && client === sb && userId === currentUser?.id;
+  renderFactoryPendingItems();
+  const result = withRecords
+    ? await loadRowsById(() => queryFactoryReturnWork(client, "id,order_id,barcode,item_status,product_name,spec,wash_decision_reason,updated_at,orders(id,order_no,customer_name,phone)"))
+    : await queryFactoryReturnWork(client, "id", { count: "exact", head: true });
+  if (!isCurrent()) return;
+  if (result.error) {
+    work.count = null;
+    work.error = true;
+    renderFactoryPendingItems();
+    return;
+  }
+  work.count = withRecords ? result.data.length : result.count;
+  if (withRecords) work.rows = result.data.sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
+  renderFactoryPendingItems();
+  if (!work.rows?.length) return;
+
+  const supportsBatch = await detectFactoryScanBatchSchemaAvailability();
+  const records = new Map();
+  const columns = `id,item_id,scan_type,created_at${supportsBatch ? ",batch_key" : ""}`;
+  for (let offset = 0; offset < work.rows.length; offset += 100) {
+    if (!isCurrent()) return;
+    const ids = work.rows.slice(offset, offset + 100).map((item) => item.id);
+    const { data, error } = await loadRowsById(() => client.from("factory_scans").select(columns).in("item_id", ids));
+    if (!isCurrent()) return;
+    if (error) {
+      work.recordsError = true;
+      break;
+    }
+    for (const record of data) {
+      const itemRecords = records.get(record.item_id) || {};
+      const previous = itemRecords[record.scan_type];
+      if (!previous || Date.parse(record.created_at) > Date.parse(previous.created_at)) itemRecords[record.scan_type] = record;
+      records.set(record.item_id, itemRecords);
+    }
+  }
+  work.records = records;
+  renderFactoryPendingItems();
+}
+
+function renderFactoryReturnWork() {
+  const list = $("factoryItemList");
+  const hint = $("factoryPendingOverviewHint");
+  if (!list || !hint) return;
+  const work = factoryReturnWork;
+  if (!work?.rows) {
+    hint.textContent = "";
+    list.innerHTML = work?.error ? '<p class="warn">退洗清单读取失败，请刷新重试。</p>' : '<p class="hint">正在读取退洗件…</p>';
+    return;
+  }
+  const keyword = text($("factoryPendingWashReturnSearch")?.value).normalize("NFKC").toLowerCase();
+  const rows = work.rows.filter((item) => exceptionSearchText(relationOne(item.orders), [item.barcode, item.product_name, item.spec]).includes(keyword));
+  hint.textContent = `共 ${work.count} 件待退洗${keyword ? `，找到 ${rows.length} 件` : ""}`;
+  list.innerHTML = rows.map((item) => {
+    const order = relationOne(item.orders);
+    const records = work.records?.get(item.id);
+    const scanLine = (record, label) => `<p class="factory-return-record">${label} ${escapeHtml(formatDateTime(record.created_at, true))}${record.batch_key ? ` · 批次编号 ${escapeHtml(record.batch_key.slice(0, 8))}` : ""}</p>`;
+    const inbound = records?.factory_in;
+    const scanning = work.recordsError ? '<p class="warn">部分扫码记录读取失败，请刷新重试。</p>' : !work.records ? '<p class="hint">正在读取扫码记录…</p>' : "";
+    return `<article class="task-card compact">
+      <div class="card-head"><h3>${escapeHtml(displayWashLabelBarcode(item.barcode, "未绑定水洗标"))}</h3><span class="wash-return-tag">禁止清洗</span></div>
+      <p>${escapeHtml(washItemShortName(item))} · ${escapeHtml(order.customer_name || "未填写姓名")}</p>
+      <p>退洗原因：${escapeHtml(item.wash_decision_reason || "未记录")}</p>
+      ${inbound ? scanLine(inbound, "最近入库") : !scanning ? '<p class="factory-return-record">无入库扫码记录</p>' : ""}
+      ${records?.factory_out ? scanLine(records.factory_out, "最近出库记录") : ""}
+      ${scanning}
+      <p class="hint">订单 ${escapeHtml(order.order_no || "—")}</p>
+      ${item.order_id ? `<button class="ghost" type="button" data-detail="${escapeHtml(item.order_id)}">查看订单与图片</button>` : ""}
+    </article>`;
+  }).join("") || '<p class="factory-pending-empty">没有符合条件的退洗件。</p>';
+}
+
 async function loadFactoryItems() {
+  const returnWork = loadFactoryReturnWork();
   let query = sb.from("order_items").select("*, orders(*)", { count: "exact" }).order("updated_at", { ascending: false });
   if (factoryDashboardFilter === "pending-in") {
     query = query.eq("item_status", "已取件");
@@ -6735,6 +6845,7 @@ async function loadFactoryItems() {
   factoryItemTotalCount = count ?? rows.length;
   if (factoryDashboardFilter && $("factoryPendingPanel")) $("factoryPendingPanel").open = true;
   renderFactoryPendingItems();
+  await returnWork;
 }
 
 function canViewFactoryExceptions() {
@@ -7590,8 +7701,8 @@ function renderFactoryScanQueue() {
   if (list) {
     list.innerHTML = factoryScanQueue.map((entry, index) => `<li>
       <span class="factory-scan-queue-index">${index + 1}</span>
-      <div class="factory-scan-queue-main"><strong class="factory-scan-queue-barcode">${escapeHtml(entry.barcode)}</strong><span class="factory-scan-queue-source">${escapeHtml(entry.itemName || entry.source || "扫码")}</span></div>
-      ${entry.loading ? '<span class="factory-scan-queue-source">正在读取物品与结算品类...</span>' : settlementSchemaAvailable ? `<div class="factory-queue-settlement">
+      <div class="factory-scan-queue-main"><strong class="factory-scan-queue-barcode">${escapeHtml(entry.barcode)}</strong>${entry.returnOutbound ? '<span class="wash-return-tag">退洗送回</span>' : ""}<span class="factory-scan-queue-source">${escapeHtml(entry.itemName || entry.source || "扫码")}</span></div>
+      ${entry.loading ? '<span class="factory-scan-queue-source">正在核对洗护状态...</span>' : settlementSchemaAvailable && !entry.returnOutbound ? `<div class="factory-queue-settlement">
         <div class="factory-queue-settlement-heading"><select class="input" data-factory-queue-settlement="${index}">${settlementCategoryOptions(entry.settlementCategory)}</select><span class="settlement-status ${validSettlementCategoryKey(entry.settlementCategory) ? entry.settlementConfirmed ? "confirmed" : "suggested" : "pending"}">${validSettlementCategoryKey(entry.settlementCategory) ? entry.settlementConfirmed ? "已确认" : "提交批次时确认" : "请选择品类"}</span></div>
         <div class="settlement-other-fields ${entry.settlementCategory === SETTLEMENT_OTHER ? "" : "hidden"}" data-factory-other-fields="${index}">
           <input class="input" data-factory-other-name="${index}" value="${escapeHtml(entry.settlementOtherName || "")}" placeholder="实际品类名称" maxlength="40" />
@@ -7620,7 +7731,7 @@ async function queueFactoryBarcode(value, source = "扫码") {
   factoryScanQueue.push(entry);
   if ($("barcodeInput")) $("barcodeInput").value = "";
   renderFactoryScanQueue();
-  setFactoryScanFeedback(`${barcode} 已加入第 ${factoryScanQueue.length} 件，正在读取结算品类；可继续扫描。`, "processing");
+  setFactoryScanFeedback(`正在核对 ${barcode} 的洗护状态…`, "processing");
   const { data: item, error } = await sb.from("order_items").select("*").eq("barcode", barcode).maybeSingle();
   if (error || !item) {
     const failedIndex = factoryScanQueue.indexOf(entry);
@@ -7630,6 +7741,14 @@ async function queueFactoryBarcode(value, source = "扫码") {
     return factoryScanFailure(barcode, error?.message || "没有找到这个水洗标");
   }
   if (!factoryScanQueue.includes(entry)) return false;
+  const returnLabel = factoryWashReturnLabel(item);
+  const returnCheck = factoryReturnScanCheck(factoryScanMode, item);
+  if (returnCheck) {
+    factoryScanQueue.splice(factoryScanQueue.indexOf(entry), 1);
+    factoryProcessedBarcodes.delete(barcode);
+    renderFactoryScanQueue();
+    return rejectFactoryReturnScan(item, barcode, returnCheck);
+  }
   const settlement = resolvedSettlementCategory(item);
   const storedDefinition = settlementCategoryDefinition(settlement.storedKey);
   const storedIsActive = selectableSettlementCategoryKey(settlement.storedKey);
@@ -7641,6 +7760,7 @@ async function queueFactoryBarcode(value, source = "扫码") {
   Object.assign(entry, {
     itemId: item.id,
     itemName: washItemShortName(item),
+    returnOutbound: factoryScanMode === "factory_out" && returnLabel === "退洗",
     settlementCategory: queueCategory,
     settlementConfirmed: settlement.confirmed && storedIsActive,
     settlementOtherName: queueCategory === SETTLEMENT_OTHER
@@ -7656,8 +7776,11 @@ async function queueFactoryBarcode(value, source = "扫码") {
   factoryScanSuccessCount += 1;
   renderFactoryScanQueue();
   const queuePosition = factoryScanQueue.indexOf(entry) + 1;
-  addFactoryScanHistory(`${barcode} 已加入待提交批次第 ${queuePosition} 件`, "success");
-  setFactoryScanFeedback(`${barcode} 已加入第 ${queuePosition} 件，继续扫描；扫完后点击“确认整批处理”。`, "success");
+  const message = entry.returnOutbound
+    ? `${barcode} 退洗送回 · 已加入出库批次，请单独放置。`
+    : `${barcode} 已加入第 ${queuePosition} 件，继续扫描；扫完后点击“确认整批处理”。`;
+  addFactoryScanHistory(message, "success");
+  setFactoryScanFeedback(message, "success");
   notifyFactoryScan(true);
   return true;
 }
@@ -8369,17 +8492,38 @@ function factoryScanFailure(barcode, message) {
   return false;
 }
 
+function factoryReturnScanCheck(scanType, item) {
+  const label = factoryWashReturnLabel(item);
+  if (label === "已退单") return { title: "已退单", message: "该水洗标已退单，无需出入库。请单独放置并核对实物。" };
+  if (label === "已退回") return { title: "已退回", message: "该水洗标已退回，无需重复出入库。" };
+  if (label === "退洗" && scanType === "factory_in") return { title: "禁止清洗 · 退洗待送回", message: "请放入退洗筐，找到实物后使用出库模式扫码送回。" };
+  if (label === "退洗" && ["已出库", "配送中", "已送达"].includes(item.item_status)) {
+    return { title: "退洗件已出库", message: `当前状态为“${item.item_status}”，无需重复出库。` };
+  }
+  return null;
+}
+
+function rejectFactoryReturnScan(item, barcode, check) {
+  if ($("factoryReturnScanTitle")) $("factoryReturnScanTitle").textContent = check.title;
+  if ($("factoryReturnScanDetail")) {
+    const reason = text(item.wash_decision_reason);
+    $("factoryReturnScanDetail").textContent = `${barcode} · ${washItemShortName(item)}。${reason ? `退洗原因：${reason}。` : ""}${check.message}`;
+  }
+  $("factoryReturnScanAlert")?.classList.remove("hidden");
+  return factoryScanFailure(barcode, `${check.title}。${check.message}`);
+}
+
 function factoryScanStatusCheck(scanType, itemStatus, washDecision = "") {
   const status = text(itemStatus);
+  const returnCheck = factoryReturnScanCheck(scanType, { item_status: status, wash_decision: washDecision });
+  if (returnCheck) return { allowed: false, message: returnCheck.message };
   if (scanType === "factory_in") {
-    if (status === "退洗") return { allowed: false, message: "该物品已标记退洗，不需要入库清洗；请按退洗流程出库送回" };
     if (status === "已入厂" || status === "清洗中") return { allowed: false, message: "已经入库，无需重复操作" };
     if (["已出库", "配送中", "已送达"].includes(status)) return { allowed: false, message: `当前状态为“${status}”，不能倒退为入库` };
     return FACTORY_IN_OVERRIDE_STATUSES.has(status)
       ? { allowed: true, override: status !== "已取件" }
       : { allowed: false, message: `当前状态为“${status || "未知"}”，无法确认能否入库` };
   }
-  if (status === "退洗" && washDecision === WASH_DECISION_RETURN_CANCELLED) return { allowed: false, message: "该订单尚未取件，已直接退单完结，无需工厂出库" };
   if (status === "已出库") return { allowed: false, message: "已经出库；如需贴纸，请在今日出库清单中勾选" };
   if (["配送中", "已送达"].includes(status)) return { allowed: false, message: `当前状态为“${status}”，不能重复出库` };
   return FACTORY_OUT_OVERRIDE_STATUSES.has(status)
@@ -8407,7 +8551,13 @@ async function factoryScan(scanType, suppliedBarcode = "", options = {}) {
     const { data: item, error } = await sb.from("order_items").select("*, orders(*)").eq("barcode", barcode).maybeSingle();
     if (error) throw new Error(error.message);
     if (!item) throw new Error("没有找到这个水洗标");
-    const returningWithoutWash = washDecisionIsReturn(item);
+    const returningWithoutWash = factoryWashReturnLabel(item) === "退洗";
+    const blockReturn = (currentItem, check) => {
+      options.onReturnBlocked?.();
+      return rejectFactoryReturnScan(currentItem, barcode, check);
+    };
+    const returnCheck = factoryReturnScanCheck(scanType, item);
+    if (returnCheck) return blockReturn(item, returnCheck);
 
     if (scanType === "factory_out" && item.wash_decision === WASH_DECISION_SUPPLEMENT_PENDING) {
       throw new Error("该水洗标正在等待客户补差，确认已补差后才能出库");
@@ -8415,6 +8565,15 @@ async function factoryScan(scanType, suppliedBarcode = "", options = {}) {
 
     const statusCheck = factoryScanStatusCheck(scanType, item.item_status, item.wash_decision);
     if (!statusCheck.allowed) throw new Error(statusCheck.message);
+    if (settlementSchemaAvailable && options.entry && !returningWithoutWash) {
+      const entry = options.entry;
+      const categoryResult = await persistSettlementCategory(item.id, entry.settlementCategory, {
+        otherName: entry.settlementOtherName,
+        otherUnit: entry.settlementOtherUnit,
+        cost: entry.settlementCostSnapshot,
+      });
+      if (categoryResult.error) throw new Error(`结算品类保存失败：${categoryResult.error.message}`);
+    }
 
     let previousReturnTask = null;
     if (scanType === "factory_out") {
@@ -8435,8 +8594,17 @@ async function factoryScan(scanType, suppliedBarcode = "", options = {}) {
     };
 
     const updatedAt = new Date().toISOString();
-    const { error: itemError } = await sb.from("order_items").update({ item_status: status, updated_at: updatedAt }).eq("id", item.id);
+    let update = sb.from("order_items").update({ item_status: status, updated_at: updatedAt })
+      .eq("id", item.id).eq("item_status", item.item_status);
+    if (item.wash_decision != null) update = update.eq("wash_decision", item.wash_decision);
+    const { data: changedItem, error: itemError } = await update.select("id").maybeSingle();
     if (itemError) throw new Error(itemError.message);
+    if (!changedItem) {
+      const { data: latest } = await sb.from("order_items").select("*").eq("id", item.id).maybeSingle();
+      const latestCheck = latest && factoryReturnScanCheck(scanType, latest);
+      if (latestCheck) return blockReturn(latest, latestCheck);
+      throw new Error("物品状态刚刚发生变化，请核对后重试");
+    }
 
     const { error: flowError } = await sb.rpc("sync_order_flow_state", { target_order_id: item.order_id });
     if (flowError) {
@@ -8518,8 +8686,10 @@ async function submitFactoryScanBatch() {
     return false;
   }
   if (settlementSchemaAvailable) {
-    const missingCategories = factoryScanQueue.filter((entry) => !validSettlementCategoryKey(entry.settlementCategory)
-      || !settlementDetailsAreValid(entry.settlementCategory, entry.settlementOtherName, entry.settlementCostSnapshot));
+    const missingCategories = factoryScanQueue.filter((entry) => !entry.returnOutbound && (
+      !validSettlementCategoryKey(entry.settlementCategory)
+      || !settlementDetailsAreValid(entry.settlementCategory, entry.settlementOtherName, entry.settlementCostSnapshot)
+    ));
     if (missingCategories.length) {
       setFactoryScanFeedback(`还有 ${missingCategories.length} 件未完成结算品类；其他品类需填写实际名称和代工价。`, "error");
       return false;
@@ -8530,6 +8700,7 @@ async function submitFactoryScanBatch() {
   const queued = factoryScanQueue.map((entry) => ({ ...entry }));
   const completed = [];
   const failed = [];
+  let blockedReturns = 0;
   stopScanner();
   factoryScanBusy = true;
   updateFactoryScanModeUi();
@@ -8540,25 +8711,17 @@ async function submitFactoryScanBatch() {
         `正在统一${scanType === "factory_in" ? "入库" : "出库"}：${index + 1}/${queued.length} · ${entry.barcode}`,
         "processing",
       );
-      if (settlementSchemaAvailable) {
-        const categoryResult = await persistSettlementCategory(entry.itemId, entry.settlementCategory, {
-          otherName: entry.settlementOtherName,
-          otherUnit: entry.settlementOtherUnit,
-          cost: entry.settlementCostSnapshot,
-        });
-        if (categoryResult.error) {
-          factoryScanFailure(entry.barcode, `结算品类保存失败：${categoryResult.error.message}`);
-          failed.push(entry);
-          continue;
-        }
-      }
+      let returnBlocked = false;
       const succeeded = await factoryScan(scanType, entry.barcode, {
         source: "整批提交",
         batchKey,
+        entry,
+        onReturnBlocked: () => { returnBlocked = true; },
         batchCommit: true,
         suppressRefresh: true,
       });
       if (succeeded) completed.push(entry);
+      else if (returnBlocked) blockedReturns += 1;
       else failed.push(entry);
     }
   } finally {
@@ -8567,16 +8730,18 @@ async function submitFactoryScanBatch() {
     factoryProcessedBarcodes.clear();
     failed.forEach((entry) => factoryProcessedBarcodes.add(entry.barcode));
     factoryScanSuccessCount = completed.length;
-    factoryScanFailureCount = failed.length;
+    factoryScanFailureCount = failed.length + blockedReturns;
     factoryScanBusy = false;
     renderFactoryScanQueue();
   }
   factoryDailyActiveTab = scanType === "factory_in" ? "in" : "out";
   await refreshFactoryAfterScan();
-  if (completed.length) notifyFactoryScan(true);
-  if (failed.length) {
+  if (completed.length && !blockedReturns) notifyFactoryScan(true);
+  if (failed.length || blockedReturns) {
+    const blockedMessage = blockedReturns ? ` 已拦截并移除 ${blockedReturns} 件退洗或退单物品，请分开放置。` : "";
+    const failedMessage = failed.length ? ` ${failed.length} 件处理失败，条码已保留，请查看记录后重试。` : "";
     setFactoryScanFeedback(
-      `整批处理完成：成功 ${completed.length} 件，失败 ${failed.length} 件。失败条码已保留，请查看记录后移除或重试。`,
+      `整批处理完成：成功 ${completed.length} 件。${blockedMessage}${failedMessage}`,
       "error",
     );
   } else {
@@ -8842,6 +9007,8 @@ function bindEvents() {
   on("exceptionHandlingDialog", "close", () => { if (!exceptionTicketBusy && !$("exceptionHandlingDialog").open) exceptionHandlingContext = null; });
   on("refreshCourierBtn", "click", () => refreshAll({ reusePending: true }));
   on("refreshFactoryBtn", "click", () => refreshAll({ reusePending: true }));
+  on("factoryPendingWashReturnSearch", "input", renderFactoryReturnWork);
+  on("dismissFactoryReturnScanAlert", "click", () => $("factoryReturnScanAlert")?.classList.add("hidden"));
   on("factoryExceptionBtn", "click", openFactoryExceptionDialog);
   on("refreshFactoryExceptionsBtn", "click", () => {
     factoryExceptionPage = 0;
@@ -9173,7 +9340,7 @@ function bindEvents() {
 
 if ("serviceWorker" in navigator) {
 navigator.serviceWorker
-    .register("./sw.js?v=111", { updateViaCache: "none" })
+    .register("./sw.js?v=112", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch(() => {});
 }
